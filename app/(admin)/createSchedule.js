@@ -1,8 +1,9 @@
+import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Picker } from "@react-native-picker/picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { deleteDoc, doc, setDoc } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Platform,
@@ -14,11 +15,38 @@ import {
   View,
 } from "react-native";
 import { db } from "../../config/firebase";
+import {
+  COLLEGES,
+  getCoursesForCollege,
+  normalizeCollege,
+  normalizeCourse,
+} from "../../constants/academics";
 import { useTheme } from "../../context/ThemeContext";
 
 // FIX #10: added Saturday to match schedule.js display
-const daysOfWeek = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const sections = ["A","B","C","D","E","F","G","H","I","J"];
+const daysOfWeek = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+const sections = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+const DEFAULT_COLLEGE = COLLEGES[0]?.value || "";
+const DEFAULT_COURSE = getCoursesForCollege(DEFAULT_COLLEGE)[0] || "";
+
+const findCollegeForCourse = (courseValue) => {
+  const normalized = normalizeCourse(courseValue);
+  if (!normalized) return "";
+  for (const collegeItem of COLLEGES) {
+    const list = getCoursesForCollege(collegeItem.value);
+    if (list.some((item) => normalizeCourse(item) === normalized)) {
+      return collegeItem.value;
+    }
+  }
+  return "";
+};
 
 export default function CreateSchedule() {
   const { colors } = useTheme();
@@ -31,7 +59,8 @@ export default function CreateSchedule() {
     if (typeof params.scheduleData === "string") {
       try {
         existingData = JSON.parse(params.scheduleData);
-      } catch {
+      } catch (err) {
+        console.warn("Invalid scheduleData param:", err);
         existingData = null;
       }
     } else {
@@ -45,31 +74,62 @@ export default function CreateSchedule() {
       return acc;
     }, {});
 
-  const [course, setCourse] = useState("BSIT");
+  const [college, setCollege] = useState(DEFAULT_COLLEGE);
+  const [course, setCourse] = useState(DEFAULT_COURSE);
   const [year, setYear] = useState("1");
   const [section, setSection] = useState("A");
   const [semester, setSemester] = useState("");
   const [scheduleType, setScheduleType] = useState("Specific");
   const [weekClasses, setWeekClasses] = useState(createEmptyWeek());
   const [showPicker, setShowPicker] = useState(null);
+  const [copiedDay, setCopiedDay] = useState(null);
+
+  const courseOptions = useMemo(() => {
+    const list = getCoursesForCollege(college);
+    if (!course) return list;
+    if (list.includes(course)) return list;
+    return [...list, course];
+  }, [college, course]);
 
   /* ---------- LOAD EDIT DATA ---------- */
+  const isLoaded = useRef(false);
+
   useEffect(() => {
-    if (existingData) {
-      setCourse(existingData.course || "BSIT");
+    if (existingData && !isLoaded.current) {
+      isLoaded.current = true;
+      const inferredCollege =
+        normalizeCollege(existingData.college) ||
+        findCollegeForCourse(existingData.course) ||
+        DEFAULT_COLLEGE;
+      setCollege(inferredCollege);
+      setCourse(existingData.course || DEFAULT_COURSE);
       setYear(existingData.year || "1");
       setSection(existingData.section || "A");
       setSemester(existingData.semester || "");
       setScheduleType(existingData.scheduleType || "Specific");
       setWeekClasses(existingData.weekSchedule || createEmptyWeek());
     }
-  }, []);
+  }, [existingData]);
+
+  const handleCollegeChange = (value) => {
+    setCollege(value);
+    const list = getCoursesForCollege(value);
+    setCourse((prev) => {
+      if (prev && list.includes(prev)) return prev;
+      return list[0] || "";
+    });
+  };
+
+  const cloneClasses = (classes = []) => classes.map((cls) => ({ ...cls }));
 
   /* ---------- CLASS FUNCTIONS ---------- */
   const addClass = (day) => {
     setWeekClasses((prev) => ({
       ...prev,
-      [day]: [...prev[day], { subject: "", teacher: "", start: null, end: null, timeDisplay: "" }],
+      [day]: [
+        ...prev[day],
+        { subject: "", teacher: "", start: null, end: null, timeDisplay: "" },
+      ],
     }));
   };
 
@@ -83,7 +143,8 @@ export default function CreateSchedule() {
       const startVal = field === "start" ? value : cls.start;
       const endVal = field === "end" ? value : cls.end;
       if (startVal && endVal) {
-        copy[day][index].timeDisplay = `${formatTime(startVal)} - ${formatTime(endVal)}`;
+        copy[day][index].timeDisplay =
+          `${formatTime(startVal)} - ${formatTime(endVal)}`;
       } else if (startVal) {
         copy[day][index].timeDisplay = formatTime(startVal);
       }
@@ -98,29 +159,55 @@ export default function CreateSchedule() {
     setWeekClasses(copy);
   };
 
+  const copyDay = (day) => {
+    setCopiedDay(day);
+    Alert.alert("Copied", `${day} schedule copied!`);
+  };
+
+  const pasteToDay = (targetDay) => {
+    if (!copiedDay) {
+      Alert.alert("Error", "No day copied yet.");
+      return;
+    }
+    if (copiedDay === targetDay) {
+      Alert.alert("Error", "Cannot paste to the same day.");
+      return;
+    }
+    setWeekClasses((prev) => ({
+      ...prev,
+      [targetDay]: cloneClasses(prev[copiedDay]),
+    }));
+    Alert.alert("Pasted", `Schedule from ${copiedDay} pasted to ${targetDay}!`);
+  };
+
   const formatTime = (dateString) => {
     if (!dateString) return "";
-    return new Date(dateString).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    const date = new Date(dateString);
+    const hours24 = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    const suffix = hours24 >= 12 ? "PM" : "AM";
+    const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+    return `${hours12}:${minutes} ${suffix}`;
   };
 
   const sanitize = (s) => String(s).replace(/\s+/g, "_").toLowerCase();
 
   /* ---------- SAVE ---------- */
   const saveSchedule = async () => {
-    if (!course || !year || !section) {
+    if (!college || !course || !year || !section) {
       Alert.alert("Error", "Fill all fields.");
       return;
     }
 
     try {
-      const docId = `${sanitize(course)}_${year}_${section}`;
+      const normalizedCollege = normalizeCollege(college);
+      const normalizedCourse = normalizeCourse(course);
+      const docId = `${sanitize(normalizedCourse)}_${year}_${section}`;
 
       // FIX #3: weekClasses already has timeDisplay set via updateClass
       await setDoc(doc(db, "schedules", docId), {
-        course,
+        college: normalizedCollege,
+        course: normalizedCourse,
         year,
         section,
         semester,
@@ -147,7 +234,8 @@ export default function CreateSchedule() {
           style: "destructive",
           onPress: async () => {
             try {
-              const docId = `${sanitize(course)}_${year}_${section}`;
+              const normalizedCourse = normalizeCourse(course);
+              const docId = `${sanitize(normalizedCourse)}_${year}_${section}`;
               await deleteDoc(doc(db, "schedules", docId));
               Alert.alert("Deleted");
               router.back();
@@ -172,23 +260,50 @@ export default function CreateSchedule() {
         {existingData ? "Edit Schedule" : "Create Schedule"}
       </Text>
 
+      {/* COLLEGE */}
+      <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <Text style={{ color: colors.text }}>College</Text>
+        <Picker
+          selectedValue={college}
+          onValueChange={handleCollegeChange}
+          style={{ color: colors.text }}
+        >
+          {COLLEGES.map((item) => (
+            <Picker.Item
+              key={item.value}
+              label={item.label}
+              value={item.value}
+            />
+          ))}
+        </Picker>
+      </View>
+
       {/* COURSE */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={{ color: colors.text }}>Course</Text>
-        <Picker selectedValue={course} onValueChange={setCourse} style={{ color: colors.text }}>
-          <Picker.Item label="BSIT" value="BSIT" />
-          <Picker.Item label="BIT CompTech" value="BIT CompTech" />
-          <Picker.Item label="BIT Drafting" value="BIT Drafting" />
-          <Picker.Item label="BIT Electronics" value="BIT Electronics" />
-          <Picker.Item label="BIT Electricity" value="BIT Electricity" />
-          <Picker.Item label="BSMX" value="BSMX" />
+        <Picker
+          selectedValue={course}
+          onValueChange={setCourse}
+          style={{ color: colors.text }}
+        >
+          {courseOptions.length === 0 ? (
+            <Picker.Item label="No courses available" value="" />
+          ) : (
+            courseOptions.map((c) => (
+              <Picker.Item key={c} label={c} value={c} />
+            ))
+          )}
         </Picker>
       </View>
 
       {/* YEAR */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={{ color: colors.text }}>Year</Text>
-        <Picker selectedValue={year} onValueChange={setYear} style={{ color: colors.text }}>
+        <Picker
+          selectedValue={year}
+          onValueChange={setYear}
+          style={{ color: colors.text }}
+        >
           <Picker.Item label="1st Year" value="1" />
           <Picker.Item label="2nd Year" value="2" />
           <Picker.Item label="3rd Year" value="3" />
@@ -199,7 +314,11 @@ export default function CreateSchedule() {
       {/* SECTION */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={{ color: colors.text }}>Section</Text>
-        <Picker selectedValue={section} onValueChange={setSection} style={{ color: colors.text }}>
+        <Picker
+          selectedValue={section}
+          onValueChange={setSection}
+          style={{ color: colors.text }}
+        >
           {sections.map((s) => (
             <Picker.Item key={s} label={s} value={s} />
           ))}
@@ -209,7 +328,11 @@ export default function CreateSchedule() {
       {/* SCHEDULE TYPE */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={{ color: colors.text }}>Schedule Type</Text>
-        <Picker selectedValue={scheduleType} onValueChange={setScheduleType} style={{ color: colors.text }}>
+        <Picker
+          selectedValue={scheduleType}
+          onValueChange={setScheduleType}
+          style={{ color: colors.text }}
+        >
           <Picker.Item label="Day" value="Day" />
           <Picker.Item label="Night" value="Night" />
           <Picker.Item label="Specific" value="Specific" />
@@ -222,18 +345,46 @@ export default function CreateSchedule() {
         placeholderTextColor={colors.muted}
         value={semester}
         onChangeText={setSemester}
-        style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.card }]}
+        style={[
+          styles.input,
+          {
+            color: colors.text,
+            borderColor: colors.border,
+            backgroundColor: colors.card,
+          },
+        ]}
       />
 
       {/* DAYS */}
       {daysOfWeek.map((day) => (
         <View key={day}>
-          <TouchableOpacity
-            style={[styles.addButton, { backgroundColor: colors.primary }]}
-            onPress={() => addClass(day)}
-          >
-            <Text style={{ color: "#fff" }}>+ Add {day}</Text>
-          </TouchableOpacity>
+          <View style={styles.dayHeader}>
+            <TouchableOpacity
+              style={[styles.addButton, { backgroundColor: colors.primary }]}
+              onPress={() => addClass(day)}
+            >
+              <Text style={{ color: "#fff" }}>+ Add {day}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.copyButton, { backgroundColor: "#f59e0b" }]}
+              onPress={() => copyDay(day)}
+            >
+              <Text style={{ color: "#fff" }}>Copy</Text>
+            </TouchableOpacity>
+
+            {copiedDay && copiedDay !== day && (
+              <TouchableOpacity
+                style={[
+                  styles.pasteButton,
+                  { backgroundColor: colors.success },
+                ]}
+                onPress={() => pasteToDay(day)}
+              >
+                <Text style={{ color: "#fff" }}>Paste from {copiedDay}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
           {weekClasses[day]?.map((cls, i) => (
             <View
@@ -245,37 +396,87 @@ export default function CreateSchedule() {
                 placeholderTextColor={colors.muted}
                 value={cls.subject}
                 onChangeText={(t) => updateClass(day, i, "subject", t)}
-                style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                style={[
+                  styles.input,
+                  { color: colors.text, borderColor: colors.border },
+                ]}
               />
               <TextInput
                 placeholder="Teacher"
                 placeholderTextColor={colors.muted}
                 value={cls.teacher}
                 onChangeText={(t) => updateClass(day, i, "teacher", t)}
-                style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                style={[
+                  styles.input,
+                  { color: colors.text, borderColor: colors.border },
+                ]}
               />
 
-              <TouchableOpacity
-                style={styles.timeButton}
-                onPress={() => setShowPicker({ day, index: i, field: "start" })}
-              >
-                <Text style={{ color: colors.text }}>
-                  {cls.start ? formatTime(cls.start) : "⏰ Start Time"}
-                </Text>
-              </TouchableOpacity>
+              <View style={styles.timeRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.timeTile,
+                    {
+                      borderColor: colors.border,
+                      backgroundColor: cls.start
+                        ? `${colors.primary}18`
+                        : colors.surface || colors.background,
+                    },
+                  ]}
+                  onPress={() =>
+                    setShowPicker({ day, index: i, field: "start" })
+                  }
+                >
+                  <View style={styles.timeTileHeader}>
+                    <Ionicons
+                      name="time-outline"
+                      size={14}
+                      color={colors.muted}
+                    />
+                    <Text style={[styles.timeLabel, { color: colors.muted }]}>
+                      Start
+                    </Text>
+                  </View>
+                  <Text style={[styles.timeValue, { color: colors.text }]}>
+                    {cls.start ? formatTime(cls.start) : "Set time"}
+                  </Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.timeButton}
-                onPress={() => setShowPicker({ day, index: i, field: "end" })}
-              >
-                <Text style={{ color: colors.text }}>
-                  {cls.end ? formatTime(cls.end) : "⏰ End Time"}
-                </Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.timeTile,
+                    {
+                      borderColor: colors.border,
+                      backgroundColor: cls.end
+                        ? `${colors.primary}18`
+                        : colors.surface || colors.background,
+                    },
+                  ]}
+                  onPress={() =>
+                    setShowPicker({ day, index: i, field: "end" })
+                  }
+                >
+                  <View style={styles.timeTileHeader}>
+                    <Ionicons
+                      name="time-outline"
+                      size={14}
+                      color={colors.muted}
+                    />
+                    <Text style={[styles.timeLabel, { color: colors.muted }]}>
+                      End
+                    </Text>
+                  </View>
+                  <Text style={[styles.timeValue, { color: colors.text }]}>
+                    {cls.end ? formatTime(cls.end) : "Set time"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
 
               {/* Show computed timeDisplay as a preview */}
               {cls.timeDisplay ? (
-                <Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
+                <Text
+                  style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}
+                >
                   Display: {cls.timeDisplay}
                 </Text>
               ) : null}
@@ -296,8 +497,8 @@ export default function CreateSchedule() {
         <DateTimePicker
           value={new Date()}
           mode="time"
-          display={Platform.OS === "ios" ? "compact" : "spinner"}
-          is24Hour
+          display={Platform.OS === "ios" ? "spinner" : "clock"}
+          is24Hour={false}
           onChange={(e, date) => {
             if (date) {
               updateClass(
@@ -372,10 +573,51 @@ const styles = StyleSheet.create({
     marginTop: 10,
     alignItems: "center",
   },
-  timeButton: {
+  timeRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+  timeTile: {
+    flex: 1,
     borderWidth: 1,
-    padding: 10,
-    borderRadius: 6,
-    marginVertical: 5,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  timeTileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  timeLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  timeValue: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  dayHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+    alignItems: "center",
+  },
+  copyButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  pasteButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: "center",
   },
 });

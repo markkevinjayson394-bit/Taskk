@@ -31,7 +31,11 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
+.env
+.env.local
+.env.*.local
+# Exception: keep .env.example tracked (it contains placeholder values)
+!.env.example
 
 # typescript
 *.tsbuildinfo
@@ -41,3 +45,22 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Build outputs - do not commit built artifacts
+dist-verify/
+dist-verify-2/
+dist-verify-build/
+dist-verify-metro/
+
+# IDE settings
+.idea/
+.vscode/
+
+# Test/demonstration folders
+Playground/
+
+# Documentation generated files (large binaries)
+docs/_docx_*.zip
+docs/_docx_tmp*/
+docs/mockups-png/
+docs/diagrams-png/

@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function isAdmin() {
+      return isSignedIn() && userDoc(request.auth.uid) != null && userDoc(request.auth.uid).data.role == "admin";
+    }
+
+    match /users/{userId} {
+      allow create: if isOwner(userId);
+      allow read, update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /settings/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /planner_days/{dayKey} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /planner_weeks/{weekKey} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /planner_months/{monthKey} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /exam_plans/{planId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /task_templates/{templateId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /assignments/{assignmentId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

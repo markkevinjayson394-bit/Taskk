@@ -1,16 +1,17 @@
 {
   "expo": {
-    "name": "time-management-app",
+    "name": "CTU Time Manager",
     "slug": "time-management-app",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "timemanagementapp",
+    "icon": "./assets/icon.png",
+    "scheme": "ctutimemanager",
+    "owner": "haahahe",
     "userInterfaceStyle": "automatic",
     "androidStatusBar": {
       "barStyle": "light-content",
       "translucent": true,
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0057D9"
     },
     "ios": {
       "supportsTablet": true
@@ -18,44 +19,57 @@
     "android": {
       "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0057D9"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.timemanagementapp"
+      "package": "com.ctudanao.timemanager",
+      "permissions": ["android.permission.POST_NOTIFICATIONS"]
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/splash.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#0057D9",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#001A4D"
           }
         }
       ],
       "expo-web-browser",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "CTU Time Manager needs access to your photos to set a profile picture.",
+          "cameraPermission": "CTU Time Manager needs access to your camera to take a profile picture."
+        }
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
     },
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "da43c0c7-7f11-4903-b073-8f8dedec06b4"
+        "projectId": "e044163a-3db8-4577-9ca5-a70fb2634898"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e044163a-3db8-4577-9ca5-a70fb2634898"
     }
   }
 }

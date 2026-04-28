@@ -1,12 +1,23 @@
+// @ts-check
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { errorIfDev, warnIfDev } from "./logger";
+
+/** @param {string | Date | undefined} d */
+const toDate = (d) => (d instanceof Date ? d : d ? new Date(d) : undefined);
 
 const DAY_COLLECTION = "planner_days";
 const WEEK_COLLECTION = "planner_weeks";
 const MONTH_COLLECTION = "planner_months";
-const QUEUE_KEY = (uid) => `planner_queue_${uid}`;
-const CACHE_KEY = (uid, mode, key) => `planner_cache_${uid}_${mode}_${key}`;
+const QUEUE_KEY = /** @param {string} uid */ (uid) => `planner_queue_${uid}`;
+const CACHE_KEY =
+  /** @param {string} uid @param {string} mode @param {string} key */ (
+    uid,
+    mode,
+    key
+  ) => `planner_cache_${uid}_${mode}_${key}`;
 
 /**
  * @typedef {Object} PlannerTimeBlock
@@ -15,11 +26,22 @@ const CACHE_KEY = (uid, mode, key) => `planner_cache_${uid}_${mode}_${key}`;
  * @property {string} end
  * @property {string} subject
  * @property {string} task
+ * @property {string} taskId
+ * @property {string} label
+ * @property {string} blocker
+ */
+
+/**
+ * @typedef {Object} DayFocusMeta
+ * @property {string} tag
+ * @property {string} effort
+ * @property {string} doneDef
  */
 
 /**
  * @typedef {Object} DayPlan
  * @property {string[]} priorities
+ * @property {DayFocusMeta[]} focusMeta
  * @property {PlannerTimeBlock[]} timeBlocks
  * @property {string} notes
  */
@@ -37,8 +59,17 @@ const CACHE_KEY = (uid, mode, key) => `planner_cache_${uid}_${mode}_${key}`;
  * @property {string} notes
  */
 
+/**
+ * @typedef {{ id: string, mode: string, key: string, plan: any, updatedAt: string }} QueueItem
+ */
+
 const DEFAULT_DAY_PLAN = {
   priorities: ["", "", ""],
+  focusMeta: [
+    { tag: "must", effort: "30m", doneDef: "" },
+    { tag: "should", effort: "30m", doneDef: "" },
+    { tag: "nice", effort: "15m", doneDef: "" },
+  ],
   timeBlocks: [],
   notes: "",
 };
@@ -61,7 +92,7 @@ const MAX_FOCUS_ITEMS = 12;
 const MAX_QUEUE_ITEMS = 50;
 const MAX_CACHE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB limit
 
-function pad2(value) {
+function pad2(/** @type {number} */ value) {
   return String(value).padStart(2, "0");
 }
 
@@ -81,7 +112,9 @@ function getIsoWeekParts(dateInput = new Date()) {
   const day = utcDate.getUTCDay() || 7;
   utcDate.setUTCDate(utcDate.getUTCDate() + 4 - day);
   const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
-  const weekNo = Math.ceil(((utcDate - yearStart) / 86400000 + 1) / 7);
+  const weekNo = Math.ceil(
+    ((utcDate.getTime() - yearStart.getTime()) / 86400000 + 1) / 7
+  );
 
   return {
     year: utcDate.getUTCFullYear(),
@@ -89,12 +122,17 @@ function getIsoWeekParts(dateInput = new Date()) {
   };
 }
 
-function ensureUid(uid) {
+function ensureUid(/** @type {string} */ uid) {
   if (!uid) {
     throw new Error("A user id is required for planner operations.");
   }
 }
 
+/**
+ * @param {Array<any>} list
+ * @param {number} [minItems]
+ * @returns {string[]}
+ */
 function normalizeFocusList(list, minItems = MIN_FOCUS_ITEMS) {
   const base = Array.isArray(list) ? list : [];
   const minimum = Math.max(0, Number(minItems) || 0);
@@ -105,6 +143,10 @@ function normalizeFocusList(list, minItems = MIN_FOCUS_ITEMS) {
   return sanitized;
 }
 
+/**
+ * @param {Array<any>} blocks
+ * @returns {PlannerTimeBlock[]}
+ */
 function normalizeTimeBlocks(blocks) {
   if (!Array.isArray(blocks)) return [];
   return blocks
@@ -118,10 +160,67 @@ function normalizeTimeBlocks(blocks) {
       end: typeof block?.end === "string" ? block.end : "",
       subject: typeof block?.subject === "string" ? block.subject : "",
       task: typeof block?.task === "string" ? block.task : "",
+      taskId:
+        typeof block?.taskId === "string" && block.taskId.trim()
+          ? block.taskId.trim()
+          : "",
+      label: typeof block?.label === "string" ? block.label : "",
+      blocker: typeof block?.blocker === "string" ? block.blocker : "",
     }))
-    .filter((block) => block.start || block.end || block.subject || block.task);
+    .filter(
+      (block) =>
+        block.start ||
+        block.end ||
+        block.subject ||
+        block.task ||
+        block.taskId ||
+        block.label ||
+        block.blocker
+    );
 }
 
+/**
+ * @param {Array<any>} meta
+ * @param {number} [targetLength]
+ * @returns {DayFocusMeta[]}
+ */
+function normalizeFocusMetaList(meta, targetLength = MIN_FOCUS_ITEMS) {
+  const defaults = [
+    { tag: "must", effort: "30m", doneDef: "" },
+    { tag: "should", effort: "30m", doneDef: "" },
+    { tag: "nice", effort: "15m", doneDef: "" },
+  ];
+  const validTags = new Set(["must", "should", "nice"]);
+  const validEfforts = new Set(["15m", "30m", "60m+"]);
+  const list = Array.isArray(meta) ? meta.slice(0, MAX_FOCUS_ITEMS) : [];
+  const normalized = list.map((item, idx) => {
+    const fallback = defaults[idx] || {
+      tag: "should",
+      effort: "30m",
+      doneDef: "",
+    };
+    const rawTag = typeof item?.tag === "string" ? item.tag : fallback.tag;
+    const rawEffort =
+      typeof item?.effort === "string" ? item.effort : fallback.effort;
+    return {
+      tag: validTags.has(rawTag) ? rawTag : fallback.tag,
+      effort: validEfforts.has(rawEffort) ? rawEffort : fallback.effort,
+      doneDef: typeof item?.doneDef === "string" ? item.doneDef : "",
+    };
+  });
+  while (normalized.length < Math.max(0, Number(targetLength) || 0)) {
+    const idx = normalized.length;
+    normalized.push(
+      defaults[idx] || { tag: "should", effort: "30m", doneDef: "" }
+    );
+  }
+  return normalized;
+}
+
+/**
+ * @param {Array<any>} milestones
+ * @returns {string[]}
+ */
 function normalizeMilestones(milestones) {
   if (!Array.isArray(milestones)) return [];
   return milestones
@@ -130,10 +229,19 @@ function normalizeMilestones(milestones) {
     .filter(Boolean);
 }
 
+/**
+ * @param {string} mode
+ * @param {string} key
+ * @returns {string}
+ */
 function queueId(mode, key) {
   return `${mode}:${key}`;
 }
 
+/**
+ * @param {Array<any>} [queue]
+ * @returns {Array<any>}
+ */
 function normalizeQueue(queue = []) {
   const map = new Map();
   for (const item of queue) {
@@ -148,6 +256,10 @@ function normalizeQueue(queue = []) {
   return Array.from(map.values());
 }
 
+/**
+ * @param {string} uid
+ * @returns {Promise<Array<any>>}
+ */
 async function readQueue(uid) {
   if (!uid) return [];
   try {
@@ -155,11 +267,17 @@ async function readQueue(uid) {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return normalizeQueue(Array.isArray(parsed) ? parsed : []);
-  } catch {
+  } catch (err) {
+    warnIfDev("plannerStorage: failed to read queue:", err);
     return [];
   }
 }
 
+/**
+ * @param {string} uid
+ * @param {Array<any>} queue
+ * @returns {Promise<Array<any>>}
+ */
 async function writeQueue(uid, queue) {
   if (!uid) return [];
   const normalized = normalizeQueue(queue);
@@ -175,12 +293,27 @@ async function writeQueue(uid, queue) {
   return limitedQueue;
 }
 
-async function getQueuedPlan(uid, mode, key) {
+/**
+ * @param {string} uid
+ * @param {string} mode
+ * @param {string} key
+ * @returns {Promise<QueueItem|null>}
+ */
+async function getQueuedPlan(
+  /** @type {string} */ uid,
+  /** @type {string} */ mode,
+  /** @type {string} */ key
+) {
   const queue = await readQueue(uid);
   return queue.find((item) => item.id === queueId(mode, key)) || null;
 }
 
-async function enqueuePlan(uid, mode, key, plan) {
+async function enqueuePlan(
+  /** @type {string} */ uid,
+  /** @type {string} */ mode,
+  /** @type {string} */ key,
+  /** @type {any} */ plan
+) {
   const queue = await readQueue(uid);
   const id = queueId(mode, key);
   const updatedAt = new Date().toISOString();
@@ -192,7 +325,11 @@ async function enqueuePlan(uid, mode, key, plan) {
   return next;
 }
 
-async function removeQueuedPlan(uid, mode, key) {
+async function removeQueuedPlan(
+  /** @type {string} */ uid,
+  /** @type {string} */ mode,
+  /** @type {string} */ key
+) {
   const queue = await readQueue(uid);
   const id = queueId(mode, key);
   const next = queue.filter((item) => item.id !== id);
@@ -200,13 +337,18 @@ async function removeQueuedPlan(uid, mode, key) {
   return next;
 }
 
-async function saveCache(uid, mode, key, plan) {
+async function saveCache(
+  /** @type {string} */ uid,
+  /** @type {string} */ mode,
+  /** @type {string} */ key,
+  /** @type {any} */ plan
+) {
   if (!uid) return;
   try {
     const serialized = JSON.stringify(plan);
     // Skip if data is too large
     if (serialized.length > MAX_CACHE_SIZE_BYTES) {
-      console.warn(
+      warnIfDev(
         "Planner cache too large, skipping save:",
         serialized.length,
         "bytes"
@@ -215,38 +357,46 @@ async function saveCache(uid, mode, key, plan) {
     }
     await AsyncStorage.setItem(CACHE_KEY(uid, mode, key), serialized);
   } catch (_err) {
-    console.error("Failed to save planner cache:", _err);
+    errorIfDev("Failed to save planner cache:", _err);
   }
 }
 
-async function loadCache(uid, mode, key) {
+async function loadCache(
+  /** @type {string} */ uid,
+  /** @type {string} */ mode,
+  /** @type {string} */ key
+) {
   if (!uid) return null;
   try {
     const raw = await AsyncStorage.getItem(CACHE_KEY(uid, mode, key));
     if (!raw) return null;
     return JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    warnIfDev("plannerStorage: failed to read cache entry:", err);
     return null;
   }
 }
 
-function dayDocRef(uid, dayKey) {
+function dayDocRef(/** @type {string} */ uid, /** @type {string} */ dayKey) {
   ensureUid(uid);
   return doc(db, "users", uid, DAY_COLLECTION, dayKey);
 }
 
-function weekDocRef(uid, weekKey) {
+function weekDocRef(/** @type {string} */ uid, /** @type {string} */ weekKey) {
   ensureUid(uid);
   return doc(db, "users", uid, WEEK_COLLECTION, weekKey);
 }
 
-function monthDocRef(uid, monthKey) {
+function monthDocRef(
+  /** @type {string} */ uid,
+  /** @type {string} */ monthKey
+) {
   ensureUid(uid);
   return doc(db, "users", uid, MONTH_COLLECTION, monthKey);
 }
 
 export function toDayKey(dateInput = new Date()) {
-  const date = normalizeDate(dateInput);
+  const date = normalizeDate(toDate(dateInput));
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
@@ -256,7 +406,7 @@ export function toWeekKey(dateInput = new Date()) {
 }
 
 export function toMonthKey(dateInput = new Date()) {
-  const date = normalizeDate(dateInput);
+  const date = normalizeDate(toDate(dateInput));
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}`;
 }
 
@@ -268,32 +418,65 @@ export function getPlannerKeys(dateInput = new Date()) {
   };
 }
 
-export function normalizeDayPlan(data = {}) {
+/**
+ * @param {DayPlan} data
+ * @returns {{ priorities: string[], focusMeta: DayFocusMeta[], timeBlocks: PlannerTimeBlock[], notes: string }}
+ */
+export function normalizeDayPlan(
+  data = { priorities: [], focusMeta: [], timeBlocks: [], notes: "" }
+) {
+  const priorities = normalizeFocusList(
+    /** @type {string[]} */ (data.priorities)
+  );
   return {
-    priorities: normalizeFocusList(data.priorities),
-    timeBlocks: normalizeTimeBlocks(data.timeBlocks),
+    priorities,
+    focusMeta: normalizeFocusMetaList(
+      /** @type {DayFocusMeta[]} */ (data.focusMeta),
+      priorities.length
+    ),
+    timeBlocks: normalizeTimeBlocks(
+      /** @type {PlannerTimeBlock[]} */ (data.timeBlocks)
+    ),
     notes: typeof data.notes === "string" ? data.notes : "",
   };
 }
 
-export function normalizeWeekPlan(data = {}) {
+/**
+ * @param {WeekPlan} data
+ * @returns {{ goals: string[], notes: string }}
+ */
+export function normalizeWeekPlan(data = { goals: [], notes: "" }) {
   return {
-    goals: normalizeFocusList(data.goals),
+    goals: normalizeFocusList(/** @type {string[]} */ (data.goals)),
     notes: typeof data.notes === "string" ? data.notes : "",
   };
 }
 
-export function normalizeMonthPlan(data = {}) {
+/**
+ * @param {MonthPlan} data
+ * @returns {{ goals: string[], milestones: string[], notes: string }}
+ */
+export function normalizeMonthPlan(
+  data = { goals: [], milestones: [], notes: "" }
+) {
   return {
-    goals: normalizeFocusList(data.goals),
-    milestones: normalizeMilestones(data.milestones),
+    goals: normalizeFocusList(/** @type {string[]} */ (data.goals)),
+    milestones: normalizeMilestones(/** @type {string[]} */ (data.milestones)),
     notes: typeof data.notes === "string" ? data.notes : "",
   };
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {{ isOnline?: boolean, preferCache?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function loadDayPlan(uid, dateInput = new Date(), options = {}) {
-  const dayKey = toDayKey(dateInput);
-  const queued = await getQueuedPlan(uid, "day", dayKey);
+  const dayKey = toDayKey(toDate(dateInput));
+  const queued = /** @type {QueueItem | null} */ (
+    await getQueuedPlan(uid, "day", dayKey)
+  );
   if (queued?.plan) {
     return {
       ...DEFAULT_DAY_PLAN,
@@ -335,20 +518,27 @@ export async function loadDayPlan(uid, dateInput = new Date(), options = {}) {
 
   const normalized = {
     ...DEFAULT_DAY_PLAN,
-    ...normalizeDayPlan(snap.data()),
+    ...normalizeDayPlan(/** @type {DayPlan} */ (snap.data())),
     dayKey,
   };
   await saveCache(uid, "day", dayKey, normalized);
   return normalized;
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {any} [plan]
+ * @param {{ isOnline?: boolean, queueOnError?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function saveDayPlan(
-  uid,
-  dateInput = new Date(),
-  plan = {},
-  options = {}
+  /** @type {string} */ uid,
+  /** @type {Date|string} */ dateInput = new Date(),
+  /** @type {any} */ plan = {},
+  /** @type {any} */ options = {}
 ) {
-  const dayKey = toDayKey(dateInput);
+  const dayKey = toDayKey(toDate(dateInput));
   const ref = dayDocRef(uid, dayKey);
   const normalizedPlan = normalizeDayPlan(plan);
   await saveCache(uid, "day", dayKey, normalizedPlan);
@@ -379,9 +569,17 @@ export async function saveDayPlan(
   }
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {{ isOnline?: boolean, preferCache?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function loadWeekPlan(uid, dateInput = new Date(), options = {}) {
-  const weekKey = toWeekKey(dateInput);
-  const queued = await getQueuedPlan(uid, "week", weekKey);
+  const weekKey = toWeekKey(toDate(dateInput));
+  const queued = /** @type {QueueItem | null} */ (
+    await getQueuedPlan(uid, "week", weekKey)
+  );
   if (queued?.plan) {
     return {
       ...DEFAULT_WEEK_PLAN,
@@ -423,20 +621,27 @@ export async function loadWeekPlan(uid, dateInput = new Date(), options = {}) {
 
   const normalized = {
     ...DEFAULT_WEEK_PLAN,
-    ...normalizeWeekPlan(snap.data()),
+    ...normalizeWeekPlan(/** @type {WeekPlan} */ (snap.data())),
     weekKey,
   };
   await saveCache(uid, "week", weekKey, normalized);
   return normalized;
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {any} [plan]
+ * @param {{ isOnline?: boolean, queueOnError?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function saveWeekPlan(
-  uid,
-  dateInput = new Date(),
-  plan = {},
-  options = {}
+  /** @type {string} */ uid,
+  /** @type {Date|string} */ dateInput = new Date(),
+  /** @type {any} */ plan = {},
+  /** @type {any} */ options = {}
 ) {
-  const weekKey = toWeekKey(dateInput);
+  const weekKey = toWeekKey(toDate(dateInput));
   const ref = weekDocRef(uid, weekKey);
   const normalizedPlan = normalizeWeekPlan(plan);
   await saveCache(uid, "week", weekKey, normalizedPlan);
@@ -467,9 +672,17 @@ export async function saveWeekPlan(
   }
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {{ isOnline?: boolean, preferCache?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function loadMonthPlan(uid, dateInput = new Date(), options = {}) {
-  const monthKey = toMonthKey(dateInput);
-  const queued = await getQueuedPlan(uid, "month", monthKey);
+  const monthKey = toMonthKey(toDate(dateInput));
+  const queued = /** @type {QueueItem | null} */ (
+    await getQueuedPlan(uid, "month", monthKey)
+  );
   if (queued?.plan) {
     return {
       ...DEFAULT_MONTH_PLAN,
@@ -511,20 +724,27 @@ export async function loadMonthPlan(uid, dateInput = new Date(), options = {}) {
 
   const normalized = {
     ...DEFAULT_MONTH_PLAN,
-    ...normalizeMonthPlan(snap.data()),
+    ...normalizeMonthPlan(/** @type {MonthPlan} */ (snap.data())),
     monthKey,
   };
   await saveCache(uid, "month", monthKey, normalized);
   return normalized;
 }
 
+/**
+ * @param {string} uid
+ * @param {Date|string} [dateInput]
+ * @param {any} [plan]
+ * @param {{ isOnline?: boolean, queueOnError?: boolean }} [options]
+ * @returns {Promise<any>}
+ */
 export async function saveMonthPlan(
-  uid,
-  dateInput = new Date(),
-  plan = {},
-  options = {}
+  /** @type {string} */ uid,
+  /** @type {Date|string} */ dateInput = new Date(),
+  /** @type {any} */ plan = {},
+  /** @type {any} */ options = {}
 ) {
-  const monthKey = toMonthKey(dateInput);
+  const monthKey = toMonthKey(toDate(dateInput));
   const ref = monthDocRef(uid, monthKey);
   const normalizedPlan = normalizeMonthPlan(plan);
   await saveCache(uid, "month", monthKey, normalizedPlan);
@@ -555,6 +775,10 @@ export async function saveMonthPlan(
   }
 }
 
+/**
+ * @param {string} uid
+ * @returns {Promise<{ flushed: number, remaining: number }>}
+ */
 export async function flushPlannerQueue(uid) {
   const queue = await readQueue(uid);
   if (!queue.length) return { flushed: 0, remaining: 0 };
@@ -608,7 +832,8 @@ export async function flushPlannerQueue(uid) {
         continue;
       }
       flushed += 1;
-    } catch {
+    } catch (err) {
+      warnIfDev("plannerStorage: failed to flush queued operation:", err);
       remaining.push(item);
     }
   }
@@ -617,6 +842,10 @@ export async function flushPlannerQueue(uid) {
   return { flushed, remaining: remaining.length };
 }
 
+/**
+ * @param {string} uid
+ * @returns {Promise<number>}
+ */
 export async function getPlannerQueueCount(uid) {
   const queue = await readQueue(uid);
   return queue.length;

@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "CTU Time Manager",
+    "name": "CTU Academic Task Manager",
     "slug": "time-management-app",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "ctutimemanager",
+    "scheme": "ctuacademictaskmanager",
     "owner": "haahahe",
     "userInterfaceStyle": "automatic",
     "androidStatusBar": {
@@ -22,9 +22,16 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0057D9"
       },
-      "predictiveBackGestureEnabled": false,
+      "predictiveBackGestureEnabled": true,
       "package": "com.ctudanao.timemanager",
-      "permissions": ["android.permission.POST_NOTIFICATIONS"]
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "web": {
       "output": "static",
@@ -45,15 +52,29 @@
         }
       ],
       "expo-web-browser",
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "sounds": ["./assets/sounds/ctu_alarm.wav"]
+        }
+      ],
+      "expo-task-manager",
       [
         "expo-image-picker",
         {
-          "photosPermission": "CTU Time Manager needs access to your photos to set a profile picture.",
-          "cameraPermission": "CTU Time Manager needs access to your camera to take a profile picture."
+          "photosPermission": "CTU Academic Task Manager needs access to your photos to set a profile picture.",
+          "cameraPermission": "CTU Academic Task Manager needs access to your camera to take a profile picture."
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "mark-kevin-jayson"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
@@ -69,7 +90,8 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/e044163a-3db8-4577-9ca5-a70fb2634898"
+      "url": "https://u.expo.dev/e044163a-3db8-4577-9ca5-a70fb2634898",
+      "checkAutomatically": "NEVER"
     }
   }
 }

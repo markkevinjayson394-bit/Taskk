@@ -1,8 +1,24 @@
-// Note: dotenv is NOT used here because:
-// 1. Expo configs run in a non-Node.js environment
-// 2. Environment variables should be provided via EAS Secrets or app.extra
-// 3. The actual Firebase config is read from Constants.expoConfig.extra.firebase
+// Load local env files for local EAS Update/Build runs.
+// On EAS cloud, use `eas env` variables for each environment.
+try {
+  const fs = require("fs");
+  const path = require("path");
+  const dotenv = require("dotenv");
+  const configRoot = process.cwd();
+  const envFiles = [".env.local", ".env"];
+  for (const file of envFiles) {
+    const fullPath = path.resolve(configRoot, file);
+    if (fs.existsSync(fullPath)) {
+      dotenv.config({ path: fullPath, override: false });
+    }
+  }
+} catch {
+  // Best effort only; config continues with existing process.env values.
+}
 
+// NOTE: This function is intentionally duplicated in config/firebase.js.
+// Since this file is CommonJS and firebase.js is ESM, they cannot share
+// a module. Keep both in sync if logic changes.
 const normalizeFirebaseValue = (value) => {
   if (typeof value !== "string") {
     return value;
@@ -24,35 +40,59 @@ const normalizeFirebaseValue = (value) => {
 
 const getEnv = (key) => normalizeFirebaseValue(process.env[key]);
 const getExtra = (extra, key) => normalizeFirebaseValue(extra?.firebase?.[key]);
+const getFirstEnv = (...keys) => {
+  for (const key of keys) {
+    const value = getEnv(key);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+};
+
+const FIREBASE_ENV_MAP = {
+  apiKey: ["FIREBASE_API_KEY", "EXPO_PUBLIC_FIREBASE_API_KEY"],
+  authDomain: ["FIREBASE_AUTH_DOMAIN", "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN"],
+  projectId: ["FIREBASE_PROJECT_ID", "EXPO_PUBLIC_FIREBASE_PROJECT_ID"],
+  storageBucket: ["FIREBASE_STORAGE_BUCKET", "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET"],
+  messagingSenderId: [
+    "FIREBASE_MESSAGING_SENDER_ID",
+    "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+  ],
+  appId: ["FIREBASE_APP_ID", "EXPO_PUBLIC_FIREBASE_APP_ID"],
+};
 
 module.exports = ({ config }) => {
   const base = config || {};
   const baseExtra = base.extra || {};
+  const sentryDsn = getEnv("SENTRY_DSN") || normalizeFirebaseValue(baseExtra?.sentryDsn);
+  const easProjectId =
+    normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
+    normalizeFirebaseValue(baseExtra?.eas?.projectId) ||
+    "";
   const firebase = {
-    apiKey: getEnv("FIREBASE_API_KEY") || getExtra(baseExtra, "apiKey") || "",
-    authDomain:
-      getEnv("FIREBASE_AUTH_DOMAIN") || getExtra(baseExtra, "authDomain") || "",
-    projectId:
-      getEnv("FIREBASE_PROJECT_ID") || getExtra(baseExtra, "projectId") || "",
+    apiKey: getFirstEnv(...FIREBASE_ENV_MAP.apiKey) || getExtra(baseExtra, "apiKey") || "",
+    authDomain: getFirstEnv(...FIREBASE_ENV_MAP.authDomain) || getExtra(baseExtra, "authDomain") || "",
+    projectId: getFirstEnv(...FIREBASE_ENV_MAP.projectId) || getExtra(baseExtra, "projectId") || "",
     storageBucket:
-      getEnv("FIREBASE_STORAGE_BUCKET") ||
+      getFirstEnv(...FIREBASE_ENV_MAP.storageBucket) ||
       getExtra(baseExtra, "storageBucket") ||
       "",
     messagingSenderId:
-      getEnv("FIREBASE_MESSAGING_SENDER_ID") ||
+      getFirstEnv(...FIREBASE_ENV_MAP.messagingSenderId) ||
       getExtra(baseExtra, "messagingSenderId") ||
       "",
-    appId: getEnv("FIREBASE_APP_ID") || getExtra(baseExtra, "appId") || "",
+    appId: getFirstEnv(...FIREBASE_ENV_MAP.appId) || getExtra(baseExtra, "appId") || "",
   };
 
   return {
     ...base,
-    name: "CTU Time Manager",
+    name: "CTU Academic Task Manager",
     slug: "time-management-app",
-    version: "1.0.1",
+    version: "1.0.3",
     orientation: "portrait",
     icon: "./assets/icon.png",
-    scheme: "ctutimemanager",
+    scheme: "ctuacademictaskmanager",
     owner: "haahahe",
     userInterfaceStyle: "automatic",
     androidStatusBar: {
@@ -69,15 +109,19 @@ module.exports = ({ config }) => {
         foregroundImage: "./assets/adaptive-icon.png",
         backgroundColor: "#0057D9",
       },
-      predictiveBackGestureEnabled: false,
+      predictiveBackGestureEnabled: true,
       package: "com.ctudanao.timemanager",
       permissions: [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.CAMERA",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.PACKAGE_USAGE_STATS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.RECORD_AUDIO",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.WAKE_LOCK",
       ],
     },
     web: {
@@ -99,14 +143,19 @@ module.exports = ({ config }) => {
         },
       ],
       "expo-web-browser",
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          sounds: ["./assets/sounds/ctu_alarm.wav"],
+        },
+      ],
       [
         "expo-image-picker",
         {
           photosPermission:
-            "CTU Time Manager needs access to your photos to set a profile picture.",
+            "CTU Academic Task Manager needs access to your photos to set a profile picture.",
           cameraPermission:
-            "CTU Time Manager needs access to your camera to take a profile picture.",
+            "CTU Academic Task Manager needs access to your camera to take a profile picture.",
         },
       ],
       "@react-native-community/datetimepicker",
@@ -117,9 +166,10 @@ module.exports = ({ config }) => {
     },
     extra: {
       ...baseExtra,
+      sentryDsn,
       router: {},
       eas: {
-        projectId: "e044163a-3db8-4577-9ca5-a70fb2634898",
+        projectId: easProjectId,
       },
       firebase,
     },
@@ -127,7 +177,15 @@ module.exports = ({ config }) => {
       policy: "appVersion",
     },
     updates: {
-      url: "https://u.expo.dev/e044163a-3db8-4577-9ca5-a70fb2634898",
+      url: easProjectId ? `https://u.expo.dev/${easProjectId}` : "",
+      // Runtime OTA checks are handled in app/_layout.js (startup + periodic + foreground resume).
+      checkAutomatically: "NEVER",
     },
   };
 };
+
+
+
+
+
+

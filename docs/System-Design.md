@@ -1,25 +1,43 @@
-# CTU Danao Time Manager - System Design Documentation
+# CTU Academic Task Manager - Scope Freeze and System Design
 
-Date: March 15, 2026
+Date: March 18, 2026
 
-## 1) Output / System Design
+## 1) Scope Decision (Post-Title Defense)
 
-### 1.1 Architecture Overview
-- Client: Expo React Native app using Expo Router for navigation.
-- Backend: Firebase Auth for authentication and Firestore for data storage.
-- Local: AsyncStorage for caching and offline queues.
-- Notifications: Expo Notifications (scheduled reminders and announcements).
-- Device Usage: Android AppUsageModule for usage insights (Android only).
+The approved system focus is now a **mobile-based academic task management application for students**.
+
+### 1.1 Scope Inclusions (Student-Facing)
+- Task creation, editing, completion, and prioritization.
+- Deadline tracking and reminders.
+- Academic planning views (`Today`, `Upcoming`, `Planner`).
+- Course/class-aware task context.
+- Announcements and exam preparation support.
+- Profile and notification settings.
+
+### 1.2 Scope Exclusions (Removed/Deprecated)
+- Android device usage monitoring features.
+- Usage-access prompts and app-usage insight UI.
+- Study-time guard / usage-lock controls.
+
+### 1.3 Scope Constraint
+- **Do not change the student `Schedule` view behavior/flow in this scope update.**
+- **Do not change admin `View Schedules` behavior/flow in this scope update.**
+
+## 2) Architecture Overview
+
+- Client: Expo React Native app using Expo Router for role-based navigation.
+- Backend: Firebase Auth + Firestore.
+- Local: AsyncStorage caching and offline queueing.
+- Notifications: Expo Notifications for class/task/announcement reminders.
 
 ```mermaid
 flowchart LR
-  Student["Student"] --> App["CTU Danao Time Manager (Expo React Native App)"]
+  Student["Student"] --> App["CTU Academic Task Manager (Expo React Native App)"]
   Admin["Admin"] --> App
   App --> Router["Expo Router (role-gated routes)"]
   App --> Theme["Theme Context (light/dark)"]
   App --> Offline["Offline Context (NetInfo + cache)"]
   App --> Notif["Notification Engine (expo-notifications)"]
-  App --> Usage["Android AppUsageModule"]
   App --> Auth["Firebase Auth"]
   App --> DB["Firestore"]
   App --> Storage["AsyncStorage (cache + queues)"]
@@ -30,10 +48,10 @@ flowchart LR
   DB --> UserSubs["users/{uid}/settings, task_templates, exam_plans"]
 ```
 
-### 1.2 Core Data Entities (Firestore)
+## 3) Core Data Entities (Firestore)
+
 - `users/{uid}`
   - Fields: `fullName`, `email`, `role`, `photoBase64`, `studentInfo`.
-  - Used by: role routing, schedules, announcements filtering, profile.
 - `assignments/{id}`
   - Fields: `userId`, `title`, `subject`, `dueAt`, `completed`, `type`, `priority`, `createdAt`.
 - `schedules/{id}`
@@ -45,24 +63,7 @@ flowchart LR
   - `users/{uid}/exam_plans/{examId}`
   - `users/{uid}/settings/notification`
 
-### 1.3 Offline Strategy
-- Cached data per user: schedule, assignments, announcements, profile.
-- Offline queues:
-  - New assignments (create queue)
-  - Task completion (update queue)
-- On reconnection, queued changes are synced to Firestore.
-
-### 1.4 Notifications
-- Scheduled notifications:
-  - Class reminders
-  - Deadline warnings
-  - Morning briefing
-  - Daily audit
-  - Sunday planning
-  - Break reminder and app usage checks (Android)
-- Notification settings sync to Firestore for cross-device continuity.
-
-## 2) Process Flowchart
+## 4) Process Flow
 
 ```mermaid
 flowchart LR
@@ -80,14 +81,12 @@ flowchart LR
   J --> K{"Online?"}
   K -- "Yes" --> L["Sync schedule, tasks, announcements"]
   K -- "No" --> M["Load cached data + queue changes"]
-  L --> N["Use features + notifications rescheduled"]
+  L --> N["Use features + reschedule notifications"]
   M --> N
   I --> O["Manage schedules, announcements, students"]
 ```
 
-## 3) System User Interface
-
-### 3.1 Navigation Map
+## 5) Navigation Map (Current)
 
 ```mermaid
 flowchart LR
@@ -99,7 +98,7 @@ flowchart LR
 
   subgraph "Student Tabs"
     Home["Home"]
-    Schedule["Schedule"]
+    Schedule["Schedule (unchanged)"]
     Planner["Planner"]
     AddTask["Add Task"]
     Tasks["Tasks"]
@@ -108,16 +107,14 @@ flowchart LR
 
   Home --> Announcements["Announcements"]
   Home --> ExamPrep["Exam Prep Planner"]
-  Home --> AppUsage["App Usage"]
   Profile --> Notifications["Notification Settings"]
   Profile --> Announcements
   Profile --> ExamPrep
-  Profile --> AppUsage
 
   subgraph "Admin Stack"
     AdminHome["Admin Home"]
     CreateSchedule["Create Schedule"]
-    ViewSchedules["View Schedules"]
+    ViewSchedules["View Schedules (unchanged)"]
     Students["Students"]
     AdminAnnouncements["Announcements"]
   end
@@ -128,27 +125,26 @@ flowchart LR
   AdminHome --> AdminAnnouncements
 ```
 
-### 3.2 Screen Summary (Student)
+## 6) Screen Summary
+
+### 6.1 Student
 - Login/Register: authentication + EULA gating.
-- Home: today classes, tasks, announcements, exam plans, usage summary.
-- Schedule: weekly grid by day/time.
+- Home: today classes, tasks, announcements, exam plans.
+- Schedule: weekly class grid (unchanged).
 - Planner: day/week/month planning + analytics.
 - Add Task: task creation with type, priority, and due date.
-- Tasks: list of pending + completed tasks.
+- Tasks: pending + completed task list.
 - Exam Prep Planner: study sessions and progress tracking.
-- App Usage: device usage insights (Android).
 - Profile: stats, profile updates, quick links.
 
-### 3.3 Screen Summary (Admin)
+### 6.2 Admin
 - Admin Home: stats and quick actions.
 - Create Schedule: weekly schedule builder.
-- View Schedules: manage and edit schedules.
+- View Schedules: manage and edit schedules (unchanged).
 - Students: grouped student listings.
 - Announcements: create and manage announcements.
 
-## 4) Mockups Based on Code
-
-These are simplified wireframes derived from the implemented UI layouts.
+## 7) Mockups
 
 - Login: `docs/mockups/login.svg`
 - Student Home: `docs/mockups/home.svg`
@@ -157,14 +153,13 @@ These are simplified wireframes derived from the implemented UI layouts.
 - Add Task: `docs/mockups/add-task.svg`
 - Admin Home: `docs/mockups/admin-home.svg`
 
-Embedded previews (if supported by your viewer):
-
 ![Login Mockup](mockups/login.svg)
 ![Home Mockup](mockups/home.svg)
 ![Schedule Mockup](mockups/schedule.svg)
 ![Planner Mockup](mockups/planner.svg)
 ![Add Task Mockup](mockups/add-task.svg)
-![Admin Home Mockup](mockups/admin-home.svg)\n![Notifications Mockup](mockups/notifications.svg)
+![Admin Home Mockup](mockups/admin-home.svg)
+![Notifications Mockup](mockups/notifications.svg)
 ![Exam Prep Mockup](mockups/exam-prep.svg)
 ![Announcements Mockup](mockups/announcements.svg)
 ![Tasks Mockup](mockups/tasks.svg)

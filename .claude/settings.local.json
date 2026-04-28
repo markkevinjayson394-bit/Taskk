@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm test *)",
+      "Bash(node *)",
+      "Bash(npx acorn *)",
+      "Bash(xxd)",
+      "Bash(git *)",
+      "Bash(npx eslint *)",
+      "Bash(awk 'NR>=690 && NR<=698' utils/plannerStorage.js)",
+      "Bash(npx jest *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -E \"^\\\\?\\\\?|^\\\\s*M.*\\\\.jsx$|scripts/|utils/test-utils\")",
+      "Bash(grep -oP 'All</div></di.{0,50}High' \"C:\\\\Users\\\\miptac\\\\time-management-app\\\\dist-verify-build\\\\\\(tabs\\)\\\\assignments.html\")",
+      "Bash(grep -oP '.{0,20}All</div></div>.{0,20}High' \"C:\\\\Users\\\\miptac\\\\time-management-app\\\\dist-verify-build\\\\\\(tabs\\)\\\\assignments.html\")",
+      "Bash(python3 *)",
+      "mcp__ide__getDiagnostics",
+      "Bash(gh repo *)"
+    ]
+  }
+}

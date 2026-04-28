@@ -34,11 +34,6 @@ const COLLEGE_ALIASES = {
   "COLLEGE OF MANAGEMENT AND ENTREPRENURSHIP": "CME",
   MANAGEMENT: "CME",
   BUSINESS: "CME",
-  BSME: "COE",
-  BSCE: "COE",
-  BSEE: "COE",
-  BSHM: "CME",
-  BSTM: "CME",
 };
 
 const COURSES_BY_COLLEGE = {
@@ -91,7 +86,6 @@ const COURSE_ALIASES = {
   "BACHELOR OF SCIENCE IN ELECTRICAL ENGINEERING (BSEE)": "BSEE",
   "BACHELOR OF SCIENCE IN COMPUTER ENGINEERING (BSCPE)": "BSCpE",
   "BACHELOR OF SCIENCE IN COMPUTER ENGINEERING (BS CPE)": "BSCpE",
-  "BACHELOR OF SCIENCE IN COMPUTER ENGINEERING (BSCPe)": "BSCpE",
   BSCPE: "BSCpE",
   "BS CPE": "BSCpE",
   "BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY (BSIT)": "BSIT",
@@ -114,6 +108,11 @@ const COURSE_ALIASES = {
     "BSBA Marketing",
   "BSBA MARKETING MANAGEMENT": "BSBA Marketing",
   "BSBA MARKETING": "BSBA Marketing",
+  BSME: "BSME",
+  BSCE: "BSCE",
+  BSEE: "BSEE",
+  BSHM: "BSHM",
+  BSTM: "BSTM",
 };
 
 function normalizeCollege(value) {
@@ -140,8 +139,9 @@ function getCollegeLabel(value) {
   }
   // Try partial matching for edge cases
   const upperValue = trimmed.toUpperCase();
-  for (const [labelKey, labelValue] of Object.entries(COLLEGE_LABELS)) {
-    if (upperValue.includes(labelKey) || labelKey.includes(upperValue)) {
+  for (const [, labelValue] of Object.entries(COLLEGE_LABELS)) {
+    const upperLabel = String(labelValue).toUpperCase();
+    if (upperValue.includes(upperLabel) || upperLabel.includes(upperValue)) {
       return labelValue;
     }
   }
@@ -168,5 +168,3 @@ export {
   normalizeCollege,
   normalizeCourse
 };
-
-

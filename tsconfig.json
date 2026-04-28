@@ -4,9 +4,7 @@
     "strict": true,
     "skipLibCheck": true,
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./*"]
     }
   },
   "include": [
@@ -18,7 +16,5 @@
     "app/(tabs)/index.js",
     ".expo/types/**/*.ts"
   ],
-  "exclude": [
-    "node_modules"
-  ]
+  "exclude": ["node_modules", "node_modules/expo-notifications"]
 }

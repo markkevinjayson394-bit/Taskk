@@ -1,50 +1,111 @@
-# Welcome to your Expo app 👋
+# CTU Academic Task Manager
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+CTU Academic Task Manager is a mobile academic planning application for students and administrators. It is built with Expo React Native and Firebase and focuses on task management, schedule awareness, planner workflows, announcements, exam preparation, reminders, and offline resilience.
 
-## Get started
+## Project Summary
 
-1. Install dependencies
+This repository contains the implementation artifact for a student-focused time management system with separate student and admin flows.
 
-   ```bash
-   npm install
-   ```
+Student capabilities:
+- Create, edit, prioritize, and complete academic tasks
+- View class schedules and planner timelines
+- Receive deadline and class reminders
+- Track announcements and exam preparation plans
+- Use cached data and queued actions while offline
 
-2. Start the app
+Admin capabilities:
+- Manage schedules
+- Publish announcements
+- View student-related administrative screens
 
-   ```bash
-   npx expo start
-   ```
+## Tech Stack
 
-In the output, you'll find options to open the app in a
+- Client: Expo, React Native, Expo Router
+- Backend: Firebase Auth, Firestore
+- Local persistence: AsyncStorage
+- Connectivity: NetInfo
+- Notifications: Expo Notifications plus native exact-alarm helpers
+- Testing: Jest
+- Linting: Expo ESLint
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Architecture References
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+- System design: [docs/System-Design.md](docs/System-Design.md)
+- Data model: [docs/Data-Model.md](docs/Data-Model.md)
+- Research evaluation pack: [docs/Research-Evaluation.md](docs/Research-Evaluation.md)
+- Student UX plan: [docs/Student-UX-Improvement-Plan.md](docs/Student-UX-Improvement-Plan.md)
 
-## Get a fresh project
+## Getting Started
 
-When you're ready, run:
+### Prerequisites
+
+- Node.js 20 or newer
+- npm
+- Expo CLI tooling through `npx expo`
+- Firebase project credentials
+
+### Install
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### Configure Environment
 
-## Learn more
+Copy `.env.example` to `.env` and provide Firebase values:
 
-To learn more about developing your project with Expo, look at the following resources:
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_MESSAGING_SENDER_ID`
+- `FIREBASE_APP_ID`
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+The app also supports `EXPO_PUBLIC_FIREBASE_*` aliases.
 
-## Join the community
+### Run the App
 
-Join our community of developers creating universal apps.
+```bash
+npm start
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Useful variants:
+
+```bash
+npm run android
+npm run ios
+npm run web
+```
+
+## Verification
+
+Run the local quality checks:
+
+```bash
+npm run lint
+npm test
+```
+
+CI runs the same checks on GitHub Actions through [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+## Repository Structure
+
+- [app](app): Expo Router screens and route groups
+- [components](components): shared UI components
+- [context](context): theme, offline, and notification providers
+- [utils](utils): task model, planner sync, workload, alarms, logging
+- [docs](docs): architecture, data model, diagrams, mockups, research notes
+- [__tests__](__tests__): unit tests
+
+## Current Quality Status
+
+- `expo lint` is part of the standard verification flow
+- Unit tests cover core planner analytics and workload calculation utilities
+- Firestore access rules are defined in [firestore.rules](firestore.rules)
+- The repo now includes a basic CI workflow for lint and test validation
+
+## Known Limits
+
+- The repository currently documents the technical artifact better than the empirical study results
+- Research participant data and measured usability outcomes must be added with real study results rather than invented values
+- Some large screen/context files still need modularization for long-term maintainability

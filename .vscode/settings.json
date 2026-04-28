@@ -3,5 +3,9 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
-  }
+  },
+  "files.exclude": {
+    "**/coverage/**": true
+  },
+  "css.lint.emptyRules": "ignore"
 }

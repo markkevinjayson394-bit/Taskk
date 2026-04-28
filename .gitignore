@@ -34,6 +34,7 @@ yarn-error.*
 .env
 .env.local
 .env.*.local
+sentry.properties
 # Exception: keep .env.example tracked (it contains placeholder values)
 !.env.example
 
@@ -64,3 +65,7 @@ docs/_docx_*.zip
 docs/_docx_tmp*/
 docs/mockups-png/
 docs/diagrams-png/
+
+coverage/
+
+.env.local

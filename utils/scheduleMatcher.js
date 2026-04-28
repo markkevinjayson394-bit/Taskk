@@ -1,5 +1,6 @@
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { normalizeCollege, normalizeCourse } from "../constants/academics";
+import { warnIfDev } from "./logger";
 
 function normalizeString(value) {
   return String(value ?? "").trim();
@@ -32,6 +33,10 @@ function matchesScheduleType(data, scheduleType) {
   return normalizeLower(data?.scheduleType) === normalizeLower(scheduleType);
 }
 
+function isDayScheduleType(data) {
+  return normalizeLower(data?.scheduleType) === "day";
+}
+
 function isSpecificScheduleType(data) {
   return normalizeLower(data?.scheduleType) === "specific";
 }
@@ -54,8 +59,10 @@ export async function findBestScheduleDoc(db, profile = {}) {
       where("course", "==", courseValue),
       where("year", "==", year),
       where("section", "==", section),
-      where("scheduleType", "==", scheduleType || "Specific"),
     ];
+    if (scheduleType) {
+      constraints.push(where("scheduleType", "==", scheduleType));
+    }
     if (includeCollege && normalizedCollege) {
       constraints.push(where("college", "==", normalizedCollege));
     }
@@ -68,7 +75,8 @@ export async function findBestScheduleDoc(db, profile = {}) {
       try {
         const exact = await tryExact(courseValue, true);
         if (exact) return { doc: exact, source: "exact" };
-      } catch {
+      } catch (err) {
+        warnIfDev("findBestScheduleDoc: exact schedule lookup with college failed:", err);
         // Continue with tolerant fallback below.
       }
     }
@@ -79,29 +87,45 @@ export async function findBestScheduleDoc(db, profile = {}) {
     try {
       const exactNoCollege = await tryExact(courseValue, false);
       if (exactNoCollege) return { doc: exactNoCollege, source: exactNoCollegeSource };
-    } catch {
+    } catch (err) {
+      warnIfDev("findBestScheduleDoc: exact schedule lookup without college failed:", err);
       // Continue with tolerant fallback below.
     }
   }
 
   let courseDocs = [];
-  try {
-    for (const courseValue of courseCandidates) {
-      const byCourseSnap = await getDocs(query(schedulesRef, where("course", "==", courseValue)));
+  for (const courseValue of courseCandidates) {
+    try {
+      const byCourseSnap = await getDocs(
+        query(schedulesRef, where("course", "==", courseValue))
+      );
       courseDocs = courseDocs.concat(byCourseSnap.docs);
+    } catch (err) {
+      warnIfDev("findBestScheduleDoc: fallback course query failed:", {
+        courseValue,
+        error: err,
+      });
     }
-  } catch {
-    return null;
   }
+  if (!courseDocs.length) return null;
 
-  let profileMatches = courseDocs.filter((d) => matchesProfile(d.data(), profile));
+  const uniqueCourseDocs = Array.from(
+    new Map(courseDocs.map((docSnap) => [docSnap.id, docSnap])).values()
+  );
+
+  let profileMatches = uniqueCourseDocs.filter((d) => matchesProfile(d.data(), profile));
   if (!profileMatches.length && normalizedCollege) {
-    profileMatches = courseDocs.filter((d) => matchesProfile(d.data(), profile, true));
+    profileMatches = uniqueCourseDocs.filter((d) =>
+      matchesProfile(d.data(), profile, true)
+    );
   }
   if (!profileMatches.length) return null;
 
   const exactType = profileMatches.find((d) => matchesScheduleType(d.data(), scheduleType));
   if (exactType) return { doc: exactType, source: "fallback_exact_type" };
+
+  const dayType = profileMatches.find((d) => isDayScheduleType(d.data()));
+  if (dayType) return { doc: dayType, source: "fallback_day_type" };
 
   const specificType = profileMatches.find((d) => isSpecificScheduleType(d.data()));
   if (specificType) return { doc: specificType, source: "fallback_specific_type" };

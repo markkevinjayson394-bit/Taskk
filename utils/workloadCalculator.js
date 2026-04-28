@@ -1,20 +1,14 @@
-/**
- * workloadCalculator.js
- *
- * Calculates a student's daily workload score based on upcoming tasks.
- * Higher score = more urgent/heavy workload.
- *
- * FIXES:
- * - Date logic was inverted (was counting past tasks, now counts future tasks)
- * - Added urgency weighting (tasks due sooner score higher)
- */
+import { parseDueDate } from "./academicTaskModel";
+import { localDaysBetween, startOfLocalDay } from "./dateHelpers";
 
 export function calculateDailyWorkload(tasks) {
   const TYPE_POINTS = {
     assignment: 1,
     quiz: 2,
+    review: 1.5,
     project: 3,
     exam: 4,
+    custom: 1,
   };
 
   const PRIORITY_MULTIPLIER = {
@@ -23,27 +17,10 @@ export function calculateDailyWorkload(tasks) {
     high: 2,
   };
 
-  // Use end of today (23:59:59.999) for comparison to include tasks due anytime today
-  const endOfToday = new Date();
-  endOfToday.setHours(23, 59, 59, 999);
+  // Use the shared local-day helper so workload calculations stay timezone-safe.
+  const startOfToday = startOfLocalDay();
 
   let score = 0;
-
-  const parseDueDate = (value) => {
-    if (!value) return null;
-    if (typeof value?.toDate === "function") {
-      const d = value.toDate();
-      return Number.isNaN(d?.getTime?.()) ? null : d;
-    }
-    if (value instanceof Date) {
-      return Number.isNaN(value.getTime()) ? null : value;
-    }
-    if (typeof value === "string" || typeof value === "number") {
-      const d = new Date(value);
-      return Number.isNaN(d.getTime()) ? null : d;
-    }
-    return null;
-  };
 
   tasks.forEach((t) => {
     // Skip completed tasks
@@ -52,15 +29,14 @@ export function calculateDailyWorkload(tasks) {
     const dueDate = parseDueDate(t.dueAt);
     if (!dueDate) return;
 
-    // FIX: skip PAST tasks - only count upcoming/today tasks
-    // Using endOfToday ensures tasks due anytime today are included
-    if (dueDate < endOfToday) return;
+    // Skip tasks before today; keep today and future workload.
+    if (dueDate < startOfToday) return;
 
     const base = TYPE_POINTS[t.type] || 1;
     const multiplier = PRIORITY_MULTIPLIER[t.priority] || 1.5;
 
-    // Urgency: tasks due sooner count more (using endOfToday for consistent comparison)
-    const daysLeft = Math.ceil((dueDate - endOfToday) / 86400000);
+    // Urgency: tasks due sooner count more.
+    const daysLeft = localDaysBetween(startOfToday, dueDate);
     const urgency =
       daysLeft <= 1
         ? 2 // due today or tomorrow
@@ -77,15 +53,10 @@ export function calculateDailyWorkload(tasks) {
 }
 
 /**
- * Returns a label based on the workload score:
- *   0-4    "Light"
- *   5-9    "Moderate"
- *   10-14  "Heavy"
- *   15+    "Overwhelming"
+ * Returns a label based on the workload score.
  */
 export function getWorkloadLabel(score) {
-  if (score <= 4) return { label: "Light", color: "#22c55e" };
-  if (score <= 9) return { label: "Moderate", color: "#f59e0b" };
-  if (score <= 14) return { label: "Heavy", color: "#ef4444" };
-  return { label: "Overwhelming", color: "#7c3aed" };
+  if (score >= 80) return "Heavy";
+  if (score >= 50) return "Moderate";
+  return "Light";
 }

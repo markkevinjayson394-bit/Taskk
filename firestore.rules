@@ -1,6 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
     function isSignedIn() {
       return request.auth != null;
     }
@@ -14,12 +15,133 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && userDoc(request.auth.uid) != null && userDoc(request.auth.uid).data.role == "admin";
+      return isSignedIn()
+        && userDoc(request.auth.uid) != null
+        && userDoc(request.auth.uid).data.role == "admin";
+    }
+
+    // Students can set role only to "student" during self-create.
+    function validUserRoleOnCreate(data) {
+      return !("role" in data)
+        || (data.role is string && data.role == "student");
+    }
+
+    // Owners can keep existing role unchanged, but cannot escalate.
+    function validUserRoleOnOwnerUpdate() {
+      return (
+        (!("role" in resource.data) && validUserRoleOnCreate(request.resource.data))
+        || (
+          ("role" in resource.data)
+          && ("role" in request.resource.data)
+          && request.resource.data.role is string
+          && request.resource.data.role == resource.data.role
+        )
+      );
+    }
+
+    function validTaskType(data) {
+      return !("type" in data)
+        || data.type in ["assignment", "quiz", "exam", "project", "review", "custom"];
+    }
+
+    function validTaskPriority(data) {
+      return !("priority" in data) || data.priority in ["high", "medium", "low", "none"];
+    }
+
+    function validTaskStatus(data) {
+      return !("status" in data) || data.status in ["todo", "in_progress", "done"];
+    }
+
+    function validReminderLeadMinutesList(values) {
+      return values is list
+        && values.size() <= 8
+        && (values.size() <= 0 || (values[0] is int && values[0] > 0 && values[0] <= 10080))
+        && (values.size() <= 1 || (values[1] is int && values[1] > 0 && values[1] <= 10080))
+        && (values.size() <= 2 || (values[2] is int && values[2] > 0 && values[2] <= 10080))
+        && (values.size() <= 3 || (values[3] is int && values[3] > 0 && values[3] <= 10080))
+        && (values.size() <= 4 || (values[4] is int && values[4] > 0 && values[4] <= 10080))
+        && (values.size() <= 5 || (values[5] is int && values[5] > 0 && values[5] <= 10080))
+        && (values.size() <= 6 || (values[6] is int && values[6] > 0 && values[6] <= 10080))
+        && (values.size() <= 7 || (values[7] is int && values[7] > 0 && values[7] <= 10080));
+    }
+
+    function validReminderPolicy(data) {
+      return !("reminderPolicy" in data)
+        || (
+          data.reminderPolicy is map
+          && (!("mode" in data.reminderPolicy)
+            || (
+              data.reminderPolicy.mode is string
+              && data.reminderPolicy.mode in ["default", "custom", "persistent"]
+            ))
+          && (!("leadMinutes" in data.reminderPolicy)
+            || validReminderLeadMinutesList(data.reminderPolicy.leadMinutes))
+          && (!("acknowledgeRequired" in data.reminderPolicy)
+            || data.reminderPolicy.acknowledgeRequired is bool)
+          && (!("dailyOverdue" in data.reminderPolicy)
+            || data.reminderPolicy.dailyOverdue is bool)
+        );
+    }
+
+    function validTaskShape(data) {
+      return ("title" in data)
+        && data.title is string
+        && data.title.size() > 0
+        && ("userId" in data)
+        && data.userId is string
+        && (!("subject" in data) || data.subject is string)
+        && (!("subjectName" in data) || data.subjectName is string)
+        && (!("subjectId" in data) || data.subjectId is string)
+        && (!("completed" in data) || data.completed is bool)
+        && (!("priorityLevel" in data) || data.priorityLevel is int)
+        && (!("schemaVersion" in data) || data.schemaVersion is int)
+        && (!("estimatedMinutes" in data)
+          || (data.estimatedMinutes is int
+            && data.estimatedMinutes > 0
+            && data.estimatedMinutes <= 10080))
+        && (!("source" in data) || data.source is string)
+        && (!("plannerRef" in data) || data.plannerRef is string)
+        && (!("plannerBucket" in data) || data.plannerBucket is string)
+        && (!("plannerArchived" in data) || data.plannerArchived is bool)
+        && (!("subtasks" in data) || data.subtasks is list)
+        && (!("milestones" in data) || data.milestones is list)
+        && validReminderPolicy(data)
+        && (!("dueAt" in data) || data.dueAt is timestamp)
+        && (!("createdAt" in data) || data.createdAt is timestamp)
+        && (!("startedAt" in data) || data.startedAt is timestamp)
+        && (!("updatedAt" in data) || data.updatedAt is timestamp)
+        && (!("completedAt" in data) || data.completedAt is timestamp);
+    }
+
+    function validAssignmentDocument(data) {
+      return isSignedIn()
+        && data.userId == request.auth.uid
+        && validTaskType(data)
+        && validTaskPriority(data)
+        && validTaskStatus(data)
+        && validTaskShape(data);
+    }
+
+    function validReviewCreate(data) {
+      return ("userId" in data)
+        && data.userId is string
+        && data.userId == request.auth.uid
+        && (!("status" in data) || data.status == "new");
+    }
+
+    function validReviewAdminStatusUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
+        && request.resource.data.status is string
+        && request.resource.data.status in ["new", "read"];
     }
 
     match /users/{userId} {
-      allow create: if isOwner(userId);
-      allow read, update: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId)
+        && validUserRoleOnCreate(request.resource.data);
+      allow read: if isOwner(userId) || isAdmin();
+      allow update: if (isOwner(userId)
+        && validUserRoleOnOwnerUpdate())
+        || isAdmin();
       allow delete: if isAdmin();
 
       match /settings/{docId} {
@@ -45,11 +167,20 @@ service cloud.firestore {
       match /task_templates/{templateId} {
         allow read, write: if isOwner(userId);
       }
+
+      match /subjects/{subjectId} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     match /assignments/{assignmentId} {
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if validAssignmentDocument(request.resource.data);
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && validAssignmentDocument(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
 
     match /schedules/{scheduleId} {
@@ -60,6 +191,12 @@ service cloud.firestore {
     match /announcements/{announcementId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow create: if isSignedIn() && validReviewCreate(request.resource.data);
+      allow read, delete: if isAdmin();
+      allow update: if isAdmin() && validReviewAdminStatusUpdate();
     }
   }
 }

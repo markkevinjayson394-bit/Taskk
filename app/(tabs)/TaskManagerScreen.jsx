@@ -406,7 +406,9 @@ export default function TaskManagerScreen() {
 
     const fetchAndShow = async () => {
       pendingActionRef.current =
-        pendingAction === "acknowledge" || pendingAction === "markdone"
+        pendingAction === "acknowledge" ||
+        pendingAction === "markdone" ||
+        pendingAction === "notdone"
           ? pendingAction
           : null;
 

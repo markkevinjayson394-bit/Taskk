@@ -319,10 +319,9 @@ function DeadlineAlarmModal({
       clearInterval(tickRef.current);
       clearInterval(vibrationIntervalRef.current);
       clearInterval(soundIntervalRef.current);
-      if (!userDismissedRef.current) {
-        stopVibration(vibRef);
-        stopAlarmSound(soundRef);
-      }
+      // Always stop sound/vibration on unmount — stopAlarmSound is idempotent
+      stopVibration(vibRef);
+      stopAlarmSound(soundRef);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
@@ -336,10 +335,11 @@ function DeadlineAlarmModal({
     userDismissedRef.current = true;
 
     // Stop all sound and vibration first — must complete before scheduling next alarm
+    // Stop all sound and vibration immediately (synchronously) before any async work
     clearInterval(vibrationIntervalRef.current);
     clearInterval(soundIntervalRef.current);
+    stopVibration(vibRef);
     await Promise.allSettled([
-      stopVibration(vibRef),
       stopAlarmSound(soundRef),
       stopActiveNativeAlarm(),
     ]);
@@ -348,43 +348,50 @@ function DeadlineAlarmModal({
       () => {}
     );
 
-    // Advance the overdue checkpoint chain and schedule the next alarm
-    await onNotDone?.();
-
+    // Advance the overdue checkpoint chain and schedule the next alarm.
+    // Skip checkpoint scheduling for lead-time warnings (task not yet due) —
+    // "Not Done" on a 2h/30m warning just dismisses the modal without chaining.
     const dueDate = parseDueDate(task?.dueAt);
-    if (task?.id && dueDate) {
-      try {
-        const nowMs = Date.now();
-        const timeLeftMs = dueDate.getTime() - nowMs;
-        const nextThreshold = THRESHOLDS.find(
-          (threshold) => threshold.ms < timeLeftMs
-        );
+    const isLeadTime =
+      !dueDate || dueDate.getTime() - Date.now() > 0;
+    if (!isLeadTime) {
+      await onNotDone?.();
+      if (task?.id && dueDate) {
+        try {
+          const nowMs = Date.now();
+          const timeLeftMs = dueDate.getTime() - nowMs;
+          const nextThreshold = THRESHOLDS.find(
+            (threshold) => threshold.ms < timeLeftMs
+          );
 
-        if (nextThreshold) {
-          await scheduleNextDeadlineCheckpoint({
-            task,
-            dueDate,
-            thresholdKey: nextThreshold.key,
-            triggerAt: dueDate.getTime() - nextThreshold.ms,
-          });
-        } else {
-          const overdueMs = nowMs - dueDate.getTime();
-          if (overdueMs <= OVERDUE_RESCHEDULE_LIMIT_MS) {
+          if (nextThreshold) {
             await scheduleNextDeadlineCheckpoint({
               task,
               dueDate,
-              thresholdKey: "due",
-              triggerAt: nowMs + NOT_DONE_FOLLOWUP_MS,
-              isFollowup: true,
+              thresholdKey: nextThreshold.key,
+              triggerAt: dueDate.getTime() - nextThreshold.ms,
             });
+          } else {
+            const overdueMs = nowMs - dueDate.getTime();
+            if (overdueMs <= OVERDUE_RESCHEDULE_LIMIT_MS) {
+              await scheduleNextDeadlineCheckpoint({
+                task,
+                dueDate,
+                thresholdKey: "due",
+                triggerAt: nowMs + NOT_DONE_FOLLOWUP_MS,
+                isFollowup: true,
+              });
+            }
           }
+        } catch (err) {
+          console.warn(
+            "DeadlineAlarmModal: failed to schedule next checkpoint after Not Done:",
+            err
+          );
         }
-      } catch (err) {
-        console.warn(
-          "DeadlineAlarmModal: failed to schedule next checkpoint after Not Done:",
-          err
-        );
       }
+    } else {
+      await onNotDone?.();
     }
   };
 
@@ -395,10 +402,11 @@ function DeadlineAlarmModal({
     setSelfClosed(true);
     userDismissedRef.current = true;
 
+    // Stop all sound and vibration immediately (synchronously) before any async work
     clearInterval(vibrationIntervalRef.current);
     clearInterval(soundIntervalRef.current);
+    stopVibration(vibRef);
     await Promise.allSettled([
-      stopVibration(vibRef),
       stopAlarmSound(soundRef),
       stopActiveNativeAlarm(),
     ]);

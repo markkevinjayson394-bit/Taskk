@@ -159,8 +159,10 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
       dueAtMs,
       leadKey: lead.key,
       isLeadTime: true,
-      acknowledgeRequired: false,
+      acknowledgeRequired: true,
     });
+
+    const leadExtra = androidAlarmExtra(soundSettings);
 
     try {
       await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
@@ -170,8 +172,9 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
           title: buildLeadTitle(lead.label),
           body: buildLeadBody(taskTitle, subjectLabel, due),
           data,
+          categoryIdentifier: DEADLINE_CATEGORY_ID,
           ...(Platform.OS === "android"
-            ? { channelId: DEADLINE_CHANNEL_ID }
+            ? { channelId: DEADLINE_CHANNEL_ID, ...leadExtra }
             : {}),
         },
         trigger:
@@ -210,8 +213,10 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
       subject: subjectLabel,
       dueAtMs,
       isCustomReminder: true,
-      acknowledgeRequired: false,
+      acknowledgeRequired: true,
     });
+
+    const customExtra = androidAlarmExtra(soundSettings);
 
     try {
       await Notifications.cancelScheduledNotificationAsync(customId).catch(
@@ -223,8 +228,9 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
           title: `Reminder: "${taskTitle}"`,
           body: buildLeadBody(taskTitle, subjectLabel, due),
           data,
+          categoryIdentifier: DEADLINE_CATEGORY_ID,
           ...(Platform.OS === "android"
-            ? { channelId: DEADLINE_CHANNEL_ID }
+            ? { channelId: DEADLINE_CHANNEL_ID, ...customExtra }
             : {}),
         },
         trigger:

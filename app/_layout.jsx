@@ -347,64 +347,33 @@ function RootLayoutNav() {
 
     bootstrap();
 
+    // These action identifiers must match the PendingIntent actions defined in
+    // AlarmForegroundService (android) and the expo notification categories.
+    // Android notification button "✓ Done"  → ACTION_ACKNOWLEDGE ("acknowledge_deadline_alarm")
+    // Android notification button "✕ Not Done" → ACTION_SNOOZE ("snooze_deadline_alarm")
     const ACTION_ACKNOWLEDGE = "acknowledge_deadline_alarm";
-    const ACTION_MARK_DONE = "mark_done_deadline_alarm";
-    const ACTION_SNOOZE_10 = "deadline_snooze_10";
+    const ACTION_SNOOZE = "snooze_deadline_alarm";
     notificationSubscription =
       Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data ?? {};
         const action = response?.actionIdentifier;
 
-        // mark_done: handler cleans up everything — no navigation needed
-        if (action === ACTION_MARK_DONE) {
+        // Check if this is a deadline alarm notification
+        const isDeadlineAlarm =
+          data?.type === DEADLINE_NOTIF_TYPE ||
+          data?.type === "deadline" ||
+          data?.notificationType === DEADLINE_NOTIF_TYPE;
+        if (!isDeadlineAlarm) return;
+
+        // "✓ Done" button (ACTION_ACKNOWLEDGE): stop alarm, navigate to TaskManager
+        // so DeadlineAlarmModal can mark the task complete and cancel alarms.
+        if (action === ACTION_ACKNOWLEDGE) {
           handleDeadlineAlarmResponse(response);
-          return;
-        }
-
-        // snooze: handler schedules the snooze alarm; navigate so user sees the task
-        if (action === ACTION_SNOOZE_10) {
-          handleDeadlineAlarmResponse(response);
-          if (
-            data.type === DEADLINE_NOTIF_TYPE ||
-            data.type === "deadline" ||
-            data.notificationType === DEADLINE_NOTIF_TYPE
-          ) {
-            const rawDueAtMs = Number(data?.dueAtMs);
-            const fallbackDueAtMs =
-              Number.isFinite(rawDueAtMs) || typeof data?.dueAt !== "string"
-                ? NaN
-                : new Date(data.dueAt).getTime();
-            const dueAtMs = Number.isFinite(rawDueAtMs)
-              ? rawDueAtMs
-              : Number.isFinite(fallbackDueAtMs)
-                ? fallbackDueAtMs
-                : null;
-            router.push({
-              pathname: "/(tabs)/TaskManagerScreen",
-              params: {
-                focusTaskId: data.taskId,
-                showAlarm: "1",
-                ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-              },
-            });
-          }
-          return;
-        }
-
-        // acknowledge / tap: advance the overdue chain, then navigate
-        handleDeadlineAlarmResponse(response);
-
-        if (
-          data.type === DEADLINE_NOTIF_TYPE ||
-          data.type === "deadline" ||
-          data.notificationType === DEADLINE_NOTIF_TYPE
-        ) {
-          const pendingAction = action === ACTION_ACKNOWLEDGE ? "acknowledge" : undefined;
           const rawDueAtMs = Number(data?.dueAtMs);
           const fallbackDueAtMs =
-            Number.isFinite(rawDueAtMs) || typeof data?.dueAt !== "string"
-              ? NaN
-              : new Date(data.dueAt).getTime();
+            typeof data?.dueAt === "string"
+              ? new Date(data.dueAt).getTime()
+              : NaN;
           const dueAtMs = Number.isFinite(rawDueAtMs)
             ? rawDueAtMs
             : Number.isFinite(fallbackDueAtMs)
@@ -415,11 +384,60 @@ function RootLayoutNav() {
             params: {
               focusTaskId: data.taskId,
               showAlarm: "1",
+              pendingAction: "markdone",
               ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-              ...(pendingAction ? { pendingAction } : {}),
             },
           });
+          return;
         }
+
+        // "✕ Not Done" button (ACTION_SNOOZE): service already handled snooze.
+        // Navigate so user sees the task in DeadlineAlarmModal context.
+        // pendingAction "notdone" → DeadlineAlarmModal sees "Not Done" was pressed.
+        if (action === ACTION_SNOOZE) {
+          handleDeadlineAlarmResponse(response);
+          const rawDueAtMs = Number(data?.dueAtMs);
+          const fallbackDueAtMs =
+            typeof data?.dueAt === "string"
+              ? new Date(data.dueAt).getTime()
+              : NaN;
+          const dueAtMs = Number.isFinite(rawDueAtMs)
+            ? rawDueAtMs
+            : Number.isFinite(fallbackDueAtMs)
+              ? fallbackDueAtMs
+              : null;
+          router.push({
+            pathname: "/(tabs)/TaskManagerScreen",
+            params: {
+              focusTaskId: data.taskId,
+              showAlarm: "1",
+              pendingAction: "notdone",
+              ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
+            },
+          });
+          return;
+        }
+
+        // Default notification body tap: navigate to TaskManager
+        handleDeadlineAlarmResponse(response);
+        const rawDueAtMs = Number(data?.dueAtMs);
+        const fallbackDueAtMs =
+          typeof data?.dueAt === "string"
+            ? new Date(data.dueAt).getTime()
+            : NaN;
+        const dueAtMs = Number.isFinite(rawDueAtMs)
+          ? rawDueAtMs
+          : Number.isFinite(fallbackDueAtMs)
+            ? fallbackDueAtMs
+            : null;
+        router.push({
+          pathname: "/(tabs)/TaskManagerScreen",
+          params: {
+            focusTaskId: data.taskId,
+            showAlarm: "1",
+            ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
+          },
+        });
       });
 
     return () => {

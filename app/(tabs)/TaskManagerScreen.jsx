@@ -180,7 +180,7 @@ export default function TaskManagerScreen() {
   const {
     alarmVisible,
     alarmTask,
-    acknowledgeAlarm,
+    notDoneAlarm,
     dismissAlarm,
     markDoneAlarm,
     showAlarmForTask,
@@ -2605,10 +2605,10 @@ export default function TaskManagerScreen() {
       <DeadlineAlarmModal
         visible={alarmVisible}
         task={alarmTask}
-        onAcknowledge={async () => {
+        onNotDone={async () => {
           pendingActionRef.current = null;
-          if (typeof acknowledgeAlarm === "function") {
-            await acknowledgeAlarm();
+          if (typeof notDoneAlarm === "function") {
+            await notDoneAlarm();
           }
         }}
         onMarkDone={async () => {

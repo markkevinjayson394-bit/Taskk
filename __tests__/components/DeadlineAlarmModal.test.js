@@ -2,27 +2,30 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fireEvent, waitFor } from "@testing-library/react-native";
 import { Text, TouchableOpacity } from "react-native";
 import DeadlineAlarmModal, {
-    useDeadlineAlarmScheduler,
+  useDeadlineAlarmScheduler,
 } from "../../components/DeadlineAlarmModal";
 import { render } from "../../utils/test-utils";
+
 function SchedulerHarness({ tasks }) {
-  const { alarmVisible, alarmTask, acknowledgeAlarm } =
+  const { alarmVisible, alarmTask, notDoneAlarm } =
     useDeadlineAlarmScheduler(tasks);
   return (
     <>
       <Text>{alarmVisible ? alarmTask?.title : "No alarm"}</Text>
-      <TouchableOpacity onPress={acknowledgeAlarm}>
-        <Text>Acknowledge Hook</Text>
+      <TouchableOpacity onPress={notDoneAlarm}>
+        <Text>Not Done Hook</Text>
       </TouchableOpacity>
     </>
   );
 }
+
 describe("Deadline alarm flow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
-  test("acknowledging the modal notifies the caller", async () => {
-    const onAcknowledge = jest.fn();
+
+  test("pressing Not Done on the modal notifies the caller", async () => {
+    const onNotDone = jest.fn();
     const task = {
       id: "task-1",
       title: "Submit capstone draft",
@@ -32,15 +35,36 @@ describe("Deadline alarm flow", () => {
       type: "project",
     };
     const { getByText } = render(
-      <DeadlineAlarmModal visible task={task} onAcknowledge={onAcknowledge} />
+      <DeadlineAlarmModal visible task={task} onNotDone={onNotDone} />
     );
-    fireEvent.press(getByText(/acknowledge/i));
+    fireEvent.press(getByText(/not done/i));
     await waitFor(() => {
-      expect(onAcknowledge).toHaveBeenCalled();
-      expect(getByText(/acknowledged/i)).toBeTruthy();
+      expect(onNotDone).toHaveBeenCalled();
+      // After pressing, button text changes to "Noted"
+      expect(getByText(/noted/i)).toBeTruthy();
     });
   });
-  test("scheduler surfaces a soon-due task and persists acknowledgment", async () => {
+
+  test("pressing Done on the modal cancels all alarms", async () => {
+    const onMarkDone = jest.fn();
+    const task = {
+      id: "task-1",
+      title: "Submit capstone draft",
+      subject: "Research",
+      dueAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      priority: "high",
+      type: "project",
+    };
+    const { getByText } = render(
+      <DeadlineAlarmModal visible task={task} onMarkDone={onMarkDone} />
+    );
+    fireEvent.press(getByText(/^done$/i));
+    await waitFor(() => {
+      expect(onMarkDone).toHaveBeenCalled();
+    });
+  });
+
+  test("scheduler surfaces a soon-due task and persists not-done", async () => {
     const task = {
       id: "task-2",
       title: "Prepare oral report",
@@ -51,7 +75,7 @@ describe("Deadline alarm flow", () => {
     await waitFor(() => {
       expect(getByText("Prepare oral report")).toBeTruthy();
     });
-    fireEvent.press(getByText("Acknowledge Hook"));
+    fireEvent.press(getByText("Not Done Hook"));
     await waitFor(() => {
       expect(AsyncStorage.setItem).toHaveBeenCalled();
       expect(getByText("No alarm")).toBeTruthy();

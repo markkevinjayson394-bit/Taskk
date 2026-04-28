@@ -1,42 +1,32 @@
 /**
- * components/DeadlineAlarmModal.js  (v3  action-aware)
+ * components/DeadlineAlarmModal.js  (v4  done/not-done)
  *
  * In-app alarm modal that pairs with deadlineAlarmBackground.js.
  * The background file fires OS system notifications when app is closed/background.
  * This modal fires when the app is open, or when user taps the system notification.
  *
- * WIRING (unchanged from v2 - just these props):
+ * Button behavior:
+ *   "Done"     → stops alarm, cancels all alarms, marks task complete. Chain ends.
+ *   "Not Done" → stops alarm/sound/vibration immediately, advances overdue checkpoint
+ *                chain (due → +15m → +1h → +3h → daily → repeats daily), schedules
+ *                next alarm. Modal closes. Chain continues until "Done" is pressed.
  *
- * TaskManagerScreen.jsx - add these props:
+ * WIRING (unchanged from v3 - just these props):
+ *
+ * TaskManagerScreen.jsx:
  *   <DeadlineAlarmModal
  *     visible={alarmVisible}
  *     task={alarmTask}
- *     onAcknowledge={acknowledgeAlarm}   // from useDeadlineAlarmScheduler
- *     onMarkDone={markTaskDone}           // closes the alarm after completion
- *     pendingAction={pendingActionRef.current} // informational only: highlights Acknowledge or Mark Done
+ *     onNotDone={notDoneAlarm}    // from useDeadlineAlarmScheduler
+ *     onMarkDone={markTaskDone}   // closes the alarm after completion
+ *     pendingAction={pendingActionRef.current}
  *   />
  *
- * _layout.jsx - add pendingAction param when navigating:
- *   Notifications.addNotificationResponseReceivedListener(response => {
- *     const data = response.notification.request.content.data ?? {};
- *     const action = response?.actionIdentifier;
- *     if (data.type === DEADLINE_NOTIF_TYPE || data.type === "deadline") {
- *       const pendingAction =
- *         action === "acknowledge_deadline_alarm" ? "acknowledge"
- *         : action === "mark_done_deadline_alarm" ? "markdone"
- *         : undefined;
- *       router.push({
- *         pathname: "/(tabs)/TaskManagerScreen",
- *         params: { focusTaskId: data.taskId, showAlarm: "1", ...(pendingAction ? { pendingAction } : {}) },
- *       });
- *     }
- *   });
- *
  * FIXES APPLIED:
- * - [FIX] handleSnooze: now awaits stopVibration and stopAlarmSound so they
- *   complete before the snooze notification fires. Previously they were called
- *   without await, meaning the alarm could re-trigger before the sound/vibration
- *   had actually stopped.
+ * - [FIX 1] Replaced Acknowledge + Snooze buttons with "Not Done" and "Done".
+ *   "Not Done" stops sound/vibration immediately then advances the checkpoint chain.
+ * - [FIX 2] Sound and vibration are stopped with await before any async work so
+ *   they fully complete before the next alarm is scheduled.
  */
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -82,7 +72,7 @@ import {
 } from "./DeadlineAlarmModal.helpers";
 import { useDeadlineAlarmScheduler } from "./useDeadlineAlarmScheduler";
 
-const ACK_FOLLOWUP_MS = 60 * 60 * 1000;
+const NOT_DONE_FOLLOWUP_MS = 60 * 60 * 1000;
 const OVERDUE_RESCHEDULE_LIMIT_MS = 24 * 60 * 60 * 1000;
 const ANDROID_ALARM_CONTENT = {
   channelId: DEADLINE_CHANNEL_ID,
@@ -210,7 +200,7 @@ async function scheduleNextDeadlineCheckpoint({
       if (nativeScheduledId) return;
     } catch (err) {
       console.warn(
-        "DeadlineAlarmModal: failed to schedule native ack checkpoint:",
+        "DeadlineAlarmModal: failed to schedule native checkpoint:",
         err
       );
     }
@@ -242,16 +232,15 @@ async function scheduleNextDeadlineCheckpoint({
 function DeadlineAlarmModal({
   visible,
   task,
-  onAcknowledge,
+  onNotDone,
   onMarkDone,
-  onSnooze,
   pendingAction,
 }) {
   const insets = useSafeAreaInsets();
   const [now, setNow] = useState(() => new Date());
-  const [acked, setAcked] = useState(false);
+  const [notDonePressed, setNotDonePressed] = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
-  // [FIX] Local self-close flag so modal disappears immediately after button press
+  // Local self-close flag so modal disappears immediately after button press
   // without waiting for the parent to propagate visible=false back down.
   const [selfClosed, setSelfClosed] = useState(false);
   const soundRef = useRef(null);
@@ -270,15 +259,15 @@ function DeadlineAlarmModal({
   const countdown = formatDeadlineCountdown(due, now, { style: "short" });
   const pColor = PRIORITY_COLOR[task?.priority] ?? "#0ea5e9";
   const meta = TYPE_META[task?.type] ?? TYPE_META.custom;
-  const acknowledgeSelected = pendingAction === "acknowledge";
-  const markDoneSelected = pendingAction === "markdone";
+  const notDoneSelected = pendingAction === "notdone";
+  const doneSelected = pendingAction === "markdone";
 
   // Reset state when modal becomes invisible
   useEffect(() => {
     if (!visible) {
-      setAcked(false);
+      setNotDonePressed(false);
       setMarkingDone(false);
-      // [FIX] Reset selfClosed so the modal is ready for the next alarm
+      // Reset selfClosed so the modal is ready for the next alarm
       setSelfClosed(false);
       userDismissedRef.current = false;
       slideAnim.setValue(-80);
@@ -338,32 +327,29 @@ function DeadlineAlarmModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  const handleAck = async () => {
-    if (acked || markingDone) return;
-    setAcked(true);
+  // "Not Done" — stop sound/vibration immediately, advance checkpoint chain,
+  // schedule next alarm, close modal. Task remains incomplete.
+  const handleNotDone = async () => {
+    if (notDonePressed || markingDone) return;
+    setNotDonePressed(true);
     setSelfClosed(true);
     userDismissedRef.current = true;
 
-    stopVibration(vibRef);
-    const stopSoundPromise = stopAlarmSound(soundRef);
-    const stopNativeAlarmPromise = stopActiveNativeAlarm();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+    // Stop all sound and vibration first — must complete before scheduling next alarm
+    clearInterval(vibrationIntervalRef.current);
+    clearInterval(soundIntervalRef.current);
+    await Promise.allSettled([
+      stopVibration(vibRef),
+      stopAlarmSound(soundRef),
+      stopActiveNativeAlarm(),
+    ]);
+
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
       () => {}
     );
-    await Promise.allSettled([stopSoundPromise, stopNativeAlarmPromise]);
 
-    await onAcknowledge?.();
-
-    if (task?.id) {
-      try {
-        await cancelDeadlineAlarms(task);
-      } catch (err) {
-        console.warn(
-          "DeadlineAlarmModal: failed to cancel deadline alarms:",
-          err
-        );
-      }
-    }
+    // Advance the overdue checkpoint chain and schedule the next alarm
+    await onNotDone?.();
 
     const dueDate = parseDueDate(task?.dueAt);
     if (task?.id && dueDate) {
@@ -388,37 +374,43 @@ function DeadlineAlarmModal({
               task,
               dueDate,
               thresholdKey: "due",
-              triggerAt: nowMs + ACK_FOLLOWUP_MS,
+              triggerAt: nowMs + NOT_DONE_FOLLOWUP_MS,
               isFollowup: true,
             });
           }
         }
       } catch (err) {
         console.warn(
-          "DeadlineAlarmModal: failed to schedule next acknowledged checkpoint:",
+          "DeadlineAlarmModal: failed to schedule next checkpoint after Not Done:",
           err
         );
       }
     }
   };
 
-  const handleMarkDone = async () => {
-    if (acked || markingDone || !task?.id) return;
+  // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
+  const handleDone = async () => {
+    if (notDonePressed || markingDone || !task?.id) return;
     setMarkingDone(true);
     setSelfClosed(true);
     userDismissedRef.current = true;
 
-    stopVibration(vibRef);
-    const stopSoundPromise = stopAlarmSound(soundRef);
-    const stopNativeAlarmPromise = stopActiveNativeAlarm();
+    clearInterval(vibrationIntervalRef.current);
+    clearInterval(soundIntervalRef.current);
+    await Promise.allSettled([
+      stopVibration(vibRef),
+      stopAlarmSound(soundRef),
+      stopActiveNativeAlarm(),
+    ]);
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
     );
-    await Promise.allSettled([stopSoundPromise, stopNativeAlarmPromise]);
+
     try {
       await cancelDeadlineAlarms(task);
       await onMarkDone?.();
-      setAcked(true);
+      setNotDonePressed(true);
     } catch (err) {
       console.warn("DeadlineAlarmModal: failed to mark task done:", err);
       setMarkingDone(false);
@@ -427,7 +419,7 @@ function DeadlineAlarmModal({
   };
 
   const handleRequestClose = () => {
-    if (acked || markingDone) return;
+    if (notDonePressed || markingDone) return;
     Animated.sequence([
       Animated.timing(shakeAnim, {
         toValue: 10,
@@ -447,19 +439,6 @@ function DeadlineAlarmModal({
     ]).start();
   };
 
-  // [FIX] handleSnooze: await both stopVibration and stopAlarmSound so they
-  // fully complete before the snooze notification fires. Previously these were
-  // called without await, allowing the alarm to re-fire before stopping.
-  const handleSnooze = async () => {
-    if (acked || markingDone) return;
-    clearInterval(vibrationIntervalRef.current);
-    clearInterval(soundIntervalRef.current);
-    await Promise.allSettled([stopVibration(vibRef), stopAlarmSound(soundRef)]);
-    await onSnooze?.();
-  };
-
-  // [FIX] selfClosed lets the modal vanish instantly after Acknowledge/Mark Done,
-  // without waiting for the parent's visible prop to update asynchronously.
   if (!task || selfClosed) return null;
 
   return (
@@ -555,21 +534,21 @@ function DeadlineAlarmModal({
             />
             <Text style={styles.infoText}>
               {
-                "This alarm also notifies you when the app is closed or you're using another app. Tap below to dismiss."
+                'Tap "Done" when finished. Tap "Not Done" to silence this alarm and be reminded again later.'
               }
             </Text>
           </View>
-          {/* Mark Done button */}
+          {/* Done button */}
           <TouchableOpacity
             style={[
-              styles.markDoneBtn,
-              markDoneSelected && styles.pendingActionBtn,
+              styles.doneBtn,
+              doneSelected && styles.pendingActionBtn,
               {
-                opacity: acked || markingDone ? 0.65 : 1,
+                opacity: notDonePressed || markingDone ? 0.65 : 1,
               },
             ]}
-            onPress={handleMarkDone}
-            disabled={acked || markingDone}
+            onPress={handleDone}
+            disabled={notDonePressed || markingDone}
             activeOpacity={0.8}
             accessibilityLabel="Mark task as done"
             accessibilityRole="button"
@@ -579,49 +558,32 @@ function DeadlineAlarmModal({
               size={20}
               color="#052e16"
             />
-            <Text style={styles.markDoneBtnText}>
-              {markingDone ? "Marking Done..." : "Mark Done"}
+            <Text style={styles.doneBtnText}>
+              {markingDone ? "Marking Done..." : "Done"}
             </Text>
           </TouchableOpacity>
-          {/* Snooze button */}
+          {/* Not Done button */}
           <TouchableOpacity
             style={[
-              styles.snoozeBtn,
-              { opacity: acked || markingDone ? 0.65 : 1 },
-            ]}
-            onPress={handleSnooze}
-            disabled={acked || markingDone}
-            activeOpacity={0.8}
-            accessibilityLabel="Snooze alarm for 10 minutes"
-            accessibilityRole="button"
-          >
-            <Ionicons name="alarm-outline" size={20} color="#6366f1" />
-            <Text style={styles.snoozeBtnText}>Snooze 10 min</Text>
-          </TouchableOpacity>
-          {/* Acknowledge button */}
-          <TouchableOpacity
-            style={[
-              styles.ackBtn,
-              acknowledgeSelected && styles.pendingActionBtn,
+              styles.notDoneBtn,
+              notDoneSelected && styles.pendingActionBtn,
               {
-                backgroundColor: acked ? "#334155" : "#0f172a",
-                borderColor: acked ? "#22c55e" : "#334155",
-                opacity: acked || markingDone ? 0.65 : 1,
+                opacity: notDonePressed || markingDone ? 0.65 : 1,
               },
             ]}
-            onPress={handleAck}
-            disabled={acked || markingDone}
+            onPress={handleNotDone}
+            disabled={notDonePressed || markingDone}
             activeOpacity={0.8}
-            accessibilityLabel="Acknowledge alarm"
+            accessibilityLabel="Not done — silence alarm and remind me later"
             accessibilityRole="button"
           >
             <Ionicons
-              name={acked ? "checkmark-circle" : "checkmark-done-circle"}
-              size={22}
+              name={notDonePressed ? "checkmark-circle" : "time-outline"}
+              size={20}
               color="#e2e8f0"
             />
-            <Text style={styles.ackBtnText}>
-              {acked ? "Acknowledged" : "Acknowledge"}
+            <Text style={styles.notDoneBtnText}>
+              {notDonePressed ? "Noted" : "Not Done"}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -734,7 +696,7 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     flex: 1,
   },
-  markDoneBtn: {
+  doneBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -745,32 +707,13 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     backgroundColor: "#22c55e",
   },
-  markDoneBtnText: {
+  doneBtnText: {
     color: "#052e16",
     fontSize: 15,
     fontWeight: "900",
     letterSpacing: 0.3,
   },
-  snoozeBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    width: "100%",
-    paddingVertical: 13,
-    borderRadius: 14,
-    marginBottom: 10,
-    backgroundColor: "#1e1b4b",
-    borderWidth: 1,
-    borderColor: "#6366f1",
-  },
-  snoozeBtnText: {
-    color: "#a5b4fc",
-    fontSize: 14,
-    fontWeight: "800",
-    letterSpacing: 0.3,
-  },
-  ackBtn: {
+  notDoneBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -779,8 +722,10 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     borderRadius: 14,
     borderWidth: 1,
+    backgroundColor: "#0f172a",
+    borderColor: "#334155",
   },
-  ackBtnText: {
+  notDoneBtnText: {
     color: "#e2e8f0",
     fontSize: 16,
     fontWeight: "800",

@@ -7,15 +7,20 @@
  * Architecture: reactive + minimal
  * - Layer 1: lead-time warnings (1d, 2h, 30m) — standard dismissable notifications
  * - Layer 2: due-moment alarm — pre-scheduled, alarm-style
- * - Chain: when due/overdue alarm fires and user acknowledges, schedule next step
- *   (due → +15m → +1h → +3h → daily 8 AM)
+ * - Chain: when due/overdue alarm fires and user taps "Not Done" inside the app modal,
+ *   the modal advances the checkpoint (due → +15m → +1h → +3h → daily 8 AM → repeats).
+ *   Chain only stops when user taps "Done" inside the modal.
+ *
+ * NOTIFICATION SHADE BUTTONS ("Done" / "Not Done"):
+ * - These only stop the alarm sound/vibration and open the app.
+ * - DeadlineAlarmModal is the single source of truth for all chain logic.
+ * - No advanceCheckpoint, no scheduleNextOverdueAlarm, no Firestore writes here.
  *
  * FIXES APPLIED:
- * - [FIX 1] handleDeadlineAlarmResponse ACTION_ACKNOWLEDGE: now calls
- *   Notifications.dismissNotificationAsync() after stopActiveNativeAlarm() so
- *   the OS stops playing ctu_alarm.wav and the vibration pattern immediately.
- *   Previously only the native alarm was stopped; the expo notification carrying
- *   the sound/vibration kept playing until its own OS timeout.
+ * - [FIX 1] Replaced ACTION_ACKNOWLEDGE + ACTION_SNOOZE_10 with ACTION_NOT_DONE.
+ * - [FIX 2] handleDeadlineAlarmResponse simplified — all buttons (Done, Not Done,
+ *   default tap) only stop the native alarm + dismiss the OS notification then
+ *   return. The app opens and DeadlineAlarmModal handles all real logic.
  */
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
@@ -33,20 +38,15 @@ import {
   buildNotificationId,
 } from "./notificationIds";
 import { isPlannerTask } from "./taskFilters";
-import {
-  advanceCheckpoint,
-  clearCheckpoint,
-  OVERDUE_CHAIN,
-} from "./taskOverdueState";
+import { clearCheckpoint, OVERDUE_CHAIN } from "./taskOverdueState";
 
 export { OVERDUE_CHAIN };
 
 export const DEADLINE_NOTIF_TYPE = "deadline_alarm";
 export const DEADLINE_CHANNEL_ID = "ctu-deadline-alarms-v1";
 export const DEADLINE_CATEGORY_ID = "deadline_alarm_actions";
-const ACTION_ACKNOWLEDGE = "acknowledge_deadline_alarm";
+const ACTION_NOT_DONE = "not_done_deadline_alarm";
 const ACTION_MARK_DONE = "mark_done_deadline_alarm";
-const ACTION_SNOOZE_10 = "deadline_snooze_10";
 
 // Lead-time thresholds — 3 standard dismissable warnings
 const LEAD_TIMES = [
@@ -110,18 +110,13 @@ export async function bootstrapDeadlineAlarmChannel() {
     if (typeof Notifications.setNotificationCategoryAsync === "function") {
       await Notifications.setNotificationCategoryAsync(DEADLINE_CATEGORY_ID, [
         {
-          identifier: ACTION_ACKNOWLEDGE,
-          buttonTitle: "Acknowledge",
-          options: { opensAppToForeground: true },
-        },
-        {
           identifier: ACTION_MARK_DONE,
-          buttonTitle: "Mark Done",
+          buttonTitle: "Done",
           options: { opensAppToForeground: true },
         },
         {
-          identifier: ACTION_SNOOZE_10,
-          buttonTitle: "Snooze 10 min",
+          identifier: ACTION_NOT_DONE,
+          buttonTitle: "Not Done",
           options: { opensAppToForeground: true },
         },
       ]);
@@ -267,7 +262,7 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
           alarmId: dueId,
           triggerAt: dueAtMs,
           title: `${taskTitle} is due NOW`,
-          body: `"${taskTitle}" (${subjectLabel}) is due. Acknowledge or mark it done.`,
+          body: `"${taskTitle}" (${subjectLabel}) is due. Mark it done or tap Not Done to be reminded later.`,
           payload: dueData,
         });
         if (result?.status === "success" && result?.value) {
@@ -299,7 +294,7 @@ async function scheduleExpoDueAlarm(id, data, soundSettings) {
       content: {
         title: "Task due now",
         body: data.taskTitle
-          ? `"${data.taskTitle}" is due. Acknowledge or mark it done.`
+          ? `"${data.taskTitle}" is due. Mark it done or tap Not Done to be reminded later.`
           : "Task is due now.",
         data,
         categoryIdentifier: DEADLINE_CATEGORY_ID,
@@ -386,61 +381,6 @@ export async function rescheduleAllDeadlineAlarms(
   return results.flat().filter(Boolean);
 }
 
-export async function scheduleDeadlineSnooze({
-  taskId,
-  taskTitle,
-  soundSettings = {},
-  extraData = {},
-}) {
-  const snoozeTime = new Date(Date.now() + 10 * 60 * 1000);
-  const snoozeId = buildNotificationId("deadline-snooze", taskId, Date.now());
-  const extra = androidAlarmExtra(soundSettings);
-  const taskLabel = taskTitle || taskId || "Task";
-  const data = buildManagedNotificationData(snoozeId, {
-    type: DEADLINE_NOTIF_TYPE,
-    notificationType: DEADLINE_NOTIF_TYPE,
-    taskId,
-    taskTitle,
-    acknowledgeRequired: true,
-    ...extraData,
-  });
-
-  try {
-    if (Platform.OS === "android" && isNativeAlarmSupported) {
-      try {
-        const result = await scheduleNativeAlarm({
-          alarmId: snoozeId,
-          triggerAt: snoozeTime.getTime(),
-          title: "Snoozed Deadline Reminder",
-          body: `"${taskLabel}" - Snoozed alarm. Time to act!`,
-          payload: data,
-        });
-        if (result?.status === "success" && result?.value) return result.value;
-      } catch (nativeErr) {
-        warnIfDev("scheduleDeadlineSnooze native path failed:", nativeErr);
-      }
-    }
-
-    return await Notifications.scheduleNotificationAsync({
-      identifier: snoozeId,
-      content: {
-        title: "Snoozed Deadline Reminder",
-        body: `"${taskLabel}" - Snoozed alarm. Time to act!`,
-        data,
-        categoryIdentifier: DEADLINE_CATEGORY_ID,
-        ...extra,
-      },
-      trigger:
-        Platform.OS === "android"
-          ? { type: "date", date: snoozeTime, channelId: DEADLINE_CHANNEL_ID }
-          : { date: snoozeTime },
-    });
-  } catch (err) {
-    warnIfDev("scheduleDeadlineSnooze failed:", err);
-    return null;
-  }
-}
-
 export async function scheduleNextOverdueAlarm(
   taskId,
   taskTitle,
@@ -460,8 +400,8 @@ export async function scheduleNextOverdueAlarm(
   const id = buildNotificationId("deadline-overdue", taskId, checkpoint.key);
   const overdueMin = Math.round((Date.now() - dueAtMs) / 60000);
   const body = taskTitle
-    ? `"${taskTitle}" is ${overdueMin} min overdue. Mark it done or acknowledge.`
-    : `Task is ${overdueMin} min overdue. Mark it done or acknowledge.`;
+    ? `"${taskTitle}" is ${overdueMin} min overdue. Mark it done or tap Not Done to be reminded again.`
+    : `Task is ${overdueMin} min overdue. Mark it done or tap Not Done to be reminded again.`;
 
   const data = buildManagedNotificationData(id, {
     type: DEADLINE_NOTIF_TYPE,
@@ -515,8 +455,21 @@ export async function scheduleNextOverdueAlarm(
   }
 }
 
+/**
+ * handleDeadlineAlarmResponse
+ *
+ * Called when user interacts with a deadline notification from the shade
+ * (including when the app was killed and reopened via notification tap).
+ *
+ * ALL button actions here only:
+ *   1. Stop the native alarm sound/vibration
+ *   2. Dismiss the OS notification
+ *   3. Return — the app will open and DeadlineAlarmModal handles all real logic.
+ *
+ * No advanceCheckpoint, no scheduleNextOverdueAlarm, no cancelDeadlineAlarms,
+ * no Firestore writes. DeadlineAlarmModal is the single source of truth.
+ */
 export async function handleDeadlineAlarmResponse(response) {
-  const action = response.actionIdentifier;
   const data = response.notification.request.content.data ?? {};
   if (
     data.type !== DEADLINE_NOTIF_TYPE &&
@@ -525,81 +478,33 @@ export async function handleDeadlineAlarmResponse(response) {
     return;
   }
 
-  const { taskId, taskTitle, dueAtMs, stage } = data;
+  const { taskId } = data;
   if (!taskId) return;
 
-  // [FIX 1] Grab the notification identifier so we can dismiss it explicitly.
-  // This stops the OS from continuing to play ctu_alarm.wav and the vibration
-  // pattern after the user taps Acknowledge from the system notification shade.
   const notificationIdentifier =
     response.notification.request.identifier ?? null;
 
-  if (action === ACTION_MARK_DONE) {
-    try {
-      if (Platform.OS === "android") {
-        await stopActiveNativeAlarm();
-      }
-      // [FIX 1] Dismiss the expo notification to kill sound/vibration.
-      if (
-        notificationIdentifier &&
-        typeof Notifications.dismissNotificationAsync === "function"
-      ) {
-        await Notifications.dismissNotificationAsync(
-          notificationIdentifier
-        ).catch(() => {});
-      }
-    } catch (err) {
-      warnIfDev(
-        "handleDeadlineAlarmResponse: failed to stop/dismiss notification:",
-        err
-      );
-    }
-    await cancelDeadlineAlarms({ id: taskId });
-    await clearCheckpoint(taskId);
-    return;
-  }
-
-  if (action === ACTION_SNOOZE_10) {
-    await scheduleDeadlineSnooze({
-      taskId,
-      taskTitle: taskTitle || data.taskTitle,
-      soundSettings: data.soundSettings || {},
-      extraData: { snoozed: true },
-    });
-    return;
-  }
-
-  // [FIX 1] ACTION_ACKNOWLEDGE — stop native alarm AND dismiss the expo
-  // notification. Without dismissing, the notification's sound: "ctu_alarm.wav"
-  // and vibrationPattern keep playing until the OS decides to stop them.
-  if (action === ACTION_ACKNOWLEDGE) {
-    try {
+  // Stop alarm sound/vibration and dismiss the OS notification.
+  // This is all we do — the app opens and DeadlineAlarmModal handles the rest.
+  try {
+    if (Platform.OS === "android") {
       await stopActiveNativeAlarm();
-      if (
-        notificationIdentifier &&
-        typeof Notifications.dismissNotificationAsync === "function"
-      ) {
-        await Notifications.dismissNotificationAsync(
-          notificationIdentifier
-        ).catch(() => {});
-      }
-    } catch (err) {
-      warnIfDev(
-        "handleDeadlineAlarmResponse: failed to stop/dismiss on acknowledge:",
-        err
-      );
     }
-  }
-
-  // Acknowledge or tap on a due/overdue stage — advance the chain
-  const currentStage = stage || "due";
-  const nextCheckpoint = await advanceCheckpoint(taskId, currentStage);
-  if (nextCheckpoint) {
-    await scheduleNextOverdueAlarm(
-      taskId,
-      taskTitle || data.taskTitle,
-      dueAtMs,
-      nextCheckpoint
+    if (
+      notificationIdentifier &&
+      typeof Notifications.dismissNotificationAsync === "function"
+    ) {
+      await Notifications.dismissNotificationAsync(
+        notificationIdentifier
+      ).catch(() => {});
+    }
+  } catch (err) {
+    warnIfDev(
+      "handleDeadlineAlarmResponse: failed to stop/dismiss notification:",
+      err
     );
   }
+
+  // All three cases (Done, Not Done, default tap) do the same thing here —
+  // silence the alarm. DeadlineAlarmModal takes over once the app is open.
 }

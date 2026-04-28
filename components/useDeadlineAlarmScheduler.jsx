@@ -206,11 +206,20 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
     setAlarmVisible(!!next);
   }, [activeAlarm]);
 
+  const notDoneAlarm = useCallback(async () => {
+    if (!activeAlarm) return;
+    alarmQueueRef.current.shift();
+    const next = alarmQueueRef.current[0] || null;
+    setActiveAlarm(next);
+    setAlarmVisible(!!next);
+  }, [activeAlarm]);
+
   return {
     alarmVisible,
     alarmTask: activeAlarm?.task ?? null,
     alarmThresholdKey: activeAlarm?.thresholdKey ?? null,
     acknowledgeAlarm,
+    notDoneAlarm,
     dismissAlarm,
     markDoneAlarm,
     showAlarmForTask,

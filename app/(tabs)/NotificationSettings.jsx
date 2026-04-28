@@ -226,6 +226,7 @@ export default function NotificationSettings() {
     nativeAlarmSupported,
     isIgnoringBatteryOptimizations,        // FIX: removed canScheduleExactAlarms (unused)
     requestIgnoreBatteryOptimizations,     // FIX: removed openExactAlarmSettings (unused)
+    sendTestNotification,
     taskAlarmTonePickerAvailable,
     taskAlarmAudioPickerAvailable,
     pickTaskAlarmTone,
@@ -985,6 +986,59 @@ export default function NotificationSettings() {
             </View>
           )}
         </View>
+        {/* Test Notification */}
+        <TouchableOpacity
+          style={[
+            styles.permissionBox,
+            {
+              backgroundColor: `${colors.primary}10`,
+              borderColor: colors.primary,
+            },
+          ]}
+          onPress={async () => {
+            const result = await sendTestNotification({ alarmStyle: true });
+            if (result.ok) {
+              Alert.alert(
+                "Test Sent",
+                "A test notification is firing now. Check your notification shade."
+              );
+            } else {
+              Alert.alert(
+                "Test Failed",
+                result.reason || "Could not send test notification."
+              );
+            }
+          }}
+        >
+          <View style={styles.permissionLeft}>
+            <Ionicons
+              name="notifications-circle-outline"
+              size={22}
+              color={colors.primary}
+            />
+            <View>
+              <Text
+                style={[styles.permissionTitle, { color: colors.primary }]}
+              >
+                Send Test Notification
+              </Text>
+              <Text
+                style={[
+                  styles.permissionSub,
+                  { color: `${colors.primary}cc` },
+                ]}
+              >
+                Verify your notification settings are working
+              </Text>
+            </View>
+          </View>
+          <Ionicons
+            name="chevron-forward"
+            size={16}
+            color={colors.primary}
+          />
+        </TouchableOpacity>
+
         {/* Permissions & Access */}
         <Text style={[styles.sectionLabel, { color: colors.muted }]}>
           Permissions & Access

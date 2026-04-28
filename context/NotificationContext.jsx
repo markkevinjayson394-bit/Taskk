@@ -35,13 +35,11 @@ import {
   orderBy,
   query,
   setDoc,
-  updateDoc,
   where,
 } from "firebase/firestore";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import { auth, db } from "../config/firebase";
-import { buildTaskCompletionUpdate } from "../utils/academicTaskModel";
 import {
   BACKGROUND_ALARM_TASK,
   enableBackgroundAlarms,
@@ -52,7 +50,7 @@ import {
 } from "../utils/classScheduleCache";
 import {
   cancelDeadlineAlarms,
-  rescheduleAllDeadlineAlarms
+  rescheduleAllDeadlineAlarms,
 } from "../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { reportError, reportWarning, warnIfDev } from "../utils/logger";
@@ -138,13 +136,9 @@ const KEYS = {
 };
 const ANDROID_CHANNEL_ID = "study-reminders-v4";
 const ANDROID_NOTIFICATION_SOUND = "ctu_alarm.wav";
-const NATIVE_ALARM_ID_NAMESPACE = "native-deadline";
 const ALARM_ACK_CATEGORY_ID = "deadline_alarm_ack";
-const ACTION_ACKNOWLEDGE = "acknowledge_deadline_alarm";
+const ACTION_NOT_DONE = "not_done_deadline_alarm";
 const ACTION_MARK_DONE = "mark_done_deadline_alarm";
-const ACTION_SNOOZE_10 = "deadline_snooze_10";
-const ACTION_SUPPRESS_MS = 15 * 60 * 1000;
-const SNOOZE_SUPPRESS_MS = 10 * 60 * 1000;
 const LAST_HANDLED_RESPONSE_KEY = "last_handled_notif_response_id";
 const ENV_NOTIF_DEBUG =
   typeof process !== "undefined" && process?.env?.EXPO_PUBLIC_NOTIF_DEBUG;
@@ -486,9 +480,6 @@ function toScheduledIdArray(value) {
     (item) => typeof item === "string" && item
   );
 }
-function buildNativeAlarmId(taskId, checkpoint) {
-  return buildNotificationId(NATIVE_ALARM_ID_NAMESPACE, taskId, checkpoint);
-}
 function extractAckPayloadFromNotification(notification) {
   const request = notification?.request;
   const content = request?.content || {};
@@ -816,12 +807,6 @@ export function NotificationProvider({ children }) {
         channelId: ANDROID_CHANNEL_ID,
       },
     });
-  };
-
-  const suppressPromptForTask = (taskId, ms = ACTION_SUPPRESS_MS) => {
-    if (!taskId) return;
-    suppressPromptUntilRef.current[taskId] = Date.now() + ms;
-    void persistPromptSuppressionMap();
   };
 
   const isPromptSuppressed = (taskId) => {
@@ -1250,106 +1235,39 @@ export function NotificationProvider({ children }) {
           return true;
         };
 
-        if (action === ACTION_SNOOZE_10) {
-          if (payload.taskId) {
-            suppressPromptForTask(payload.taskId, SNOOZE_SUPPRESS_MS);
-          }
-          await cancelAlarmNotificationsForTask(payload.taskId, notificationId);
-          await dismissPresentedNotification(notificationId);
+        if (action === ACTION_MARK_DONE) {
           try {
-            const snoozeUntil = new Date(Date.now() + SNOOZE_SUPPRESS_MS);
-            const data = response?.notification?.request?.content?.data || {};
-            const snoozeData = {
-              ...data,
-              type: data?.type || "alarm_followup",
-              taskId: payload.taskId || data?.taskId || null,
-              acknowledgeRequired: true,
-              snoozed: true,
-              ackKey: payload.ackKey || data?.ackKey || buildAckKey("snooze"),
-            };
-            const snoozeTitle = "Snoozed reminder";
-            const snoozeBody =
-              payload.body || "Notification still needs acknowledgment.";
-            const nativeSnoozeId = await scheduleNativeExactAlarm({
-              alarmId: buildNativeAlarmId(
-                payload.taskId || "unknown",
-                `snooze-${Date.now()}`
-              ),
-              triggerDate: snoozeUntil,
-              title: snoozeTitle,
-              body: snoozeBody,
-              payload: snoozeData,
-            });
-            if (!nativeSnoozeId) {
-              await Notifications.scheduleNotificationAsync({
-                content: buildNotificationContent(snoozeTitle, snoozeBody, {
-                  data: snoozeData,
-                  ...getAlarmStyleContentOptions({
-                    includeActions: true,
-                    sticky: true,
-                  }),
-                }),
-                trigger:
-                  Platform.OS === "android"
-                    ? {
-                        type: "date",
-                        date: snoozeUntil,
-                        channelId: ANDROID_CHANNEL_ID,
-                      }
-                    : null,
-              });
+            if (Platform.OS === "android") {
+              await stopActiveNativeAlarm();
+            }
+            if (typeof Notifications.dismissNotificationAsync === "function") {
+              await Notifications.dismissNotificationAsync(notificationId);
             }
           } catch (err) {
-            debugNotif("ack.action.snooze.error", {
-              taskId: payload.taskId,
-              error: err?.message || String(err),
-            });
+            warnIfDev(
+              "handleResponse ACTION_MARK_DONE: failed to stop/dismiss:",
+              err
+            );
           }
+          await openTaskAlarm("markdone");
           return;
         }
 
-        if (
-          isDeadlineAlarmPayload &&
-          (action === ACTION_ACKNOWLEDGE || action === ACTION_MARK_DONE)
-        ) {
-          if (action === ACTION_MARK_DONE) {
-            try {
-              if (Platform.OS === "android") {
-                await stopActiveNativeAlarm();
-              }
-              if (
-                typeof Notifications.dismissNotificationAsync === "function"
-              ) {
-                await Notifications.dismissNotificationAsync(notificationId);
-              }
-            } catch (err) {
-              warnIfDev(
-                "handleResponse: failed to stop/dismiss notification:",
-                err
-              );
+        if (action === ACTION_NOT_DONE) {
+          try {
+            if (Platform.OS === "android") {
+              await stopActiveNativeAlarm();
             }
-            if (payload.taskId) {
-              const user = auth.currentUser;
-              if (user) {
-                try {
-                  await updateDoc(
-                    doc(db, "assignments", payload.taskId),
-                    buildTaskCompletionUpdate(new Date())
-                  );
-                } catch (err) {
-                  warnIfDev(
-                    "handleResponse: failed to mark task done from notification:",
-                    err
-                  );
-                }
-              }
-              await cancelDeadlineAlarms({ id: payload.taskId });
-              await clearTaskAlarmSuppression(payload.taskId);
+            if (typeof Notifications.dismissNotificationAsync === "function") {
+              await Notifications.dismissNotificationAsync(notificationId);
             }
+          } catch (err) {
+            warnIfDev(
+              "handleResponse ACTION_NOT_DONE: failed to stop/dismiss:",
+              err
+            );
           }
-          await openTaskAlarm(
-            action === ACTION_ACKNOWLEDGE ? "acknowledge" : "markdone"
-          );
+          await openTaskAlarm("notdone");
           return;
         }
 
@@ -1358,8 +1276,6 @@ export function NotificationProvider({ children }) {
           return;
         }
 
-        // For non-deadline payloads: just dismiss the notification.
-        // DeadlineAlarmModal handles all alarm UI; no fallback ackPrompt overlay.
         await dismissPresentedNotification(notificationId);
       } finally {
         notificationResponsePendingRef.current = false;
@@ -1456,18 +1372,13 @@ export function NotificationProvider({ children }) {
     try {
       await Notifications.setNotificationCategoryAsync(ALARM_ACK_CATEGORY_ID, [
         {
-          identifier: ACTION_ACKNOWLEDGE,
-          buttonTitle: "Acknowledge",
-          options: { opensAppToForeground: true },
-        },
-        {
           identifier: ACTION_MARK_DONE,
-          buttonTitle: "Mark Done",
+          buttonTitle: "Done",
           options: { opensAppToForeground: true },
         },
         {
-          identifier: ACTION_SNOOZE_10,
-          buttonTitle: "Snooze 10 min",
+          identifier: ACTION_NOT_DONE,
+          buttonTitle: "Not Done",
           options: { opensAppToForeground: true },
         },
       ]);

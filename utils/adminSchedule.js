@@ -1,10 +1,10 @@
-import { warnIfDev } from "./logger";
 import {
   COLLEGES,
   getCoursesForCollege,
   normalizeCollege,
   normalizeCourse,
 } from "../constants/academics";
+import { warnIfDev } from "./logger";
 
 export const SCHEDULE_DAYS = [
   "Monday",
@@ -56,7 +56,8 @@ export const SCHOOL_YEAR_OPTIONS = buildSchoolYears(
 );
 
 export const DEFAULT_SCHOOL_YEAR =
-  SCHOOL_YEAR_OPTIONS[SCHOOL_YEAR_RANGE] || `${CURRENT_YEAR}-${CURRENT_YEAR + 1}`;
+  SCHOOL_YEAR_OPTIONS[SCHOOL_YEAR_RANGE] ||
+  `${CURRENT_YEAR}-${CURRENT_YEAR + 1}`;
 
 export function getAdjacentAcademicYear(value, delta) {
   const parsed = parseAcademicYear(value);
@@ -81,7 +82,9 @@ export function cleanText(value) {
 }
 
 export function normalizeScheduleTypeValue(value) {
-  const lowered = String(value || "").trim().toLowerCase();
+  const lowered = String(value || "")
+    .trim()
+    .toLowerCase();
   if (lowered === "night") return "Night";
   if (lowered === "day") return "Day";
   if (__DEV__) {
@@ -197,7 +200,12 @@ export function validateWeekSchedule(weekSchedule = {}) {
       }
     }
 
-    const dayIssueCount = Object.keys(classErrors).length;
+    let dayIssueCount = 0;
+    for (const errs of Object.values(classErrors)) {
+      for (const flag in errs) {
+        if (errs[flag]) dayIssueCount++;
+      }
+    }
     if (dayIssueCount > 0) {
       totalIssues += dayIssueCount;
       dayErrors[day] = classErrors;

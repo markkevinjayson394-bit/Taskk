@@ -1,22 +1,15 @@
-# Fix Deadline Notification Bugs
+# Time Management App Task Tracker
 
-## Plan
+## Current Task: Fix authFlow.test.js missing mocks
 
-1. Fix cancellation ID mismatch in `utils/deadlineAlarmBackground.js`
-2. Fix THRESHOLDS import crash in `components/DeadlineAlarmModal.jsx`
-3. Add custom user reminder scheduling in `utils/deadlineAlarmBackground.js`
-4. Run tests to verify no regressions
+✅ **Step 1:** Create TODO.md with task steps  
+✅ **Step 2:** Update authFlow.test.js with the 4 required mocks (deadlineAlarmBackground update + 3 new)  
+✅ **Step 3:** Test the changes with `jest __tests__/navigation/`  
+⏳ **Step 4:** Mark complete and attempt_completion
 
-## Progress
+**Planned edits:**
 
-- [x] Step 1: Fix `getDeadlineNotificationIds` in `deadlineAlarmBackground.js`
-- [x] Step 2: Fix `THRESHOLDS` import in `DeadlineAlarmModal.jsx`
-- [x] Step 3: Add custom reminder block in `scheduleDeadlineAlarms`
-- [x] Step 4: Run tests
-
-## Test Results
-
-- `__tests__/utils/deadlineTime.test.js` — ✅ 12 passed
-- `__tests__/components/DeadlineAlarmModal.test.js` — ⚠️ 1 pre-existing failure
-
-### Pre-existing test failure (not caused by
+- Update existing deadlineAlarmBackground mock constants to lowercase and add DEADLINE_NOTIF_TYPE
+- Add expo-notifications mock
+- Add react-native-safe-area-context mock
+- Add ../../context/ThemeContext mock

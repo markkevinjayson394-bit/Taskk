@@ -7,5 +7,7 @@
   "files.exclude": {
     "**/coverage/**": true
   },
-  "css.lint.emptyRules": "ignore"
+  "css.lint.emptyRules": "ignore",
+  "typescript.tsserver.experimental.enableProjectDiagnostics": false,
+  "typescript.preferences.includePackageJsonAutoImports": "on"
 }

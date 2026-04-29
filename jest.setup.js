@@ -9,10 +9,8 @@ jest.mock("@sentry/react-native", () => ({
   feedbackIntegration: jest.fn(() => "feedback"),
 }));
 
-jest.mock(
-  "@react-native-async-storage/async-storage",
-  () =>
-    require("@react-native-async-storage/async-storage/jest/async-storage-mock")
+jest.mock("@react-native-async-storage/async-storage", () =>
+  require("@react-native-async-storage/async-storage/jest/async-storage-mock")
 );
 
 jest.mock(
@@ -52,4 +50,6 @@ jest.mock("expo-haptics", () => ({
     Success: "success",
   },
   notificationAsync: jest.fn(() => Promise.resolve()),
+  selectionAsync: jest.fn(),
+  cancelAsync: jest.fn(() => Promise.resolve()),
 }));

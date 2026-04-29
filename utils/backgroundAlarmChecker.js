@@ -10,31 +10,35 @@
  *   repairs the broken chain by scheduling the current checkpoint alarm
  */
 import * as Notifications from "expo-notifications";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { collection, getDocs, query, where, orderBy, limit } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import { Platform } from "react-native";
 import { auth, db } from "../config/firebase";
 import {
   bootstrapDeadlineAlarmChannel,
+  cancelDeadlineAlarms,
   DEADLINE_CATEGORY_ID,
   DEADLINE_CHANNEL_ID,
-  DEADLINE_NOTIF_TYPE,
+  DEADLINE_NOTIF_TYPE
 } from "./deadlineAlarmBackground";
 import { reportError, warnIfDev } from "./logger";
-import { isPlannerTask } from "./taskFilters";
-import { getCheckpoint, OVERDUE_CHAIN } from "./taskOverdueState";
+import {
+  canScheduleExactAlarms,
+  isNativeAlarmSupported,
+  scheduleNativeAlarm,
+} from "./nativeAlarm";
 import {
   buildManagedNotificationData,
   buildNotificationId,
 } from "./notificationIds";
-import {
-  scheduleNextOverdueAlarm,
-  cancelDeadlineAlarms,
-} from "./deadlineAlarmBackground";
-import {
-  canScheduleExactAlarms,
-  isNativeAlarmSupported,
-} from "./nativeAlarm";
+import { isPlannerTask } from "./taskFilters";
+import { getCheckpoint, OVERDUE_CHAIN } from "./taskOverdueState";
 
 let TaskManager = null;
 try {
@@ -51,7 +55,7 @@ try {
   warnIfDev("BackgroundFetch unavailable:", err);
 }
 
-const BACKGROUND_TASK_TIMEOUT_MS = 25000;
+
 const MAX_TASKS_PER_RUN = 20;
 
 const backgroundFetchResult = BackgroundFetch?.BackgroundFetchResult || {};
@@ -104,12 +108,17 @@ try {
           orderBy("dueAt", "asc"),
           limit(MAX_TASKS_PER_RUN)
         );
-        const snap = await withTimeout(getDocs(overdueQuery), BACKGROUND_TASK_TIMEOUT_MS);
+        const FIRESTORE_QUERY_TIMEOUT_MS = 10000; // 10s max for the query
+        const snap = await withTimeout(
+          getDocs(overdueQuery),
+          FIRESTORE_QUERY_TIMEOUT_MS
+        );
 
         // Get all currently scheduled notification identifiers
         let scheduledIds = new Set();
         try {
-          const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+          const scheduled =
+            await Notifications.getAllScheduledNotificationsAsync();
           scheduledIds = new Set(scheduled.map((n) => n.request.identifier));
         } catch {
           scheduledIds = new Set();
@@ -120,7 +129,10 @@ try {
         for (const docSnap of snap.docs) {
           const task = { id: docSnap.id, ...docSnap.data() };
           if (isPlannerTask(task)) continue;
-          if (task.status === 'done') continue;
+          if (task.status === "done" || task.completed === true) {
+            await cancelDeadlineAlarms(task);
+            continue;
+          }
 
           const checkpoint = await getCheckpoint(task.id);
           if (!checkpoint) continue;
@@ -132,6 +144,14 @@ try {
             checkpoint.stage
           );
           if (scheduledIds.has(expectedId)) continue;
+
+          const REPAIR_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+          if (
+            checkpoint.scheduledAt &&
+            Date.now() - checkpoint.scheduledAt < REPAIR_COOLDOWN_MS
+          ) {
+            continue;
+          }
 
           // Chain is broken — repair by scheduling the current checkpoint alarm
           const dueAtMs = new Date(
@@ -185,27 +205,31 @@ try {
               ? await canScheduleExactAlarms()
               : { status: "unsupported" };
           const exactAllowed =
-            exactAlarmResult?.status === "success" && exactAlarmResult?.value === true;
+            exactAlarmResult?.status === "success" &&
+            exactAlarmResult?.value === true;
 
           if (exactAllowed) {
             try {
-              const { scheduleNativeAlarm } = await import("./nativeAlarm");
-              await scheduleNativeAlarm({
+              const nativeId = await scheduleNativeAlarm({
                 alarmId: id,
                 triggerAt: repairTriggerAt,
                 title: "Task still overdue",
                 body,
                 payload: data,
               });
-              repaired += 1;
-              continue;
+              if (nativeId) {
+                repaired += 1;
+                continue; // Only skip expo fallback if native succeeded
+              }
             } catch (err) {
               warnIfDev("Background repair native alarm failed:", err);
             }
           }
 
           try {
-            await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+            await Notifications.cancelScheduledNotificationAsync(id).catch(
+              () => {}
+            );
             await Notifications.scheduleNotificationAsync({
               identifier: id,
               content: {
@@ -303,12 +327,17 @@ export async function enableBackgroundAlarms() {
       fetchStatus === backgroundFetchStatus.Denied ||
       fetchStatus === backgroundFetchStatus.Restricted
     ) {
-      warnIfDev("[BackgroundTask] Background fetch unavailable", { fetchStatus });
+      warnIfDev("[BackgroundTask] Background fetch unavailable", {
+        fetchStatus,
+      });
       return false;
     }
 
     let alreadyRegistered = false;
-    if (TaskManager && typeof TaskManager.isTaskRegisteredAsync === "function") {
+    if (
+      TaskManager &&
+      typeof TaskManager.isTaskRegisteredAsync === "function"
+    ) {
       try {
         alreadyRegistered = await TaskManager.isTaskRegisteredAsync(
           BACKGROUND_ALARM_TASK

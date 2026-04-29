@@ -133,6 +133,7 @@ const KEYS = {
   customNotifs: (uid) => keyForUser("notif_custom", uid),
   ackSuppress: (uid) => keyForUser("notif_ack_suppress_until", uid),
   seenAnnouncements: (uid) => `notif_seen_announcements_${uid}`,
+  batteryPromptDismiss: (uid) => keyForUser("notif_battery_prompt_dismiss", uid),
 };
 const ANDROID_CHANNEL_ID = "study-reminders-v4";
 const ANDROID_NOTIFICATION_SOUND = "ctu_alarm.wav";
@@ -597,6 +598,8 @@ export function NotificationProvider({ children }) {
   const manualRescheduleRef = useRef({ timer: null, waiters: [] });
   const exactAlarmPermissionMissingLoggedRef = useRef(false);
   const mountedRef = useRef(true);
+  const batteryOptimizationCheckedRef = useRef(false);
+  const [showBatteryOptimizationPrompt, setShowBatteryOptimizationPrompt] = useState(false);
 
   const persistPromptSuppressionMap = async () => {
     const uid = auth.currentUser?.uid;
@@ -736,7 +739,7 @@ export function NotificationProvider({ children }) {
         body,
         payload,
       });
-      const nativeId = result?.status === "success" ? result.value : null;
+      const nativeId = result ? result : null;
       if (nativeId) {
         debugNotif("nativeAlarm.scheduled", { alarmId, triggerAt });
       }
@@ -1272,7 +1275,7 @@ export function NotificationProvider({ children }) {
         }
 
         if (isDeadlineAlarmPayload) {
-          await openTaskAlarm(undefined);
+          await openTaskAlarm(null);
           return;
         }
 
@@ -1422,10 +1425,45 @@ export function NotificationProvider({ children }) {
       void enableBackgroundAlarms().catch((err) => {
         warnIfDev("NotificationContext: enableBackgroundAlarms failed:", err);
       });
+
+      // Android 14+ requires explicit USE_FULL_SCREEN_INTENT permission for full-screen alarms
+      if (Platform.OS === "android" && Platform.Version >= 34) {
+        try {
+          const { PermissionsAndroid } = require("react-native");
+          await PermissionsAndroid.request(
+            "android.permission.USE_FULL_SCREEN_INTENT"
+          );
+        } catch (err) {
+          warnIfDev("USE_FULL_SCREEN_INTENT permission request failed:", err);
+        }
+      }
     }
     setPermission(granted);
     debugNotif("permission.result", { status, granted });
+
+    // On first successful permission grant, check battery optimization status
+    // and prompt the user to disable it for reliable background alarms.
+    if (granted && Platform.OS === "android" && isNativeAlarmSupported) {
+      const uid = auth.currentUser?.uid;
+      if (uid && !batteryOptimizationCheckedRef.current) {
+        batteryOptimizationCheckedRef.current = true;
+        const dismissedKey = KEYS.batteryPromptDismiss(uid);
+        const wasDismissed = await AsyncStorage.getItem(dismissedKey).catch(() => null);
+        if (!wasDismissed) {
+          const batteryResult = await isIgnoringBatteryOptimizations();
+          if (batteryResult?.status === "success" && batteryResult.value === false) {
+            await AsyncStorage.setItem(dismissedKey, "1").catch(() => {});
+            setShowBatteryOptimizationPrompt(true);
+          }
+        }
+      }
+    }
+
     return granted;
+  };
+
+  const dismissBatteryPrompt = () => {
+    setShowBatteryOptimizationPrompt(false);
   };
 
   const loadSettings = async () => {
@@ -2803,6 +2841,8 @@ export function NotificationProvider({ children }) {
         openExactAlarmSettings,
         isIgnoringBatteryOptimizations,
         requestIgnoreBatteryOptimizations,
+        showBatteryOptimizationPrompt,
+        dismissBatteryPrompt,
         pickTaskAlarmTone: pickNativeAlarmTone,
         pickTaskAlarmAudioFile: pickNativeAlarmAudioFile,
         clearTaskAlarmSuppression,
@@ -2841,6 +2881,8 @@ export function useNotifications() {
       openExactAlarmSettings: () => {},
       isIgnoringBatteryOptimizations: async () => false,
       requestIgnoreBatteryOptimizations: () => false,
+      showBatteryOptimizationPrompt: false,
+      dismissBatteryPrompt: () => {},
       pickTaskAlarmTone: async () => null,
       pickTaskAlarmAudioFile: async () => null,
       clearTaskAlarmSuppression: async () => {},

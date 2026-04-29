@@ -224,15 +224,20 @@ export default function NotificationSettings() {
     rescheduleAll,
     isExpoGo,
     nativeAlarmSupported,
-    isIgnoringBatteryOptimizations,        // FIX: removed canScheduleExactAlarms (unused)
-    requestIgnoreBatteryOptimizations,     // FIX: removed openExactAlarmSettings (unused)
+    isIgnoringBatteryOptimizations,
+    requestIgnoreBatteryOptimizations,
+    canScheduleExactAlarms,
+    openExactAlarmSettings,
     sendTestNotification,
     taskAlarmTonePickerAvailable,
     taskAlarmAudioPickerAvailable,
     pickTaskAlarmTone,
     pickTaskAlarmAudioFile,
+    showBatteryOptimizationPrompt,
+    dismissBatteryPrompt,
   } = useNotifications();
   const [batteryOptimizationStatus, setBatteryOptimizationStatus] = useState(null);
+  const [exactAlarmStatus, setExactAlarmStatus] = useState(null);
   const [scheduleLastSynced, setScheduleLastSynced] = useState(null);
   const checkBatteryOptimizationStatus = useCallback(async () => {
     if (Platform.OS !== "android" || !nativeAlarmSupported) {
@@ -247,13 +252,31 @@ export default function NotificationSettings() {
       setBatteryOptimizationStatus(false);
     }
   }, [nativeAlarmSupported, isIgnoringBatteryOptimizations]);
+
+  const checkExactAlarmStatus = useCallback(async () => {
+    if (Platform.OS !== "android" || !nativeAlarmSupported) {
+      setExactAlarmStatus(true);
+      return;
+    }
+    try {
+      const result = await canScheduleExactAlarms();
+      setExactAlarmStatus(result?.status === "success" ? result.value : false);
+    } catch (err) {
+      console.warn("Exact alarm permission check failed:", err);
+      setExactAlarmStatus(false);
+    }
+  }, [nativeAlarmSupported, canScheduleExactAlarms]);
+
   useEffect(() => {
     checkBatteryOptimizationStatus();
-  }, [checkBatteryOptimizationStatus]);
+    checkExactAlarmStatus();
+  }, [checkBatteryOptimizationStatus, checkExactAlarmStatus]);
+
   useFocusEffect(
     useCallback(() => {
       checkBatteryOptimizationStatus();
-    }, [checkBatteryOptimizationStatus])
+      checkExactAlarmStatus();
+    }, [checkBatteryOptimizationStatus, checkExactAlarmStatus])
   );
   const refreshScheduleSyncState = useCallback(() => {
     let active = true;
@@ -289,6 +312,11 @@ export default function NotificationSettings() {
     } else {
       Alert.alert("Not Available", "Battery optimization setting is not available on this device.");
     }
+  };
+
+  const handleExactAlarmPermission = async () => {
+    openExactAlarmSettings();
+    setTimeout(() => checkExactAlarmStatus(), 1000);
   };
   const { isSaving, startSaving, stopSaving } = useSavingSet();
   const [globalSaving, setGlobalSaving] = useState(false);
@@ -674,6 +702,19 @@ export default function NotificationSettings() {
                 <Text style={styles.statPillText}>Battery restricted</Text>
               </View>
             )}
+          {Platform.OS === "android" &&
+            nativeAlarmSupported &&
+            exactAlarmStatus === false && (
+              <View
+                style={[
+                  styles.statPill,
+                  { backgroundColor: `${colors.danger}40` },
+                ]}
+              >
+                <Ionicons name="warning" size={12} color="#fff" />
+                <Text style={styles.statPillText}>Exact alarm off</Text>
+              </View>
+            )}
         </View>
       </View>
       <ScrollView
@@ -707,6 +748,115 @@ export default function NotificationSettings() {
             <Ionicons name="chevron-forward" size={16} color={colors.danger} />
           </TouchableOpacity>
         )}
+        {/* Battery optimization one-time explanation prompt */}
+        {Platform.OS === "android" &&
+          nativeAlarmSupported &&
+          showBatteryOptimizationPrompt && (
+            <View
+              style={[
+                styles.permissionBox,
+                {
+                  backgroundColor: `${colors.warning}10`,
+                  borderColor: colors.warning,
+                  flexDirection: "column",
+                },
+              ]}
+            >
+              <View style={styles.permissionLeft}>
+                <Ionicons
+                  name="battery-charging-outline"
+                  size={22}
+                  color={colors.warning}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={[styles.permissionTitle, { color: colors.warning }]}
+                  >
+                    Background alarms need battery exemption
+                  </Text>
+                  <Text
+                    style={[
+                      styles.permissionSub,
+                      { color: `${colors.warning}cc`, marginTop: 2 },
+                    ]}
+                  >
+                    On MIUI, OneUI, and ColorOS, battery optimization can kill
+                    alarms in the background. Add this app to &quot;Don&apos;t
+                    optimize&quot; so alarms fire reliably.
+                  </Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", marginTop: 10, gap: 10 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.halfBtn,
+                    {
+                      backgroundColor: `${colors.warning}20`,
+                      borderColor: colors.warning,
+                    },
+                  ]}
+                  onPress={handleBatteryOptimization}
+                >
+                  <Text
+                    style={[styles.halfBtnText, { color: colors.warning }]}
+                  >
+                    Open Settings
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.halfBtn, { backgroundColor: colors.card }]}
+                  onPress={dismissBatteryPrompt}
+                >
+                  <Text style={[styles.halfBtnText, { color: colors.muted }]}>
+                    Dismiss
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        {/* Exact Alarm Permission (Android 12+) */}
+        {Platform.OS === "android" &&
+          nativeAlarmSupported &&
+          exactAlarmStatus === false && (
+            <TouchableOpacity
+              style={[
+                styles.permissionBox,
+                {
+                  backgroundColor: `${colors.danger}10`,
+                  borderColor: colors.danger,
+                },
+              ]}
+              onPress={handleExactAlarmPermission}
+            >
+              <View style={styles.permissionLeft}>
+                <Ionicons
+                  name="alarm"
+                  size={22}
+                  color={colors.danger}
+                />
+                <View>
+                  <Text
+                    style={[styles.permissionTitle, { color: colors.danger }]}
+                  >
+                    Exact alarm permission needed
+                  </Text>
+                  <Text
+                    style={[
+                      styles.permissionSub,
+                      { color: `${colors.danger}cc` },
+                    ]}
+                  >
+                    After app updates, this permission resets. Enable it for full-screen alarm popups.
+                  </Text>
+                </View>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={16}
+                color={colors.danger}
+              />
+            </TouchableOpacity>
+          )}
         {/* Battery Optimization Permission (Android) */}
         {Platform.OS === "android" &&
           nativeAlarmSupported &&
@@ -1098,6 +1248,39 @@ export default function NotificationSettings() {
                 <TouchableOpacity
                   style={styles.settingsBtn}
                   onPress={handleBatteryOptimization}
+                >
+                  <Text style={styles.settingsBtnText}>Fix</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+          {/* Exact Alarm Setting - Android only */}
+          {Platform.OS === "android" && nativeAlarmSupported && (
+            <View
+              style={[
+                styles.settingsRow,
+                { borderTopWidth: 1, borderTopColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="alarm"
+                size={18}
+                color={exactAlarmStatus === false ? colors.danger : colors.success}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  Exact Alarms
+                </Text>
+                <Text style={[styles.cardDesc, { color: colors.muted }]}>
+                  {exactAlarmStatus === true
+                    ? "Exact alarms are enabled  full-screen popups will appear for deadline alarms."
+                    : "Exact alarms are disabled. Tap to open settings and re-enable them after an app update."}
+                </Text>
+              </View>
+              {exactAlarmStatus !== true && (
+                <TouchableOpacity
+                  style={styles.settingsBtn}
+                  onPress={handleExactAlarmPermission}
                 >
                   <Text style={styles.settingsBtnText}>Fix</Text>
                 </TouchableOpacity>
@@ -1701,6 +1884,14 @@ const styles = StyleSheet.create({
   },
   permissionTitle: { fontSize: 13, fontWeight: "700", color: "#ef4444" },
   permissionSub: { fontSize: 11, color: "#f87171", marginTop: 2 },
+  halfBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: "center",
+  },
+  halfBtnText: { fontSize: 12, fontWeight: "600" },
   sectionLabel: {
     fontSize: 11,
     fontWeight: "700",

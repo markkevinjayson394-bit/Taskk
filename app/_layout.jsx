@@ -4,35 +4,37 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Stack, useRouter } from "expo-router";
 import * as Updates from "expo-updates";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { Component, useEffect, useRef, useState } from "react";
 import {
-    AppState,
-    ActivityIndicator,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  AppState,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { app, db } from "../config/firebase";
 import { ThemeProvider } from "../context/ThemeContext";
 import {
-    bootstrapDeadlineAlarmChannel,
-    DEADLINE_NOTIF_TYPE,
-    handleDeadlineAlarmResponse,
+  ACTION_MARK_DONE,
+  ACTION_NOT_DONE,
+  bootstrapDeadlineAlarmChannel,
+  DEADLINE_NOTIF_TYPE,
+  handleDeadlineAlarmResponse,
 } from "../utils/deadlineAlarmBackground";
 import {
-    errorIfDev,
-    reportError,
-    reportWarning,
-    warnIfDev,
+  errorIfDev,
+  reportError,
+  reportWarning,
+  warnIfDev,
 } from "../utils/logger";
 import {
-    getPostOnboardingRoute,
-    getTutorialRoute,
-    hasCompletedOnboarding,
+  getPostOnboardingRoute,
+  getTutorialRoute,
+  hasCompletedOnboarding,
 } from "../utils/onboarding";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
@@ -44,7 +46,10 @@ function buildSentryIntegrations() {
     try {
       integrations.push(Sentry.mobileReplayIntegration());
     } catch (error) {
-      warnIfDev("Sentry mobile replay integration failed to initialize:", error);
+      warnIfDev(
+        "Sentry mobile replay integration failed to initialize:",
+        error
+      );
     }
   }
 
@@ -245,7 +250,7 @@ function RootLayoutNav() {
     };
 
     const bootstrap = async () => {
-      bootstrapDeadlineAlarmChannel();
+      await bootstrapDeadlineAlarmChannel();
 
       timeoutId = setTimeout(() => {
         if (!active) return;
@@ -276,7 +281,8 @@ function RootLayoutNav() {
 
       if (!runtimeAuth) {
         reportWarning(null, {
-          message: "Firebase auth is unavailable during bootstrap; routing to login.",
+          message:
+            "Firebase auth is unavailable during bootstrap; routing to login.",
           tags: { location: "bootstrap_auth_unavailable" },
         });
         resolveRoute("/(auth)/login");
@@ -297,7 +303,20 @@ function RootLayoutNav() {
 
           try {
             const snap = await getDoc(doc(db, "users", user.uid));
-            const role = snap.exists() ? snap.data().role : "student";
+            if (!snap.exists()) {
+              const auth = getAuth(app);
+              await signOut(auth);
+              await AsyncStorage.removeItem("active_uid_v1");
+              resolveRoute("/(auth)/login");
+              return;
+            }
+            const eulaAccepted =
+              (await AsyncStorage.getItem("eula_v1")) === "true";
+            if (!eulaAccepted) {
+              resolveRoute("/eula");
+              return;
+            }
+            const role = snap.data().role || "student";
             Sentry.setUser({
               id: user.uid,
               email: user.email || undefined,
@@ -334,110 +353,71 @@ function RootLayoutNav() {
       }, OTA_PERIODIC_CHECK_INTERVAL_MS);
 
       let appState = AppState.currentState;
-      appStateSubscription = AppState.addEventListener("change", (nextState) => {
-        const wasBackgrounded = appState !== "active";
-        appState = nextState;
-        if (!wasBackgrounded || nextState !== "active") return;
+      appStateSubscription = AppState.addEventListener(
+        "change",
+        (nextState) => {
+          const wasBackgrounded = appState !== "active";
+          appState = nextState;
+          if (!wasBackgrounded || nextState !== "active") return;
 
-        const elapsedMs = Date.now() - lastOtaCheckAt.current;
-        if (elapsedMs < OTA_FOREGROUND_CHECK_COOLDOWN_MS) return;
-        runOtaUpdateCheck("foreground_resume");
-      });
+          const elapsedMs = Date.now() - lastOtaCheckAt.current;
+          if (elapsedMs < OTA_FOREGROUND_CHECK_COOLDOWN_MS) return;
+          runOtaUpdateCheck("foreground_resume");
+        }
+      );
     };
 
     bootstrap();
 
-    // These action identifiers must match the PendingIntent actions defined in
-    // AlarmForegroundService (android) and the expo notification categories.
-    // Android notification button "✓ Done"  → ACTION_ACKNOWLEDGE ("acknowledge_deadline_alarm")
-    // Android notification button "✕ Not Done" → ACTION_SNOOZE ("snooze_deadline_alarm")
-    const ACTION_ACKNOWLEDGE = "acknowledge_deadline_alarm";
-    const ACTION_SNOOZE = "snooze_deadline_alarm";
     notificationSubscription =
       Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data ?? {};
         const action = response?.actionIdentifier;
 
-        // Check if this is a deadline alarm notification
         const isDeadlineAlarm =
           data?.type === DEADLINE_NOTIF_TYPE ||
           data?.type === "deadline" ||
           data?.notificationType === DEADLINE_NOTIF_TYPE;
         if (!isDeadlineAlarm) return;
 
-        // "✓ Done" button (ACTION_ACKNOWLEDGE): stop alarm, navigate to TaskManager
-        // so DeadlineAlarmModal can mark the task complete and cancel alarms.
-        if (action === ACTION_ACKNOWLEDGE) {
-          handleDeadlineAlarmResponse(response);
-          const rawDueAtMs = Number(data?.dueAtMs);
-          const fallbackDueAtMs =
+        // Helper so we don't repeat this 3 times
+        const parseDueAtMs = () => {
+          const raw = Number(data?.dueAtMs);
+          if (Number.isFinite(raw)) return raw;
+          const fallback =
             typeof data?.dueAt === "string"
               ? new Date(data.dueAt).getTime()
               : NaN;
-          const dueAtMs = Number.isFinite(rawDueAtMs)
-            ? rawDueAtMs
-            : Number.isFinite(fallbackDueAtMs)
-              ? fallbackDueAtMs
-              : null;
+          return Number.isFinite(fallback) ? fallback : null;
+        };
+
+        const navigateTo = (pendingAction) => {
+          const dueAtMs = parseDueAtMs();
           router.push({
             pathname: "/(tabs)/TaskManagerScreen",
             params: {
               focusTaskId: data.taskId,
               showAlarm: "1",
-              pendingAction: "markdone",
+              ...(pendingAction ? { pendingAction } : {}),
               ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
             },
           });
-          return;
-        }
+        };
 
-        // "✕ Not Done" button (ACTION_SNOOZE): service already handled snooze.
-        // Navigate so user sees the task in DeadlineAlarmModal context.
-        // pendingAction "notdone" → DeadlineAlarmModal sees "Not Done" was pressed.
-        if (action === ACTION_SNOOZE) {
-          handleDeadlineAlarmResponse(response);
-          const rawDueAtMs = Number(data?.dueAtMs);
-          const fallbackDueAtMs =
-            typeof data?.dueAt === "string"
-              ? new Date(data.dueAt).getTime()
-              : NaN;
-          const dueAtMs = Number.isFinite(rawDueAtMs)
-            ? rawDueAtMs
-            : Number.isFinite(fallbackDueAtMs)
-              ? fallbackDueAtMs
-              : null;
-          router.push({
-            pathname: "/(tabs)/TaskManagerScreen",
-            params: {
-              focusTaskId: data.taskId,
-              showAlarm: "1",
-              pendingAction: "notdone",
-              ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-            },
-          });
-          return;
-        }
-
-        // Default notification body tap: navigate to TaskManager
         handleDeadlineAlarmResponse(response);
-        const rawDueAtMs = Number(data?.dueAtMs);
-        const fallbackDueAtMs =
-          typeof data?.dueAt === "string"
-            ? new Date(data.dueAt).getTime()
-            : NaN;
-        const dueAtMs = Number.isFinite(rawDueAtMs)
-          ? rawDueAtMs
-          : Number.isFinite(fallbackDueAtMs)
-            ? fallbackDueAtMs
-            : null;
-        router.push({
-          pathname: "/(tabs)/TaskManagerScreen",
-          params: {
-            focusTaskId: data.taskId,
-            showAlarm: "1",
-            ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-          },
-        });
+
+        if (action === ACTION_MARK_DONE) {
+          navigateTo("markdone");
+          return;
+        }
+
+        if (action === ACTION_NOT_DONE) {
+          navigateTo("notdone");
+          return;
+        }
+
+        // Default: bare notification body tap
+        navigateTo(null);
       });
 
     return () => {
@@ -615,4 +595,3 @@ const styles = StyleSheet.create({
   errorBtnText: { color: "#fff", fontSize: 12, fontWeight: "700" },
   errorBtnGhostText: { color: "#e2e8f0" },
 });
-

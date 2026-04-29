@@ -45,8 +45,8 @@ export { OVERDUE_CHAIN };
 export const DEADLINE_NOTIF_TYPE = "deadline_alarm";
 export const DEADLINE_CHANNEL_ID = "ctu-deadline-alarms-v1";
 export const DEADLINE_CATEGORY_ID = "deadline_alarm_actions";
-const ACTION_NOT_DONE = "not_done_deadline_alarm";
-const ACTION_MARK_DONE = "mark_done_deadline_alarm";
+export const ACTION_NOT_DONE = "not_done_deadline_alarm";
+export const ACTION_MARK_DONE = "mark_done_deadline_alarm";
 
 // Lead-time thresholds — 3 standard dismissable warnings
 const LEAD_TIMES = [
@@ -271,8 +271,8 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
           body: `"${taskTitle}" (${subjectLabel}) is due. Mark it done or tap Not Done to be reminded later.`,
           payload: dueData,
         });
-        if (result?.status === "success" && result?.value) {
-          ids.push(result.value);
+        if (result) {
+          ids.push(result);
         } else {
           await scheduleExpoDueAlarm(dueId, dueData, soundSettings);
           ids.push(dueId);
@@ -428,7 +428,7 @@ export async function scheduleNextOverdueAlarm(
         body,
         payload: data,
       });
-      if (result?.status === "success" && result?.value) return result.value;
+      if (result) return result;
     } catch (err) {
       warnIfDev("scheduleNextOverdueAlarm native failed:", err);
     }

@@ -3,13 +3,13 @@ import {
   getCoursesForCollege,
   normalizeCollege,
 } from "../constants/academics";
-import { normalizeText, normalizeYear } from "./scheduleHelpers";
 import { COURSE_COLORS } from "../constants/courseColors";
+import { normalizeText, normalizeYear } from "./scheduleHelpers";
 export { COURSE_COLORS } from "../constants/courseColors";
 
 export const DEFAULT_YEAR_OPTIONS = ["1", "2", "3", "4"];
 
-export { normalizeText, normalizeYear } from "./scheduleHelpers";
+export { normalizeText } from "./scheduleHelpers";
 
 export function countClasses(weekSchedule) {
   if (!weekSchedule) return 0;
@@ -23,7 +23,9 @@ export function buildCourseOptions(schedules, filterCollege) {
   const seen = new Set();
   if (filterCollege !== "All") {
     const normalizedFilter = normalizeCollege(filterCollege);
-    getCoursesForCollege(normalizedFilter).forEach((course) => seen.add(course));
+    getCoursesForCollege(normalizedFilter).forEach((course) =>
+      seen.add(course)
+    );
     schedules.forEach((item) => {
       if (normalizeCollege(item.college) === normalizedFilter && item.course) {
         seen.add(item.course);
@@ -61,11 +63,14 @@ export function filterSchedules(schedules, filters) {
 
   let data = schedules;
   if (filterCollege !== "All") {
-    data = data.filter((item) => normalizeCollege(item.college) === filterCollege);
+    data = data.filter(
+      (item) => normalizeCollege(item.college) === filterCollege
+    );
   }
   if (filterCourse !== "All") {
     data = data.filter(
-      (item) => String(item.course || "").toLowerCase() === filterCourse.toLowerCase()
+      (item) =>
+        String(item.course || "").toLowerCase() === filterCourse.toLowerCase()
     );
   }
   if (filterYear !== "All") {
@@ -109,7 +114,9 @@ export function sortSchedules(schedules) {
       String(b.collegeLabel || "")
     );
     if (byCollege !== 0) return byCollege;
-    const byCourse = String(a.course || "").localeCompare(String(b.course || ""));
+    const byCourse = String(a.course || "").localeCompare(
+      String(b.course || "")
+    );
     if (byCourse !== 0) return byCourse;
 
     const aYear = Number(a.year);
@@ -134,5 +141,3 @@ export async function deleteScheduleRecord({
     await reload();
   }
 }
-
-

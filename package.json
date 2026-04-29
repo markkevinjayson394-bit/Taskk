@@ -15,7 +15,8 @@
     "lint": "eslint app components context hooks utils features config --ignore-pattern '!**/node_modules/**'",
     "typecheck:js": "tsc -p tsconfig.checkjs.json",
     "test": "jest",
-    "test:ci": "jest --runInBand"
+    "test:ci": "jest --runInBand",
+    "check": "npm run typecheck:js && npm run lint && npm run test:ci"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

@@ -1,3 +1,17 @@
+import {
+  cancelAllNativeAlarms,
+  cancelNativeAlarmByScheduledId,
+  canPickNativeAlarmAudioFile,
+  canPickNativeAlarmTone,
+  fromNativeAlarmScheduledId,
+  isNativeAlarmScheduledId,
+  pickNativeAlarmAudioFile,
+  pickNativeAlarmTone,
+  scheduleNativeAlarm,
+  stopActiveNativeAlarm,
+  toNativeAlarmScheduledId,
+} from "../../utils/nativeAlarm";
+
 jest.mock("react-native", () => ({
   NativeModules: {
     NativeAlarmModule: {
@@ -8,8 +22,20 @@ jest.mock("react-native", () => ({
       canScheduleExactAlarms: jest.fn().mockResolvedValue(true),
       isIgnoringBatteryOptimizations: jest.fn().mockResolvedValue(true),
       openExactAlarmSettings: jest.fn(),
-      pickAlarmTone: jest.fn().mockResolvedValue({ uri: "/test/ring.mp3", label: "Test Ring", source: "device" }),
-      pickAlarmAudioFile: jest.fn().mockResolvedValue({ uri: "/test/file.mp3", label: "Test File", source: "device" }),
+      pickAlarmTone: jest
+        .fn()
+        .mockResolvedValue({
+          uri: "/test/ring.mp3",
+          label: "Test Ring",
+          source: "device",
+        }),
+      pickAlarmAudioFile: jest
+        .fn()
+        .mockResolvedValue({
+          uri: "/test/file.mp3",
+          label: "Test File",
+          source: "device",
+        }),
     },
   },
   Platform: { OS: "android" },
@@ -19,21 +45,6 @@ jest.mock("react-native", () => ({
 jest.mock("../../utils/logger", () => ({
   warnIfDev: jest.fn(),
 }));
-
-import {
-  isNativeAlarmSupported,
-  isNativeAlarmScheduledId,
-  toNativeAlarmScheduledId,
-  fromNativeAlarmScheduledId,
-  canPickNativeAlarmTone,
-  canPickNativeAlarmAudioFile,
-  scheduleNativeAlarm,
-  cancelNativeAlarmByScheduledId,
-  cancelAllNativeAlarms,
-  stopActiveNativeAlarm,
-  pickNativeAlarmTone,
-  pickNativeAlarmAudioFile,
-} from "../../utils/nativeAlarm";
 
 const NATIVE_ALARM_ID_PREFIX = "native-alarm:";
 
@@ -88,19 +99,28 @@ describe("nativeAlarm", () => {
     });
 
     it("returns null for missing alarmId", async () => {
-      const result = await scheduleNativeAlarm({ triggerAt: Date.now(), title: "t" });
+      const result = await scheduleNativeAlarm({
+        triggerAt: Date.now(),
+        title: "t",
+      });
       expect(result).toBe(null);
     });
 
     it("returns null for non-finite triggerAt", async () => {
-      const result = await scheduleNativeAlarm({ alarmId: "x", triggerAt: NaN, title: "t" });
+      const result = await scheduleNativeAlarm({
+        alarmId: "x",
+        triggerAt: NaN,
+        title: "t",
+      });
       expect(result).toBe(null);
     });
   });
 
   describe("cancelNativeAlarmByScheduledId", () => {
     it("cancels by prefixed scheduled id", async () => {
-      const result = await cancelNativeAlarmByScheduledId("native-alarm:some-id");
+      const result = await cancelNativeAlarmByScheduledId(
+        "native-alarm:some-id"
+      );
       expect(result).toBe(true);
     });
 

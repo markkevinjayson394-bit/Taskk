@@ -1,4 +1,9 @@
-import { NativeModules, Platform, TurboModuleRegistry } from "react-native";
+import {
+  Alert,
+  NativeModules,
+  Platform,
+  TurboModuleRegistry,
+} from "react-native";
 import { warnIfDev } from "./logger";
 
 const NativeAlarmModule =
@@ -15,8 +20,7 @@ export const isNativeAlarmSupported =
   typeof NativeAlarmModule.scheduleExactAlarm === "function";
 
 export const canPickNativeAlarmTone =
-  hasNativeAlarmModule &&
-  typeof NativeAlarmModule.pickAlarmTone === "function";
+  hasNativeAlarmModule && typeof NativeAlarmModule.pickAlarmTone === "function";
 
 export const canPickNativeAlarmAudioFile =
   hasNativeAlarmModule &&
@@ -40,7 +44,10 @@ export async function canScheduleExactAlarms() {
   if (typeof NativeAlarmModule.canScheduleExactAlarms !== "function")
     return { status: "unsupported" };
   try {
-    return { status: "success", value: Boolean(await NativeAlarmModule.canScheduleExactAlarms()) };
+    return {
+      status: "success",
+      value: Boolean(await NativeAlarmModule.canScheduleExactAlarms()),
+    };
   } catch (err) {
     warnIfDev("NativeAlarm: canScheduleExactAlarms failed:", err);
     return { status: "error", error: err };
@@ -60,12 +67,33 @@ export function openExactAlarmSettings() {
   }
 }
 
+export async function canUseFullScreenIntent() {
+  if (!isNativeAlarmSupported) return true;
+  if (typeof NativeAlarmModule.canUseFullScreenIntent !== "function")
+    return true;
+  try {
+    return Boolean(await NativeAlarmModule.canUseFullScreenIntent());
+  } catch {
+    return true;
+  }
+}
+
+export function openFullScreenIntentSettings() {
+  if (!isNativeAlarmSupported) return;
+  if (typeof NativeAlarmModule.openFullScreenIntentSettings !== "function")
+    return;
+  NativeAlarmModule.openFullScreenIntentSettings();
+}
+
 export async function isIgnoringBatteryOptimizations() {
   if (!isNativeAlarmSupported) return { status: "unsupported" };
   if (typeof NativeAlarmModule.isIgnoringBatteryOptimizations !== "function")
     return { status: "unsupported" };
   try {
-    return { status: "success", value: Boolean(await NativeAlarmModule.isIgnoringBatteryOptimizations()) };
+    return {
+      status: "success",
+      value: Boolean(await NativeAlarmModule.isIgnoringBatteryOptimizations()),
+    };
   } catch (err) {
     warnIfDev("NativeAlarm: isIgnoringBatteryOptimizations failed:", err);
     return { status: "error", error: err };
@@ -92,11 +120,10 @@ export async function scheduleNativeAlarm({
   body,
   payload,
 }) {
-  if (!isNativeAlarmSupported) return { status: "unsupported" };
-  if (!alarmId) return { status: "error", error: new Error("no alarmId") };
+  if (!isNativeAlarmSupported) return null;
+  if (!alarmId) return null;
   const triggerMs = Number(triggerAt);
-  if (!Number.isFinite(triggerMs) || triggerMs <= 0)
-    return { status: "error", error: new Error("invalid triggerAt") };
+  if (!Number.isFinite(triggerMs) || triggerMs <= 0) return null;
 
   try {
     const payloadJson =
@@ -109,50 +136,78 @@ export async function scheduleNativeAlarm({
       payloadJson
     );
     const nativeId = String(resolvedId || alarmId);
-    return { status: "success", value: toNativeAlarmScheduledId(nativeId) };
+    return toNativeAlarmScheduledId(nativeId);
   } catch (err) {
     warnIfDev("NativeAlarm: scheduleExactAlarm failed:", err);
-    return { status: "error", error: err };
+    return null;
   }
 }
 
 export async function cancelNativeAlarmByScheduledId(scheduledId) {
-  if (!isNativeAlarmSupported || !scheduledId)
-    return { status: "unsupported" };
+  if (!isNativeAlarmSupported || !scheduledId) return false;
   const alarmId = fromNativeAlarmScheduledId(String(scheduledId));
-  if (!alarmId) return { status: "error", error: new Error("invalid scheduledId") };
-  if (typeof NativeAlarmModule.cancelExactAlarm !== "function")
-    return { status: "unsupported" };
+  if (!alarmId) return false;
+  if (typeof NativeAlarmModule.cancelExactAlarm !== "function") return false;
   try {
-    return { status: "success", value: Boolean(await NativeAlarmModule.cancelExactAlarm(alarmId)) };
+    return Boolean(await NativeAlarmModule.cancelExactAlarm(alarmId));
   } catch (err) {
     warnIfDev("NativeAlarm: cancelExactAlarm failed:", err);
-    return { status: "error", error: err };
+    return false;
   }
 }
 
 export async function cancelAllNativeAlarms() {
-  if (!isNativeAlarmSupported) return { status: "unsupported" };
+  if (!isNativeAlarmSupported) return false;
   if (typeof NativeAlarmModule.cancelAllExactAlarms !== "function")
-    return { status: "unsupported" };
+    return false;
   try {
-    return { status: "success", value: Boolean(await NativeAlarmModule.cancelAllExactAlarms()) };
+    return Boolean(await NativeAlarmModule.cancelAllExactAlarms());
   } catch (err) {
     warnIfDev("NativeAlarm: cancelAllExactAlarms failed:", err);
-    return { status: "error", error: err };
+    return false;
   }
 }
 
 export async function stopActiveNativeAlarm() {
-  if (!isNativeAlarmSupported) return { status: "unsupported" };
+  if (!isNativeAlarmSupported)
+    return unwrapNativeResult({ status: "unsupported" });
   if (typeof NativeAlarmModule.stopActiveAlarm !== "function")
-    return { status: "unsupported" };
+    return unwrapNativeResult({ status: "unsupported" });
   try {
-    return { status: "success", value: Boolean(await NativeAlarmModule.stopActiveAlarm()) };
+    return unwrapNativeResult({
+      status: "success",
+      value: Boolean(await NativeAlarmModule.stopActiveAlarm()),
+    });
   } catch (err) {
     warnIfDev("NativeAlarm: stopActiveAlarm failed:", err);
+    return unwrapNativeResult({ status: "error", error: err });
+  }
+}
+
+export async function forceStopNativeAlarm() {
+  if (!isNativeAlarmSupported) return { status: "unsupported" };
+  if (typeof NativeAlarmModule.forceStopAlarm !== "function")
+    return { status: "unsupported" };
+  try {
+    return {
+      status: "success",
+      value: Boolean(await NativeAlarmModule.forceStopAlarm()),
+    };
+  } catch (err) {
+    warnIfDev("NativeAlarm: forceStopAlarm failed:", err);
     return { status: "error", error: err };
   }
+}
+
+function unwrapNativeResult(result) {
+  if (!result) return null;
+  if (result.status === "success" && "value" in result) {
+    return result.value;
+  }
+  if (result.status === "unsupported") {
+    return false;
+  }
+  return null;
 }
 
 function normalizeSoundSelection(result) {
@@ -189,9 +244,25 @@ export async function pickNativeAlarmTone(currentUri = "") {
 export async function pickNativeAlarmAudioFile() {
   if (!canPickNativeAlarmAudioFile) return null;
   try {
-    return normalizeSoundSelection(await NativeAlarmModule.pickAlarmAudioFile());
+    return normalizeSoundSelection(
+      await NativeAlarmModule.pickAlarmAudioFile()
+    );
   } catch (err) {
     warnIfDev("NativeAlarm: pickAlarmAudioFile failed:", err);
     return null;
+  }
+}
+
+export async function checkAlarmPopupPermission() {
+  const granted = await canUseFullScreenIntent();
+  if (!granted) {
+    Alert.alert(
+      "Popup Alarms Disabled",
+      "To see alarm popups on your lock screen, allow this app to display full-screen notifications.\\n\\nGo to Settings → Special app access → Alarms & reminders → enable this app.",
+      [
+        { text: "Open Settings", onPress: openFullScreenIntentSettings },
+        { text: "Later", style: "cancel" },
+      ]
+    );
   }
 }

@@ -280,8 +280,12 @@ export default function HomeDashboard() {
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
-  const { alarmVisible, alarmTask, acknowledgeAlarm } =
-    useDeadlineAlarmScheduler(upcomingAssignments);
+  const {
+    alarmVisible,
+    alarmTask,
+    acknowledgeAlarm,
+    notDoneAlarm,
+  } = useDeadlineAlarmScheduler(upcomingAssignments);
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
   const queueReminderRefresh = useCallback(
@@ -1516,7 +1520,16 @@ export default function HomeDashboard() {
       <DeadlineAlarmModal
         visible={alarmVisible}
         task={alarmTask}
-        onAcknowledge={acknowledgeAlarm}
+        onNotDone={async () => {
+          await notDoneAlarm();
+          fetchDashboardData(false, { forceRefresh: true });
+        }}
+        onMarkDone={async () => {
+          if (alarmTask?.id) {
+            await markDone(alarmTask);
+          }
+          await acknowledgeAlarm();
+        }}
       />
     </View>
   );

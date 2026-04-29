@@ -6,12 +6,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { getApps, initializeApp } from "firebase/app";
-// @ts-ignore React Native persistence export is used in this Expo runtime.
-import {
-  getAuth,
-  getReactNativePersistence,
-  initializeAuth,
-} from "firebase/auth";
+import { getAuth, getReactNativePersistence, initializeAuth } from "firebase/auth";
 import {
   disableNetwork,
   enableNetwork,
@@ -165,4 +160,3 @@ AppState.addEventListener("change", async (state) => {
 });
 
 export { app, auth, db, firebaseConfigError, isFirebaseConfigured };
-

@@ -1,7 +1,6 @@
-import React from "react";
 import { waitFor } from "@testing-library/react-native";
-import { render } from "../../utils/test-utils";
 import RootLayout from "../../app/_layout";
+import { render } from "../../utils/test-utils";
 
 const mockReplace = jest.fn();
 
@@ -50,13 +49,42 @@ jest.mock("firebase/firestore", () => ({
   }),
 }));
 
+jest.mock("../../utils/deadlineAlarmBackground", () => ({
+  bootstrapDeadlineAlarmChannel: jest.fn().mockResolvedValue(undefined),
+  DEADLINE_NOTIF_TYPE: "deadline_alarm",
+  ACTION_MARK_DONE: "markDone",
+  ACTION_NOT_DONE: "notDone",
+  handleDeadlineAlarmResponse: jest.fn(),
+}));
+
+jest.mock("expo-notifications", () => ({
+  addNotificationResponseReceivedListener: jest.fn(() => ({
+    remove: jest.fn(),
+  })),
+  scheduleNotificationAsync: jest.fn(),
+  cancelScheduledNotificationAsync: jest.fn(),
+  setNotificationHandler: jest.fn(),
+}));
+
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaProvider: ({ children }) => children,
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
+jest.mock("../../context/ThemeContext", () => ({
+  ThemeProvider: ({ children }) => children,
+  useTheme: () => ({ colors: {}, isDark: false }),
+}));
+
 jest.mock("expo-router", () => {
   const React = require("react");
 
   function Stack({ children }) {
     return React.createElement(React.Fragment, null, children);
   }
-  Stack.Screen = function Screen() { return null; };
+  Stack.Screen = function Screen() {
+    return null;
+  };
 
   return {
     useRouter: () => ({ replace: mockReplace }),
@@ -97,6 +125,16 @@ describe("Auth flow", () => {
       data: () => ({ role: "student" }),
     });
     onboardingModule.hasCompletedOnboarding.mockResolvedValue(true);
+
+    mockAsyncStorage.getItem
+      .mockResolvedValueOnce("true") // default eula
+      .mockResolvedValueOnce(null) // EULA test
+      .mockResolvedValueOnce("true") // admin test eula
+      .mockResolvedValueOnce("true"); // missing doc test eula
+
+    // _layout.js checks: (await AsyncStorage.getItem("eula_v1")) === "true"
+    // Must be the exact string "true" — not "accepted" — to pass the EULA gate.
+    // Default to accepted so it doesn't interfere with tests that aren't about EULA.
   });
 
   test("logged-in student is routed to tabs home", async () => {
@@ -129,6 +167,8 @@ describe("Auth flow", () => {
       exists: () => true,
       data: () => ({ role: "admin" }),
     });
+    // Explicit "true" so the EULA gate is cleared before role-based routing
+    mockAsyncStorage.getItem.mockResolvedValue("true");
 
     render(<RootLayout />);
 
@@ -138,6 +178,7 @@ describe("Auth flow", () => {
   });
 
   test("user without accepted EULA is routed to EULA screen", async () => {
+    // null → (await AsyncStorage.getItem("eula_v1")) === "true" is false → /eula
     mockAsyncStorage.getItem.mockResolvedValue(null);
 
     render(<RootLayout />);
@@ -155,15 +196,21 @@ describe("Auth flow", () => {
     firestoreModule.getDoc.mockResolvedValueOnce({
       exists: () => false,
     });
-    mockAsyncStorage.getItem.mockResolvedValue("accepted");
+    // EULA accepted — must be "true" so the code reaches the missing-doc
+    // branch instead of short-circuiting to /eula first.
+    mockAsyncStorage.getItem.mockResolvedValue("true");
 
     render(<RootLayout />);
 
     await waitFor(() => {
       expect(authModule.signOut).toHaveBeenCalled();
     });
-    expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith("active_uid_v1");
-    expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+    await waitFor(() => {
+      expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith("active_uid_v1");
+    });
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
+    });
     expect(mockReplace).not.toHaveBeenCalledWith("/(tabs)/home");
   });
 });

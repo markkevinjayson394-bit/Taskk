@@ -13,8 +13,7 @@ try {
 } catch (err) {
   warnIfDev("DeadlineAlarmModal: expo-av unavailable", err);
 }
-export { formatDeadlineCountdown, parseDueDate };
-export { PRIORITY_COLOR, TYPE_META };
+export { formatDeadlineCountdown, parseDueDate, PRIORITY_COLOR, TYPE_META };
 export async function playAlarmSound(soundRef) {
   if (!Audio) return;
   try {
@@ -26,6 +25,7 @@ export async function playAlarmSound(soundRef) {
     if (soundRef.current) {
       await soundRef.current.stopAsync().catch(() => {});
       await soundRef.current.unloadAsync().catch(() => {});
+      soundRef.current = null;
     }
     const { sound } = await Audio.Sound.createAsync(
       require("../assets/sounds/ctu_alarm.wav"),
@@ -33,6 +33,7 @@ export async function playAlarmSound(soundRef) {
     );
     soundRef.current = sound;
   } catch (err) {
+    soundRef.current = null;
     console.warn("DeadlineAlarmModal: audio unavailable", err);
   }
 }
@@ -65,4 +66,3 @@ export function stopVibration(ref) {
   }
   cancelAsync().catch(() => {});
 }
-

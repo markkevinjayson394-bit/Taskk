@@ -389,13 +389,32 @@ export default function TaskManagerScreen() {
 
   // Handle opened-from-notification:
   useEffect(() => {
-    if (showAlarm !== "1" || !focusTaskId) return;
+    console.log("[DEBUG Alarm] useEffect fired", {
+      showAlarm,
+      focusTaskId,
+      pendingAction,
+      routeDueAtMs,
+      tasksCount: tasks?.length,
+      hasShowAlarmFn: typeof showAlarmForTask === "function",
+    });
+    if (showAlarm !== "1" || !focusTaskId) {
+      console.log("[DEBUG Alarm] Early return: showAlarm !== '1' or no focusTaskId", {
+        showAlarm,
+        focusTaskId,
+      });
+      return;
+    }
 
     const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}`;
-    if (handledParamRef.current === handledKey) return;
+    console.log("[DEBUG Alarm] Proceeding to check handledKey", { handledKey, handledParamRef: handledParamRef.current });
+    if (handledParamRef.current === handledKey) {
+      console.log("[DEBUG Alarm] Already handled, skipping");
+      return;
+    }
 
     let active = true;
     const clearAlarmParams = () => {
+      console.log("[DEBUG Alarm] Clearing alarm params");
       router.setParams({
         showAlarm: undefined,
         focusTaskId: undefined,
@@ -405,19 +424,24 @@ export default function TaskManagerScreen() {
     };
 
     const fetchAndShow = async () => {
+      console.log("[DEBUG Alarm] fetchAndShow started", { pendingAction, focusTaskId });
       pendingActionRef.current =
         pendingAction === "acknowledge" ||
         pendingAction === "markdone" ||
         pendingAction === "notdone"
           ? pendingAction
           : null;
+      console.log("[DEBUG Alarm] pendingActionRef.current set to", pendingActionRef.current);
 
       try {
         let taskToShow = tasks.find((task) => task.id === focusTaskId) || null;
+        console.log("[DEBUG Alarm] taskToShow from local cache:", taskToShow?.id ?? "null");
 
         if (!taskToShow) {
+          console.log("[DEBUG Alarm] Task not in local state, fetching from Firestore");
           const snap = await getDoc(doc(db, "assignments", focusTaskId));
           if (!snap.exists()) {
+            console.log("[DEBUG Alarm] Task does not exist in Firestore");
             handledParamRef.current = handledKey;
             if (active) clearAlarmParams();
             return;
@@ -425,6 +449,7 @@ export default function TaskManagerScreen() {
 
           const taskData = snap.data() || {};
           if (taskData.completed) {
+            console.log("[DEBUG Alarm] Task is completed");
             handledParamRef.current = handledKey;
             if (active) clearAlarmParams();
             return;
@@ -434,6 +459,11 @@ export default function TaskManagerScreen() {
         }
 
         if (!taskToShow || taskToShow.completed || !active) {
+          console.log("[DEBUG Alarm] Task show blocked", {
+            hasTask: !!taskToShow,
+            completed: taskToShow?.completed,
+            active,
+          });
           handledParamRef.current = handledKey;
           if (active) clearAlarmParams();
           return;
@@ -448,14 +478,19 @@ export default function TaskManagerScreen() {
                 dueAtMs: routeDueAtMs,
               }
             : taskToShow;
+        console.log("[DEBUG Alarm] Calling showAlarmForTask with:", resolvedDue?.id, resolvedDue?.title);
 
         // FIX: Guard showAlarmForTask before calling
         if (typeof showAlarmForTask === "function") {
           showAlarmForTask(resolvedDue);
+          console.log("[DEBUG Alarm] showAlarmForTask called successfully");
+        } else {
+          console.log("[DEBUG Alarm] showAlarmForTask is not a function!", typeof showAlarmForTask);
         }
         handledParamRef.current = handledKey;
         clearAlarmParams();
       } catch (error) {
+        console.error("[DEBUG Alarm] fetchAndShow error:", error);
         warnIfDev(
           "TaskManagerScreen: failed to open task alarm from params:",
           error

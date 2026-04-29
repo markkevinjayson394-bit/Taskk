@@ -27,6 +27,7 @@
  *   "Not Done" stops sound/vibration immediately then advances the checkpoint chain.
  * - [FIX 2] Sound and vibration are stopped with await before any async work so
  *   they fully complete before the next alarm is scheduled.
+ * - [FIX 3] catch (e) → catch (_e) for ESLint no-unused-vars (4 locations).
  */
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -51,6 +52,7 @@ import {
 import { THRESHOLDS } from "../utils/deadlineConstants";
 import { getUrgencyMeta } from "../utils/deadlineTime";
 import {
+  forceStopNativeAlarm,
   isNativeAlarmSupported,
   scheduleNativeAlarm,
   stopActiveNativeAlarm,
@@ -198,10 +200,10 @@ async function scheduleNextDeadlineCheckpoint({
         payload: data,
       });
       if (nativeScheduledId) return;
-    } catch (err) {
+    } catch (_e) {
       console.warn(
         "DeadlineAlarmModal: failed to schedule native checkpoint:",
-        err
+        _e
       );
     }
   }
@@ -309,9 +311,12 @@ function DeadlineAlarmModal({
     vibrationIntervalRef.current = setInterval(() => {
       startVibration(vibRef);
     }, 5000);
-    // Repeat alarm sound every 10 seconds
-    soundIntervalRef.current = setInterval(() => {
-      stopAlarmSound(soundRef);
+    // Repeat alarm sound every 10 seconds — stop first, then play, to avoid overlap
+    soundIntervalRef.current = setInterval(async () => {
+      const currentId = soundIntervalRef.current;
+      if (currentId === null) return;
+      await stopAlarmSound(soundRef);
+      if (soundIntervalRef.current !== currentId) return;
       playAlarmSound(soundRef);
     }, 10000);
     return () => {
@@ -319,6 +324,7 @@ function DeadlineAlarmModal({
       clearInterval(tickRef.current);
       clearInterval(vibrationIntervalRef.current);
       clearInterval(soundIntervalRef.current);
+      soundIntervalRef.current = null;
       // Always stop sound/vibration on unmount — stopAlarmSound is idempotent
       stopVibration(vibRef);
       stopAlarmSound(soundRef);
@@ -331,18 +337,31 @@ function DeadlineAlarmModal({
   const handleNotDone = async () => {
     if (notDonePressed || markingDone) return;
     setNotDonePressed(true);
-    setSelfClosed(true);
     userDismissedRef.current = true;
 
-    // Stop all sound and vibration first — must complete before scheduling next alarm
-    // Stop all sound and vibration immediately (synchronously) before any async work
-    clearInterval(vibrationIntervalRef.current);
-    clearInterval(soundIntervalRef.current);
+    // Clear intervals immediately (synchronously)
+    if (vibrationIntervalRef.current) {
+      clearInterval(vibrationIntervalRef.current);
+      vibrationIntervalRef.current = null;
+    }
+    if (soundIntervalRef.current) {
+      clearInterval(soundIntervalRef.current);
+      soundIntervalRef.current = null;
+    }
+    // Stop vibration and native alarms
     stopVibration(vibRef);
-    await Promise.allSettled([
-      stopAlarmSound(soundRef),
-      stopActiveNativeAlarm(),
-    ]);
+    try {
+      if (typeof stopActiveNativeAlarm === "function") {
+        await stopActiveNativeAlarm().catch(() => {});
+      }
+    } catch (_e) {}
+    try {
+      if (typeof forceStopNativeAlarm === "function") {
+        await forceStopNativeAlarm().catch(() => {});
+      }
+    } catch (_e) {}
+    // Stop alarm sound and wait for it to complete
+    await stopAlarmSound(soundRef).catch(() => {});
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
       () => {}
@@ -352,8 +371,7 @@ function DeadlineAlarmModal({
     // Skip checkpoint scheduling for lead-time warnings (task not yet due) —
     // "Not Done" on a 2h/30m warning just dismisses the modal without chaining.
     const dueDate = parseDueDate(task?.dueAt);
-    const isLeadTime =
-      !dueDate || dueDate.getTime() - Date.now() > 0;
+    const isLeadTime = !dueDate || dueDate.getTime() - Date.now() > 0;
     if (!isLeadTime) {
       await onNotDone?.();
       if (task?.id && dueDate) {
@@ -393,23 +411,39 @@ function DeadlineAlarmModal({
     } else {
       await onNotDone?.();
     }
+    // Mark modal as self-closing after callbacks complete so state updates commit first
+    setSelfClosed(true);
   };
 
   // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
   const handleDone = async () => {
     if (notDonePressed || markingDone || !task?.id) return;
     setMarkingDone(true);
-    setSelfClosed(true);
     userDismissedRef.current = true;
 
-    // Stop all sound and vibration immediately (synchronously) before any async work
-    clearInterval(vibrationIntervalRef.current);
-    clearInterval(soundIntervalRef.current);
+    // Clear intervals immediately (synchronously)
+    if (vibrationIntervalRef.current) {
+      clearInterval(vibrationIntervalRef.current);
+      vibrationIntervalRef.current = null;
+    }
+    if (soundIntervalRef.current) {
+      clearInterval(soundIntervalRef.current);
+      soundIntervalRef.current = null;
+    }
+    // Stop vibration and native alarms
     stopVibration(vibRef);
-    await Promise.allSettled([
-      stopAlarmSound(soundRef),
-      stopActiveNativeAlarm(),
-    ]);
+    try {
+      if (typeof stopActiveNativeAlarm === "function") {
+        await stopActiveNativeAlarm().catch(() => {});
+      }
+    } catch (_e) {}
+    try {
+      if (typeof forceStopNativeAlarm === "function") {
+        await forceStopNativeAlarm().catch(() => {});
+      }
+    } catch (_e) {}
+    // Stop alarm sound and wait for it to complete
+    await stopAlarmSound(soundRef).catch(() => {});
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
@@ -422,8 +456,10 @@ function DeadlineAlarmModal({
     } catch (err) {
       console.warn("DeadlineAlarmModal: failed to mark task done:", err);
       setMarkingDone(false);
-      setSelfClosed(false);
+      return;
     }
+    // Mark modal as self-closing after callbacks complete so state updates commit first
+    setSelfClosed(true);
   };
 
   const handleRequestClose = () => {
@@ -447,8 +483,14 @@ function DeadlineAlarmModal({
     ]).start();
   };
 
-  if (!task || selfClosed) return null;
-
+  if (!task || selfClosed) {
+    console.log("[DEBUG Modal] Returning null", {
+      hasTask: !!task,
+      selfClosed,
+    });
+    return null;
+  }
+  console.log("[DEBUG Modal] About to render Modal component", { visible });
   return (
     <Modal
       visible={visible}

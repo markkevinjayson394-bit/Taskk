@@ -30,7 +30,9 @@ export function normalizeText(value) {
 
 export function normalizeYear(year) {
   if (year === null || year === undefined || year === "") return "";
-  const n = Number(year);
+  // Strip leading non-numeric prefix like "Year " from "Year 1"
+  const stripped = String(year).replace(/^[^0-9]+/, "");
+  const n = Number(stripped);
   return Number.isFinite(n) ? String(n) : String(year).trim();
 }
 

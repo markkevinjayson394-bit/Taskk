@@ -3,17 +3,38 @@
 
 /**
  * Parses a time string into total minutes from midnight.
- * Handles: "8:00 AM", "13:30", "8:30am", bare hours, and ISO datetimes.
+ * Handles: "8:00 AM", "1:30 PM", "13:30", "8:30am", bare hours, and ISO datetimes.
  * Returns null if unparseable.
  */
 export function parseTimeToMinutes(str) {
   if (!str) return null;
-  // HH:MM
-  const simple = str.match(/^(\d{2}):(\d{2})$/);
+
+  // HH:MM (24-hour, strict)
+  const simple = str.match(/^(\d{1,2}):(\d{2})$/);
   if (simple) return parseInt(simple[1]) * 60 + parseInt(simple[2]);
-  // ISO string
+
+  // ISO string — e.g. "2024-01-01T08:00:00"
   const iso = str.match(/T(\d{2}):(\d{2}):/);
   if (iso) return parseInt(iso[1]) * 60 + parseInt(iso[2]);
+
+  // 12-hour AM/PM — e.g. "8:00 AM", "1:30 PM", "12:00pm", "8:30am"
+  const ampm = str.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+  if (ampm) {
+    let h = parseInt(ampm[1]);
+    const m = parseInt(ampm[2]);
+    const period = ampm[3].toLowerCase();
+    if (period === "am" && h === 12) h = 0; // 12:xx AM → 0:xx
+    if (period === "pm" && h !== 12) h += 12; // 1–11 PM → 13–23
+    return h * 60 + m;
+  }
+
+  // Bare hour — e.g. "8" or "13"
+  const bare = str.match(/^(\d{1,2})$/);
+  if (bare) {
+    const h = parseInt(bare[1]);
+    return h * 60;
+  }
+
   return null;
 }
 

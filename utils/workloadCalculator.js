@@ -1,5 +1,6 @@
-import { parseDueDate } from "./academicTaskModel";
+import { resolveTaskDueDate } from "./academicTaskModel";
 import { localDaysBetween, startOfLocalDay } from "./dateHelpers";
+
 
 export function calculateDailyWorkload(tasks) {
   const TYPE_POINTS = {
@@ -19,6 +20,7 @@ export function calculateDailyWorkload(tasks) {
 
   // Use the shared local-day helper so workload calculations stay timezone-safe.
   const startOfToday = startOfLocalDay();
+  if (!startOfToday) return 0;
 
   let score = 0;
 
@@ -26,7 +28,7 @@ export function calculateDailyWorkload(tasks) {
     // Skip completed tasks
     if (t.completed) return;
 
-    const dueDate = parseDueDate(t.dueAt);
+    const dueDate = resolveTaskDueDate(t);
     if (!dueDate) return;
 
     // Skip tasks before today; keep today and future workload.
@@ -56,7 +58,7 @@ export function calculateDailyWorkload(tasks) {
  * Returns a label based on the workload score.
  */
 export function getWorkloadLabel(score) {
-  if (score >= 80) return "Heavy";
-  if (score >= 50) return "Moderate";
+  if (score >= 20) return "Heavy";
+  if (score >= 10) return "Moderate";
   return "Light";
 }

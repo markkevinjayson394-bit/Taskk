@@ -14,7 +14,7 @@ import {
   formatEstimatedMinutes,
   getQuickSnoozePlan,
   getWorkloadLabel,
-  parseDueDate,
+  resolveTaskDueDate,
 } from "./TaskManagerScreen.helpers";
 
 const URGENCY_VISUALS = {
@@ -119,7 +119,7 @@ export const SubjectBreakdown = memo(function SubjectBreakdown({
       const name = t.subjectName || t.subject || "General";
       const prev = map.get(name) || { name, count: 0, overdue: 0 };
       prev.count += 1;
-      const due = parseDueDate(t.dueAt);
+      const due = resolveTaskDueDate(t);
       if (due && due < nowTick) prev.overdue += 1;
       map.set(name, prev);
     });
@@ -230,7 +230,7 @@ export function TaskCard({
   deletingMode,
   canEdit = true,
 }) {
-  const due = parseDueDate(task.dueAt);
+  const due = resolveTaskDueDate(task);
   const urgency = getUrgencyPresentation(due?.getTime(), nowTick.getTime());
   const tm = TYPE_META[task.type] || TYPE_META.assignment;
   const pColor = PRIORITY_COLOR[task.priority] || colors.primary;

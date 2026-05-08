@@ -1,58 +1,77 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getNext8AM } from "./alarmTimeHelpers.js";
+import { OVERDUE_CHAIN } from "./deadlineConstants";
 
-const KEY = "task_overdue_checkpoints";
-
-export const OVERDUE_CHAIN = [
-  { key: "+15m", delayMs: 15 * 60 * 1000 },
-  { key: "+1h", delayMs: 60 * 60 * 1000 },
-  { key: "+3h", delayMs: 3 * 60 * 60 * 1000 },
-  { key: "daily", delayMs: null },
-];
+const KEYS = {
+  checkpoint: (taskId) => `task_overdue_checkpoint_${taskId}`,
+};
 
 export async function getCheckpoint(taskId) {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const map = raw ? JSON.parse(raw) : {};
-    return map[taskId] ?? null;
+    const key = KEYS.checkpoint(taskId);
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Normalize old format that stored 'stage' instead of 'key'
+    if (parsed && !parsed.key && parsed.stage) {
+      parsed.key = parsed.stage;
+    }
+    return parsed;
   } catch {
     return null;
   }
 }
 
-export async function advanceCheckpoint(taskId, currentStage) {
-  const raw = await AsyncStorage.getItem(KEY);
-  const map = raw ? JSON.parse(raw) : {};
-  const idx = OVERDUE_CHAIN.findIndex((c) => c.key === currentStage);
-
-  // Already at the end — stay at daily, don't reset scheduledAt
-  if (currentStage === "daily" || idx === OVERDUE_CHAIN.length - 1) {
-    return OVERDUE_CHAIN[OVERDUE_CHAIN.length - 1];
+export async function advanceCheckpoint(taskId, currentKey) {
+  // If daily, always schedule next 8AM
+  if (currentKey === "daily") {
+    const nextTrigger = getNext8AM().getTime();
+    await setCheckpoint(taskId, "daily", nextTrigger);
+    const lastChainEntry = OVERDUE_CHAIN[OVERDUE_CHAIN.length - 1];
+    return { ...lastChainEntry, triggerAtMs: nextTrigger };
   }
 
-  const next =
-    OVERDUE_CHAIN[idx + 1] ?? OVERDUE_CHAIN[OVERDUE_CHAIN.length - 1];
-  map[taskId] = { stage: next.key, scheduledAt: Date.now() };
-  await AsyncStorage.setItem(KEY, JSON.stringify(map));
+  // If this is a lead-time key (not in OVERDUE_CHAIN), start from "due"
+  const validKeys = new Set(OVERDUE_CHAIN.map((c) => c.key));
+  const resolvedKey = validKeys.has(currentKey) ? currentKey : "due";
+
+  const idx = OVERDUE_CHAIN.findIndex((c) => c.key === resolvedKey);
+  if (idx === -1 || idx === OVERDUE_CHAIN.length - 1) {
+    // Already at end of chain → go to daily
+    const nextTrigger = getNext8AM().getTime();
+    await setCheckpoint(taskId, "daily", nextTrigger);
+    const lastChainEntry = OVERDUE_CHAIN[OVERDUE_CHAIN.length - 1];
+    return { ...lastChainEntry, triggerAtMs: nextTrigger };
+  }
+
+  const next = OVERDUE_CHAIN[idx + 1];
+  const estimatedTriggerMs = Number.isFinite(next.delayMs)
+    ? Date.now() + next.delayMs
+    : null;
+  await setCheckpoint(taskId, next.key, estimatedTriggerMs);
   return next;
 }
 
 export async function clearCheckpoint(taskId) {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const map = raw ? JSON.parse(raw) : {};
-    delete map[taskId];
-    await AsyncStorage.setItem(KEY, JSON.stringify(map));
+    const key = KEYS.checkpoint(taskId);
+    await AsyncStorage.removeItem(key);
   } catch {
     // ignore
   }
 }
 
-export async function setCheckpoint(taskId, stage) {
+export async function setCheckpoint(taskId, key, triggerAtMs = null) {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const map = raw ? JSON.parse(raw) : {};
-    map[taskId] = { stage, scheduledAt: Date.now() };
-    await AsyncStorage.setItem(KEY, JSON.stringify(map));
+    const storageKey = KEYS.checkpoint(taskId);
+    await AsyncStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        key,
+        scheduledAt: Date.now(),
+        triggerAtMs: Number.isFinite(triggerAtMs) ? triggerAtMs : null,
+      })
+    );
   } catch {
     // ignore
   }

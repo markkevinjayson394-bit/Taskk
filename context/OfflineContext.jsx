@@ -219,22 +219,20 @@ export function OfflineProvider({ children }) {
       const now = new Date().toISOString();
       setLastSync(now);
 
-      const keysToClear =
-        Array.isArray(queueKeys) && queueKeys.length > 0
-          ? queueKeys
-          : [
-              OFFLINE_QUEUE_KEYS.createAssignments(uid),
-              OFFLINE_QUEUE_KEYS.completeAssignments(uid),
-            ];
+      const keysToClear = Array.isArray(queueKeys)
+        ? queueKeys.filter((key) => typeof key === "string" && key)
+        : [];
 
-      try {
-        await AsyncStorage.multiRemove(keysToClear);
-      } catch (error) {
-        reportWarning(error, {
-          message: "Failed to clear offline queue keys after sync.",
-          tags: { location: "offline_clear_queue_after_sync" },
-          extra: { userId: uid, queueKeyCount: keysToClear.length },
-        });
+      if (keysToClear.length > 0) {
+        try {
+          await AsyncStorage.multiRemove(keysToClear);
+        } catch (error) {
+          reportWarning(error, {
+            message: "Failed to clear offline queue keys after sync.",
+            tags: { location: "offline_clear_queue_after_sync" },
+            extra: { userId: uid, queueKeyCount: keysToClear.length },
+          });
+        }
       }
 
       await saveToCache(CACHE_KEYS.lastSync(uid), now);

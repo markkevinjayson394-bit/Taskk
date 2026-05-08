@@ -1,11 +1,22 @@
 // TaskManagerScreen.helpers.js
 // Extracted helper functions and constants from TaskManagerScreen.js
 
-import {
-  calculateDailyWorkload
-} from "@/utils/workloadCalculator";
+import { calculateDailyWorkload } from "@/utils/workloadCalculator";
 import * as AcademicTaskModel from "../../utils/academicTaskModel";
-import { parseDueDate } from "../../utils/academicTaskModel";
+import {
+  parseDueDate,
+  resolveTaskDueDate,
+} from "../../utils/academicTaskModel";
+import {
+  cancelDeadlineAlarms,
+  scheduleDeadlineAlarms,
+} from "../../utils/deadlineAlarmBackground";
+import { warnIfDev } from "../../utils/logger";
+import {
+  prepareQueuedTaskPayloadForFirestore,
+  readOfflineCreateQueue,
+  writeOfflineCreateQueue,
+} from "../../utils/offlineTaskQueue";
 
 const normalizeSubjectName =
   typeof AcademicTaskModel.normalizeSubjectName === "function"
@@ -32,6 +43,44 @@ export const PENDING_UPDATES_KEY = (uid) => `pending_complete_${uid}`;
 export const SUBJECT_CATALOG_KEY = (uid) => `subject_catalog_${uid}`;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const PAGE_SIZE = 12;
+
+// ---
+// Offline create queue helpers (mirrors the plannerStorage pattern)
+// ---
+
+export async function readCreateQueue(uid) {
+  return readOfflineCreateQueue(uid);
+}
+
+export async function writeCreateQueue(uid, queue) {
+  return writeOfflineCreateQueue(uid, queue);
+}
+
+export async function flushCreateQueue(uid, flushFn, soundSettings = {}) {
+  const queue = await readOfflineCreateQueue(uid);
+  if (!queue.length) return { flushed: 0, remaining: [] };
+  const remaining = [];
+  let flushed = 0;
+  for (const item of queue) {
+    const payload = prepareQueuedTaskPayloadForFirestore(item.payload);
+    try {
+      const docRef = await flushFn({ ...item, payload });
+      flushed++;
+      await cancelDeadlineAlarms({ id: item.id }).catch(() => {});
+      if (docRef?.id) {
+        scheduleDeadlineAlarms(
+          { id: docRef.id, ...payload },
+          soundSettings
+        ).catch((_e) => {});
+      }
+    } catch (err) {
+      warnIfDev("TaskManagerScreen: failed to flush create queue item:", err);
+      remaining.push({ ...item, payload });
+    }
+  }
+  await writeOfflineCreateQueue(uid, remaining);
+  return { flushed, remaining };
+}
 export const GENERAL_SUBJECT = "General";
 export const GENERAL_SUBJECT_ID = "subject_general";
 export const DEFAULT_MANUAL_TASK_REMINDER_POLICY = {
@@ -172,7 +221,7 @@ export function calculateWorkloadScore(tasks = []) {
 }
 
 export function getSectionKey(task, now) {
-  const due = parseDueDate(task.dueAt);
+  const due = resolveTaskDueDate(task);
   if (!due) return "upcoming";
   if (due < now) return "overdue";
   const endToday = new Date(now);

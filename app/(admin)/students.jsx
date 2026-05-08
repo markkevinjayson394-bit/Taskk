@@ -193,27 +193,23 @@ export default function StudentsScreen() {
       return a.label.localeCompare(b.label);
     });
 
-  const searchResults = search.trim()
-    ? allStudents.filter(
-        (s) =>
-          s.fullName.toLowerCase().includes(search.toLowerCase()) ||
-          s.email.toLowerCase().includes(search.toLowerCase()) ||
-          String(s.idNumber || "")
-            .toLowerCase()
-            .includes(search.toLowerCase()) ||
-          String(s.college || "")
-            .toLowerCase()
-            .includes(search.toLowerCase()) ||
-          getCollegeLabel(s.college)
-            .toLowerCase()
-            .includes(search.toLowerCase()) ||
-          String(s.year || "")
-            .toLowerCase()
-            .includes(search.toLowerCase()) ||
-          String(s.section || "")
-            .toLowerCase()
-            .includes(search.toLowerCase())
-      )
+  const needle = search.trim().toLowerCase();
+  const searchResults = needle
+    ? allStudents.filter((s) => {
+        const haystack = [
+          s.fullName,
+          s.email,
+          String(s.idNumber || ""),
+          String(s.college || ""),          // code e.g. "COT"
+          getCollegeLabel(s.college || ""), // label e.g. "College of Technology"
+          String(s.course || ""),
+          String(s.year || ""),
+          String(s.section || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(needle);
+      })
     : [];
 
   if (loading) {

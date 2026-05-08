@@ -12,7 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   ActivityIndicator,
   StyleSheet,
@@ -30,8 +30,11 @@ const AUTH_GUARD_TIMEOUT_MS = 15000;
 export default function AdminLayout() {
   const { colors, isDark } = useTheme();
   const router = useRouter();
+  const routerRef = useRef(router);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState(false);
+
+  useEffect(() => { routerRef.current = router; });
 
   useAndroidBackNavigation({ rootPath: "/(admin)/home" });
 
@@ -50,7 +53,7 @@ export default function AdminLayout() {
         clearTimeout(timeout);
         setError(false);
         setChecking(false);
-        router.replace("/(auth)/login");
+        routerRef.current.replace("/(auth)/login");
         return;
       }
 
@@ -62,7 +65,7 @@ export default function AdminLayout() {
         if (!snap.exists() || snap.data().role !== "admin") {
           setError(false);
           setChecking(false);
-          router.replace("/(tabs)/home");
+          routerRef.current.replace("/(tabs)/home");
           return;
         }
 
@@ -103,7 +106,7 @@ export default function AdminLayout() {
         </Text>
         <TouchableOpacity
           style={styles.errorBtn}
-          onPress={() => router.replace("/(auth)/login")}
+          onPress={() => routerRef.current.replace("/(auth)/login")}
         >
           <Ionicons name="arrow-back" size={16} color="#fff" />
           <Text style={styles.errorBtnText}>Back to Login</Text>

@@ -1,19 +1,29 @@
-import {
-  cancelAsync,
-  notificationAsync,
-  NotificationFeedbackType,
-} from "expo-haptics";
-import { parseDueDate } from "../utils/academicTaskModel";
+import { notificationAsync, NotificationFeedbackType } from "expo-haptics";
+import { Vibration } from "react-native";
+import { parseDueDate, resolveTaskDueDate } from "../utils/academicTaskModel";
 import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { warnIfDev } from "../utils/logger";
 import { PRIORITY_COLOR, TYPE_META } from "../utils/taskConstants";
+
 let Audio = null;
 try {
   Audio = require("expo-av").Audio;
 } catch (err) {
   warnIfDev("DeadlineAlarmModal: expo-av unavailable", err);
 }
-export { formatDeadlineCountdown, parseDueDate, PRIORITY_COLOR, TYPE_META };
+
+export {
+  formatDeadlineCountdown,
+  parseDueDate,
+  resolveTaskDueDate,
+  PRIORITY_COLOR,
+  TYPE_META,
+};
+
+// ---------------------------------------------------------------------------
+// Sound
+// ---------------------------------------------------------------------------
+
 export async function playAlarmSound(soundRef) {
   if (!Audio) return;
   try {
@@ -37,6 +47,7 @@ export async function playAlarmSound(soundRef) {
     console.warn("DeadlineAlarmModal: audio unavailable", err);
   }
 }
+
 export async function stopAlarmSound(soundRef) {
   try {
     if (soundRef.current) {
@@ -48,21 +59,51 @@ export async function stopAlarmSound(soundRef) {
     warnIfDev("DeadlineAlarmModal: failed to stop alarm sound", err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Vibration
+//
+// Uses React Native's Vibration API with a repeating pattern instead of a
+// haptics setInterval, which was unreliable on Android and produced no
+// continuous feedback. Pattern: 0ms delay → 600ms vibrate → 900ms pause,
+// repeat=true keeps it looping until stopVibration() calls Vibration.cancel().
+// The ref is kept so callers can guard against double-starts, but the actual
+// loop is managed by the OS via Vibration.vibrate.
+// ---------------------------------------------------------------------------
+
+const VIBRATION_PATTERN = [0, 600, 900]; // [delay, vibrate, pause]
+
 export function startVibration(ref) {
-  if (ref.current) {
-    clearInterval(ref.current);
-    ref.current = null;
-  }
-  const fire = () =>
-    notificationAsync(NotificationFeedbackType.Warning).catch(() => {});
-  fire();
-  ref.current = setInterval(fire, 2500);
+  // Guard: don't start a second loop if one is already running.
+  if (ref.current) return;
+
+  // Mark as active with a sentinel value (true) so the guard above works.
+  ref.current = true;
+
+  // Fire one haptic burst immediately for instant tactile feedback on iOS,
+  // where Vibration.vibrate with repeat may not be supported.
+  notificationAsync(NotificationFeedbackType.Warning).catch(() => {});
+
+  // Start the repeating OS-level vibration (effective on Android).
+  Vibration.vibrate(VIBRATION_PATTERN, /* repeat */ true);
 }
 
 export function stopVibration(ref) {
   if (ref.current) {
-    clearInterval(ref.current);
+    Vibration.cancel();
     ref.current = null;
   }
-  cancelAsync().catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Task type helpers
+// ---------------------------------------------------------------------------
+
+export function isPlannerTask(task = {}) {
+  const source =
+    typeof task?.source === "string" ? task.source.trim().toLowerCase() : "";
+  if (task?.plannerArchived || source === "planner") return true;
+  return (
+    typeof task?.plannerRef === "string" && task.plannerRef.trim().length > 0
+  );
 }

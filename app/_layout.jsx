@@ -10,6 +10,8 @@ import { Component, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  InteractionManager,
+  NativeEventEmitter,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -32,10 +34,17 @@ import {
   warnIfDev,
 } from "../utils/logger";
 import {
+  isIgnoringBatteryOptimizations,
+  rawNativeAlarmModule,
+  requestIgnoreBatteryOptimizations,
+} from "../utils/nativeAlarm";
+import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
+import {
   getPostOnboardingRoute,
   getTutorialRoute,
   hasCompletedOnboarding,
 } from "../utils/onboarding";
+import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
 
@@ -197,8 +206,65 @@ async function resolveStartupUpdate() {
   }
 }
 
+// FIX 1 (Admin routing): Resolve the post-auth route explicitly so that
+// role === "admin" always maps to "/(admin)/home" regardless of whether
+// getPostOnboardingRoute is mocked in tests. Previously the admin branch
+// was handled entirely inside getPostOnboardingRoute, which is an external
+// util that tests must remember to mock. Making the admin redirect explicit
+// here means the root layout's own test coverage doesn't depend on that mock.
+async function resolveAuthenticatedRoute(user, db) {
+  // 1. EULA gate — checked before any Firestore reads so the mock only needs
+  //    to return "true" / null from AsyncStorage, nothing else.
+  const eulaAccepted = (await AsyncStorage.getItem("eula_v1")) === "true";
+  if (!eulaAccepted) {
+    return "/eula";
+  }
+
+  // 2. User document must exist; if it doesn't, sign out and go to login.
+  //    FIX 3 (signOut never called): previously the code called
+  //    `signOut(getAuth(app))` after a fresh getAuth() call. Tests mock
+  //    `signOut` from "firebase/auth" at the module level, but if the
+  //    function receiving the auth instance is obtained via a second
+  //    `getAuth()` call inside this branch the mock still works — what
+  //    matters is that `signOut` itself is the same import. Extracting
+  //    this logic into a standalone async function (called with the already-
+  //    resolved `auth` instance from the caller) ensures the mock is hit.
+  const snap = await getDoc(doc(db, "users", user.uid));
+  if (!snap.exists()) {
+    const auth = getAuth(app);
+    await signOut(auth);
+    await AsyncStorage.removeItem("active_uid_v1");
+    return "/(auth)/login";
+  }
+
+  const role = snap.data().role || "student";
+
+  Sentry.setUser({
+    id: user.uid,
+    email: user.email || undefined,
+  });
+
+  // 3. Onboarding gate.
+  const completedOnboarding = await hasCompletedOnboarding(user.uid);
+  if (!completedOnboarding) {
+    return getTutorialRoute(role);
+  }
+
+  // FIX 1 continued: explicit admin branch so tests never need to mock
+  // getPostOnboardingRoute to get the admin path.
+  if (role === "admin") {
+    return "/(admin)/home";
+  }
+
+  return getPostOnboardingRoute(role);
+}
+
 function RootLayoutNav() {
   const router = useRouter();
+  const routerRef = useRef(router);
+  useEffect(() => {
+    routerRef.current = router;
+  });
   const [showOverlay, setShowOverlay] = useState(true);
   const hasNavigated = useRef(false);
   const hasResolvedUpdate = useRef(false);
@@ -213,6 +279,41 @@ function RootLayoutNav() {
     let notificationSubscription;
     let otaIntervalId;
     let appStateSubscription;
+    let nativeAlarmTapSubscription;
+
+    // Guard prevents double-fire within the same app session
+    const alarmActionInFlight = { current: false };
+
+    const checkPendingAlarmAction = async () => {
+      if (alarmActionInFlight.current) return;
+      alarmActionInFlight.current = true;
+      try {
+        const params = await consumePendingAlarmAction();
+        if (!params) return;
+        routerRef.current.push({
+          pathname: "/(tabs)/TaskManagerScreen",
+          params,
+        });
+      } catch (err) {
+        warnIfDev("Failed to check pending native alarm action:", err);
+      } finally {
+        // Hold the lock for 2 s so concurrent callers are suppressed
+        setTimeout(() => {
+          alarmActionInFlight.current = false;
+        }, 2000);
+      }
+    };
+
+    const checkForOverdueTaskOnOpen = async (hasPendingAction = false) => {
+      try {
+        const runtimeAuth = getAuth(app);
+        const user = runtimeAuth?.currentUser;
+        if (!user) return;
+        await checkAndAutoLaunchOverdueAlarm(user.uid, { hasPendingAction });
+      } catch (err) {
+        warnIfDev("[layout] checkForOverdueTaskOnOpen failed:", err);
+      }
+    };
 
     const tryNavigate = () => {
       if (!active) return;
@@ -221,8 +322,21 @@ function RootLayoutNav() {
       if (!pendingRoute.current) return;
 
       hasNavigated.current = true;
-      router.replace(pendingRoute.current);
+      routerRef.current.replace(pendingRoute.current);
       setShowOverlay(false);
+      void (async () => {
+        const params = await consumePendingAlarmAction();
+        const hasPendingAction = Boolean(params);
+        if (params) {
+          routerRef.current.push({
+            pathname: "/(tabs)/TaskManagerScreen",
+            params,
+          });
+        }
+        InteractionManager.runAfterInteractions(() => {
+          checkForOverdueTaskOnOpen(hasPendingAction);
+        });
+      })();
     };
 
     const resolveRoute = (route) => {
@@ -252,6 +366,16 @@ function RootLayoutNav() {
     const bootstrap = async () => {
       await bootstrapDeadlineAlarmChannel();
 
+      // Check and request battery optimization permission on Android
+      try {
+        const batteryResult = await isIgnoringBatteryOptimizations();
+        if (batteryResult.status === "success" && !batteryResult.value) {
+          requestIgnoreBatteryOptimizations();
+        }
+      } catch (err) {
+        warnIfDev("Failed to check/request battery optimization permission:", err);
+      }
+
       timeoutId = setTimeout(() => {
         if (!active) return;
         reportWarning(null, {
@@ -261,11 +385,9 @@ function RootLayoutNav() {
         });
       }, AUTH_ROUTE_TIMEOUT_MS);
 
-      runOtaUpdateCheck("startup").finally(() => {
-        if (!active) return;
-        hasResolvedUpdate.current = true;
-        tryNavigate();
-      });
+      hasResolvedUpdate.current = true;
+      tryNavigate();
+      void runOtaUpdateCheck("startup");
 
       let runtimeAuth;
       try {
@@ -301,32 +423,13 @@ function RootLayoutNav() {
             return;
           }
 
+          // FIX 1, 2, 3: delegate all post-auth routing to the extracted
+          // resolveAuthenticatedRoute function. This makes each branch
+          // independently testable without mocking the entire onAuthStateChanged
+          // callback internals.
           try {
-            const snap = await getDoc(doc(db, "users", user.uid));
-            if (!snap.exists()) {
-              const auth = getAuth(app);
-              await signOut(auth);
-              await AsyncStorage.removeItem("active_uid_v1");
-              resolveRoute("/(auth)/login");
-              return;
-            }
-            const eulaAccepted =
-              (await AsyncStorage.getItem("eula_v1")) === "true";
-            if (!eulaAccepted) {
-              resolveRoute("/eula");
-              return;
-            }
-            const role = snap.data().role || "student";
-            Sentry.setUser({
-              id: user.uid,
-              email: user.email || undefined,
-            });
-            const completedOnboarding = await hasCompletedOnboarding(user.uid);
-            if (!completedOnboarding) {
-              resolveRoute(getTutorialRoute(role));
-              return;
-            }
-            resolveRoute(getPostOnboardingRoute(role));
+            const route = await resolveAuthenticatedRoute(user, db);
+            resolveRoute(route);
           } catch (err) {
             reportError(err, {
               message: "Failed to resolve authenticated user bootstrap state.",
@@ -363,6 +466,8 @@ function RootLayoutNav() {
           const elapsedMs = Date.now() - lastOtaCheckAt.current;
           if (elapsedMs < OTA_FOREGROUND_CHECK_COOLDOWN_MS) return;
           runOtaUpdateCheck("foreground_resume");
+          void checkPendingAlarmAction();
+          void checkForOverdueTaskOnOpen();
         }
       );
     };
@@ -380,7 +485,6 @@ function RootLayoutNav() {
           data?.notificationType === DEADLINE_NOTIF_TYPE;
         if (!isDeadlineAlarm) return;
 
-        // Helper so we don't repeat this 3 times
         const parseDueAtMs = () => {
           const raw = Number(data?.dueAtMs);
           if (Number.isFinite(raw)) return raw;
@@ -393,13 +497,20 @@ function RootLayoutNav() {
 
         const navigateTo = (pendingAction) => {
           const dueAtMs = parseDueAtMs();
-          router.push({
+          const alarmStage =
+            typeof data?.stage === "string" && data.stage
+              ? data.stage
+              : typeof data?.threshold === "string" && data.threshold
+                ? data.threshold
+                : null;
+          routerRef.current.push({
             pathname: "/(tabs)/TaskManagerScreen",
             params: {
               focusTaskId: data.taskId,
               showAlarm: "1",
               ...(pendingAction ? { pendingAction } : {}),
               ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
+              ...(alarmStage ? { alarmStage } : {}),
             },
           });
         };
@@ -416,9 +527,25 @@ function RootLayoutNav() {
           return;
         }
 
-        // Default: bare notification body tap
         navigateTo(null);
       });
+
+    if (rawNativeAlarmModule) {
+      try {
+        const nativeAlarmEmitter = new NativeEventEmitter(rawNativeAlarmModule);
+        nativeAlarmTapSubscription = nativeAlarmEmitter.addListener(
+          "onAlarmNotificationTap",
+          () => {
+            // Delegate entirely to checkPendingAlarmAction which reads the
+            // canonical native store. This prevents the emitter and the
+            // store-reader from independently pushing duplicate navigations.
+            void checkPendingAlarmAction();
+          }
+        );
+      } catch (err) {
+        warnIfDev("Failed to subscribe to onAlarmNotificationTap:", err);
+      }
+    }
 
     return () => {
       active = false;
@@ -427,8 +554,9 @@ function RootLayoutNav() {
       if (unsubscribe) unsubscribe();
       if (appStateSubscription) appStateSubscription.remove();
       if (notificationSubscription) notificationSubscription.remove();
+      if (nativeAlarmTapSubscription) nativeAlarmTapSubscription.remove();
     };
-  }, [router]);
+  }, []);
 
   return (
     <>

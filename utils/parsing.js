@@ -1,9 +1,18 @@
-export function safeParseObject(str) {
-  if (!str) return null;
+// parsing.js — Fixed
+
+/**
+ * Safely parses a JSON string into an object.
+ * Returns `fallback` (default null) on empty input or parse failure.
+ *
+ * FIX: Added `fallback` parameter so callers like safeParseObject(raw, {})
+ * in home.js get the right default instead of always receiving null.
+ */
+export function safeParseObject(str, fallback = null) {
+  if (!str) return fallback;
   try {
     return JSON.parse(str);
   } catch {
-    return null;
+    return fallback;
   }
 }
 
@@ -18,12 +27,22 @@ export function safeParseExamPlans(raw) {
   }
 }
 
+/**
+ * Clamps text to a maximum length, appending an ellipsis if truncated.
+ *
+ * FIX: Original code had `+"…"` as a floating no-op expression with no
+ * return statement, so every non-empty string silently returned `undefined`.
+ * This caused buildDayPlannerRef, buildCalendarPlanTasks, and any other
+ * caller to receive undefined values without any runtime error.
+ */
 export function clampText(text, maxLength = 100) {
   if (!text) return "";
-  return text.length > maxLength ? text.slice(0, maxLength) + "�" : text;
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength - 1) + "…";
 }
 
-// Schedule-specific pure helpers (moved from scheduleHelpers.js)
+// ─── Schedule-specific pure helpers ──────────────────────────────────────────
+
 export function normalizeText(value) {
   return String(value ?? "").trim();
 }
@@ -41,14 +60,14 @@ export function parseTimeToMinutes(timeStr) {
 
   // Handle ISO date strings like "2026-03-31T08:00:00.000Z"
   // Extract UTC components directly so local timezone doesn't shift the time
-  // (consistent with adminSchedule.js which uses getHours/getMinutes = local time)
-  const isoMatch = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  const isoMatch = timeStr.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/
+  );
   if (isoMatch) {
-    const [, , , hourStr, minuteStr] = isoMatch;
+    const [, , , , hourStr, minuteStr] = isoMatch;
     const hour = parseInt(hourStr, 10);
     const minute = parseInt(minuteStr, 10);
     if (isNaN(hour) || isNaN(minute)) return null;
-    // Validate month/day so "2026-03-31T25:00:00Z" isn't accepted
     const m = parseInt(isoMatch[2], 10);
     const d = parseInt(isoMatch[3], 10);
     if (m < 1 || m > 12 || d < 1 || d > 31) return null;

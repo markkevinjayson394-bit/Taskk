@@ -69,6 +69,11 @@ service cloud.firestore {
       return !("reminderPolicy" in data)
         || (
           data.reminderPolicy is map
+          && (!("type" in data.reminderPolicy)
+            || (
+              data.reminderPolicy.type is string
+              && data.reminderPolicy.type in ["default", "custom", "persistent", "at_creation"]
+            ))
           && (!("mode" in data.reminderPolicy)
             || (
               data.reminderPolicy.mode is string

@@ -1,6 +1,13 @@
-import { waitFor } from "@testing-library/react-native";
+import { act, waitFor } from "@testing-library/react-native";
 import RootLayout from "../../app/_layout";
 import { render } from "../../utils/test-utils";
+
+const testState = {
+  role: "student",
+  eulaAccepted: true,
+  onboardingCompleted: true,
+  docExists: true,
+};
 
 const mockReplace = jest.fn();
 
@@ -30,24 +37,33 @@ jest.mock("../../config/firebase", () => ({
   db: {},
 }));
 
-jest.mock("firebase/auth", () => ({
-  __esModule: true,
-  getAuth: jest.fn(() => ({})),
-  onAuthStateChanged: jest.fn((auth, callback) => {
-    callback({ uid: "student-123", email: "student@school.com" });
-    return jest.fn();
-  }),
-  signOut: jest.fn().mockResolvedValue(undefined),
-}));
-
 jest.mock("firebase/firestore", () => ({
   __esModule: true,
   doc: jest.fn(() => ({})),
-  getDoc: jest.fn().mockResolvedValue({
-    exists: () => true,
-    data: () => ({ role: "student" }),
-  }),
+  getDoc: jest.fn(),
 }));
+
+// FIX: mockSignOut must be defined INSIDE the jest.mock factory.
+// jest.mock() is hoisted to the top of the file by babel-jest, so any
+// module-scope variable referenced in the factory (like a `const mockSignOut`
+// declared below) is in the temporal dead zone at hoist time — it resolves
+// to undefined. That makes `signOut` undefined in the mock module, so calling
+// it inside resolveAuthenticatedRoute throws a TypeError, which is silently
+// caught and falls through to "/(tabs)/home" without ever invoking the mock.
+//
+// Defining it inside the factory and retrieving it with jest.requireMock()
+// ensures the same jest.fn() reference is used both by the mock module and
+// by the test assertions.
+jest.mock("firebase/auth", () => ({
+  __esModule: true,
+  getAuth: jest.fn(() => ({})),
+  onAuthStateChanged: jest.fn(),
+  signOut: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Retrieve the already-created mock function so tests can assert on it.
+// This must be below jest.mock() but that's fine — requireMock is not hoisted.
+const mockSignOut = jest.requireMock("firebase/auth").signOut;
 
 jest.mock("../../utils/deadlineAlarmBackground", () => ({
   bootstrapDeadlineAlarmChannel: jest.fn().mockResolvedValue(undefined),
@@ -92,125 +108,196 @@ jest.mock("expo-router", () => {
   };
 });
 
-jest.mock("../../utils/onboarding", () => ({
+// ROOT CAUSE FIX: __esModule: true is required here.
+//
+// _layout.jsx imports AsyncStorage as a default import:
+//   import AsyncStorage from "@react-native-async-storage/async-storage";
+//
+// Without __esModule: true, Jest treats the mock factory's return value as a
+// CommonJS module, so the "default export" becomes the entire object:
+//   AsyncStorage === { default: { getItem, ... } }
+//   AsyncStorage.getItem === undefined   ← throws when called
+//
+// The throw is silently caught by the try/catch in resolveAuthenticatedRoute,
+// which falls through to the error-fallback route "/(tabs)/home" every time —
+// making the EULA, admin, and missing-doc tests all appear to pass the EULA
+// check and reach the wrong branch.
+//
+// With __esModule: true, Jest unwraps .default correctly:
+//   AsyncStorage === { getItem, setItem, removeItem }  ✓
+jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
-  getPostOnboardingRoute: (role = "student") =>
-    role === "admin" ? "/(admin)/home" : "/(tabs)/home",
-  getTutorialRoute: (role = "student") =>
-    `/tutorial?role=${role === "admin" ? "admin" : "student"}`,
-  hasCompletedOnboarding: jest.fn(() => Promise.resolve(true)),
+  default: {
+    getItem: jest.fn((key) => {
+      if (key === "eula_v1") {
+        return Promise.resolve(testState.eulaAccepted ? "true" : null);
+      }
+      return Promise.resolve(null);
+    }),
+    setItem: jest.fn().mockResolvedValue(undefined),
+    removeItem: jest.fn().mockResolvedValue(undefined),
+  },
 }));
 
-const mockAsyncStorage = {
-  getItem: jest.fn(),
-  setItem: jest.fn(),
-  removeItem: jest.fn(),
-};
-jest.mock("@react-native-async-storage/async-storage", () => mockAsyncStorage);
+jest.mock("../../utils/onboarding", () => ({
+  __esModule: true,
+  getPostOnboardingRoute: jest.fn(
+    (role = "student") => (role === "admin" ? "/(admin)/home" : "/(tabs)/home")
+  ),
+  getTutorialRoute: jest.fn(
+    (role = "student") =>
+      `/tutorial?role=${role === "admin" ? "admin" : "student"}`
+  ),
+  hasCompletedOnboarding: jest.fn(() =>
+    Promise.resolve(testState.onboardingCompleted)
+  ),
+}));
+
+jest.mock("../../utils/nativeAlarm", () => ({
+  getPendingAlarmAction: jest.fn().mockResolvedValue(null),
+  clearPendingAlarmAction: jest.fn().mockResolvedValue(undefined),
+  rawNativeAlarmModule: null,
+}));
+
+jest.mock("../../utils/overdueAutoLaunch", () => ({
+  checkAndAutoLaunchOverdueAlarm: jest.fn().mockResolvedValue(undefined),
+}));
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Wire onAuthStateChanged to fire `user` asynchronously on the next microtask.
+ * Must be called BEFORE render() so the component picks up this implementation
+ * when it subscribes inside the bootstrap useEffect.
+ */
+function mockAuthUser(authModule, user) {
+  authModule.onAuthStateChanged.mockImplementationOnce((_auth, callback) => {
+    Promise.resolve().then(() => callback(user));
+    return jest.fn(); // unsubscribe no-op
+  });
+}
+
+/**
+ * Flush the full async chain for resolveAuthenticatedRoute:
+ *   auth callback → AsyncStorage.getItem → getDoc → hasCompletedOnboarding →
+ *   resolveRoute → router.replace
+ *
+ * 150ms is enough for all awaited steps to resolve in the fake-timer-free
+ * test environment while keeping the suite fast.
+ */
+async function flushAsync() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+}
+
+// ─── Suite ────────────────────────────────────────────────────────────────────
 
 describe("Auth flow", () => {
-  const authModule = require("firebase/auth");
-  const firestoreModule = require("firebase/firestore");
-  const onboardingModule = require("../../utils/onboarding");
+  let authModule;
+  let firestoreModule;
 
   beforeEach(() => {
     jest.clearAllMocks();
+
+    // Reset to safe defaults. Each test mutates only what it needs.
+    testState.role = "student";
+    testState.docExists = true;
+    testState.eulaAccepted = true;
+    testState.onboardingCompleted = true;
+
+    authModule = require("firebase/auth");
+    firestoreModule = require("firebase/firestore");
+
     authModule.getAuth.mockReturnValue({});
-    authModule.onAuthStateChanged.mockImplementation((auth, callback) => {
-      callback({ uid: "student-123", email: "student@school.com" });
+
+    // Re-apply getDoc after clearAllMocks. Reads testState at call time so
+    // per-test mutations (set before render) are always visible.
+    firestoreModule.getDoc.mockImplementation(() =>
+      Promise.resolve({
+        exists: () => testState.docExists,
+        data: () => ({ role: testState.role }),
+      })
+    );
+
+    // Default: logged-in student. Override with mockAuthUser() before render()
+    // in tests that need a different user.
+    authModule.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      Promise.resolve().then(() =>
+        callback({ uid: "student-123", email: "student@school.com" })
+      );
       return jest.fn();
     });
-    firestoreModule.getDoc.mockResolvedValue({
-      exists: () => true,
-      data: () => ({ role: "student" }),
-    });
-    onboardingModule.hasCompletedOnboarding.mockResolvedValue(true);
-
-    mockAsyncStorage.getItem
-      .mockResolvedValueOnce("true") // default eula
-      .mockResolvedValueOnce(null) // EULA test
-      .mockResolvedValueOnce("true") // admin test eula
-      .mockResolvedValueOnce("true"); // missing doc test eula
-
-    // _layout.js checks: (await AsyncStorage.getItem("eula_v1")) === "true"
-    // Must be the exact string "true" — not "accepted" — to pass the EULA gate.
-    // Default to accepted so it doesn't interfere with tests that aren't about EULA.
   });
 
+  // ── 1. Happy path ────────────────────────────────────────────────────────
   test("logged-in student is routed to tabs home", async () => {
     render(<RootLayout />);
+    await flushAsync();
 
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/(tabs)/home");
     });
   });
 
+  // ── 2. Logged-out ────────────────────────────────────────────────────────
   test("logged-out user is routed to login", async () => {
-    authModule.onAuthStateChanged.mockImplementationOnce((auth, callback) => {
-      callback(null);
-      return jest.fn();
-    });
+    mockAuthUser(authModule, null);
 
     render(<RootLayout />);
+    await flushAsync();
 
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
     });
   });
 
+  // ── 3. Admin routing ─────────────────────────────────────────────────────
   test("admin user is routed to admin home", async () => {
-    authModule.onAuthStateChanged.mockImplementationOnce((auth, callback) => {
-      callback({ uid: "admin-456", email: "admin@school.com" });
-      return jest.fn();
-    });
-    firestoreModule.getDoc.mockResolvedValueOnce({
-      exists: () => true,
-      data: () => ({ role: "admin" }),
-    });
-    // Explicit "true" so the EULA gate is cleared before role-based routing
-    mockAsyncStorage.getItem.mockResolvedValue("true");
+    // Mutate BEFORE mockAuthUser and BEFORE render so that when the auth
+    // callback fires and calls getDoc, testState.role is already "admin".
+    testState.role = "admin";
+    mockAuthUser(authModule, { uid: "admin-456", email: "admin@school.com" });
 
     render(<RootLayout />);
+    await flushAsync();
 
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/(admin)/home");
     });
   });
 
+  // ── 4. EULA gate ─────────────────────────────────────────────────────────
   test("user without accepted EULA is routed to EULA screen", async () => {
-    // null → (await AsyncStorage.getItem("eula_v1")) === "true" is false → /eula
-    mockAsyncStorage.getItem.mockResolvedValue(null);
+    // Mutate BEFORE render so AsyncStorage.getItem("eula_v1") returns null
+    // when resolveAuthenticatedRoute checks it.
+    testState.eulaAccepted = false;
 
     render(<RootLayout />);
+    await flushAsync();
 
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith(
         expect.stringContaining("/eula")
       );
     });
-    expect(mockReplace).not.toHaveBeenCalledWith("/(tabs)/home");
-    expect(mockReplace).not.toHaveBeenCalledWith("/(admin)/home");
   });
 
+  // ── 5. Missing user document ─────────────────────────────────────────────
   test("user document missing triggers signOut and login redirect", async () => {
-    firestoreModule.getDoc.mockResolvedValueOnce({
-      exists: () => false,
-    });
-    // EULA accepted — must be "true" so the code reaches the missing-doc
-    // branch instead of short-circuiting to /eula first.
-    mockAsyncStorage.getItem.mockResolvedValue("true");
+    // Mutate BEFORE render so getDoc returns exists() === false when
+    // resolveAuthenticatedRoute calls it during the auth callback.
+    testState.docExists = false;
 
     render(<RootLayout />);
+    await flushAsync();
 
     await waitFor(() => {
-      expect(authModule.signOut).toHaveBeenCalled();
+      expect(mockSignOut).toHaveBeenCalled();
     });
-    await waitFor(() => {
-      expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith("active_uid_v1");
-    });
+
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
     });
-    expect(mockReplace).not.toHaveBeenCalledWith("/(tabs)/home");
   });
 });

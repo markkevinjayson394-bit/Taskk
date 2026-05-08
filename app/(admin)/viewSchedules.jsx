@@ -35,7 +35,7 @@ export default function ViewSchedules() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [schedules, setSchedules] = useState([]);
-  const [filtered, setFiltered] = useState([]);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filterCollege, setFilterCollege] = useState("All");
@@ -55,20 +55,22 @@ export default function ViewSchedules() {
 
   const yearOptions = useMemo(() => buildYearOptions(schedules), [schedules]);
 
-  useEffect(() => {
-    fetchSchedules();
-  }, []);
-
-  useEffect(() => {
-    setFiltered(
+  const filtered = useMemo(
+    () =>
       filterSchedules(schedules, {
         filterCollege,
         filterCourse,
         filterYear,
         search,
-      })
-    );
-  }, [filterCollege, filterCourse, filterYear, search, schedules]);
+      }),
+    [schedules, filterCollege, filterCourse, filterYear, search]
+  );
+
+  useEffect(() => {
+    fetchSchedules();
+  }, []);
+
+
 
   useEffect(() => {
     if (
@@ -96,7 +98,6 @@ export default function ViewSchedules() {
       const snap = await getDocs(collection(db, "schedules"));
       const data = sortSchedules(snap.docs.map(mapScheduleRecord));
       setSchedules(data);
-      setFiltered(data);
     } catch (err) {
       console.warn("Failed to fetch schedules:", err);
     } finally {

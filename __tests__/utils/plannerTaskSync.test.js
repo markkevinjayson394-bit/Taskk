@@ -2,6 +2,7 @@
 // This keeps dates unambiguous across timezones during testing.
 // In production, always use dateHelpers.toLocalDayKey() for dayKey values.
 
+import { parseDueDate } from "../../utils/academicTaskModel";
 import {
   buildCalendarPlanTasks,
   buildDayPlannerRef,
@@ -11,7 +12,6 @@ import {
   syncDayPlannerTasks,
   syncMonthPlannerTasks,
 } from "../../utils/plannerTaskSync";
-import { parseDueDate } from "../../utils/academicTaskModel";
 
 const mockGetDocs = jest.fn();
 const mockUpdateDoc = jest.fn();
@@ -49,6 +49,8 @@ jest.mock("../../utils/logger", () => ({
 }));
 
 const today = new Date("2026-03-23T12:00:00Z");
+const testDayKey = "2026-03-23";
+const testMonthKey = "2026-03";
 
 function makeDoc(id, data) {
   return {
@@ -60,7 +62,10 @@ function makeDoc(id, data) {
 describe("PlannerTaskSync", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockCollection.mockImplementation((...args) => ({ type: "collection", args }));
+    mockCollection.mockImplementation((...args) => ({
+      type: "collection",
+      args,
+    }));
     mockDoc.mockImplementation((...args) => ({ type: "doc", args }));
     mockBatchSet.mockImplementation(() => undefined);
     mockBatchCommit.mockResolvedValue(undefined);
@@ -220,7 +225,9 @@ describe("PlannerTaskSync", () => {
       );
 
       expect(tasks).toHaveLength(1);
-      expect(tasks[0].plannerRef).toBe("calendar:day:2026-03-23:plan:plan_today");
+      expect(tasks[0].plannerRef).toBe(
+        "calendar:day:2026-03-23:plan:plan_today"
+      );
       expect(tasks[0].title).toBe("Read chapter 4");
     });
 
@@ -358,8 +365,8 @@ describe("PlannerTaskSync", () => {
 
   describe("buildDayPlannerRef", () => {
     test("generates correctly formatted ref", () => {
-      const ref = buildDayPlannerRef("2026-03-23", "block-1");
-      expect(ref).toBe("planner:day:2026-03-23:block:block-1");
+      const ref = buildDayPlannerRef(testDayKey, "block-1");
+      expect(ref).toBe(`planner:day:${testDayKey}:block:block-1`);
     });
 
     test("truncates long inputs", () => {
@@ -413,7 +420,12 @@ describe("PlannerTaskSync", () => {
     test("empty plan list creates nothing", async () => {
       mockGetDocs.mockResolvedValueOnce({ docs: [] });
 
-      const result = await syncCalendarDayPlans("uid123", today, "2026-03-23", []);
+      const result = await syncCalendarDayPlans(
+        "uid123",
+        today,
+        "2026-03-23",
+        []
+      );
 
       expect(result).toEqual({ created: 0, updated: 0, archived: 0 });
       expect(mockBatchSet).not.toHaveBeenCalled();
@@ -439,9 +451,9 @@ describe("PlannerTaskSync", () => {
       );
 
       expect(result.created).toBe(1);
-      expect(parseDueDate(mockBatchSet.mock.calls[0][1].dueAt)?.toISOString()).toBe(
-        today.toISOString()
-      );
+      expect(
+        parseDueDate(mockBatchSet.mock.calls[0][1].dueAt)?.toISOString()
+      ).toBe(today.toISOString());
     });
   });
 
@@ -450,10 +462,21 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({ docs: [] });
 
       const blocks = [
-        { id: "block1", task: "New task", subject: "Math", start: "09:00", end: "10:00" },
+        {
+          id: "block1",
+          task: "New task",
+          subject: "Math",
+          start: "09:00",
+          end: "10:00",
+        },
       ];
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", blocks);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        blocks
+      );
 
       expect(result.created).toBe(1);
       expect(mockBatchSet).toHaveBeenCalledTimes(1);
@@ -462,7 +485,12 @@ describe("PlannerTaskSync", () => {
     test("returns zero when no blocks are provided", async () => {
       mockGetDocs.mockResolvedValueOnce({ docs: [] });
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", []);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        []
+      );
 
       expect(result).toEqual({ created: 0, updated: 0, archived: 0 });
     });
@@ -472,7 +500,12 @@ describe("PlannerTaskSync", () => {
 
       const blocks = [{ id: "block1", task: "", subject: "Math" }];
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", blocks);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        blocks
+      );
 
       expect(result.created).toBe(0);
       expect(mockBatchSet).not.toHaveBeenCalled();
@@ -485,8 +518,8 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({
         docs: [
           makeDoc("doc_same", {
-            plannerRef: "planner:day:2026-03-23:block:block1",
-            plannerBucket: "day:2026-03-23",
+            plannerRef: `planner:day:${testDayKey}:block:block1`,
+            plannerBucket: `day:${testDayKey}`,
             source: "planner",
             title: "Read notes",
             subject: "Math",
@@ -505,10 +538,21 @@ describe("PlannerTaskSync", () => {
       });
 
       const blocks = [
-        { id: "block1", task: "Read notes", subject: "Math", start: "09:00", end: "10:00" },
+        {
+          id: "block1",
+          task: "Read notes",
+          subject: "Math",
+          start: "09:00",
+          end: "10:00",
+        },
       ];
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", blocks);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        blocks
+      );
 
       expect(result).toEqual({ created: 0, updated: 0, archived: 0 });
       expect(mockUpdateDoc).not.toHaveBeenCalled();
@@ -518,8 +562,8 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({
         docs: [
           makeDoc("doc_existing", {
-            plannerRef: "planner:day:2026-03-23:block:block1",
-            plannerBucket: "day:2026-03-23",
+            plannerRef: `planner:day:${testDayKey}:block:block1`,
+            plannerBucket: `day:${testDayKey}`,
             source: "planner",
             title: "Old title",
             subject: "Math",
@@ -538,10 +582,21 @@ describe("PlannerTaskSync", () => {
       });
 
       const blocks = [
-        { id: "block1", task: "New title", subject: "Math", start: "09:00", end: "10:00" },
+        {
+          id: "block1",
+          task: "New title",
+          subject: "Math",
+          start: "09:00",
+          end: "10:00",
+        },
       ];
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", blocks);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        blocks
+      );
 
       expect(result).toEqual({ created: 0, updated: 1, archived: 0 });
       expect(mockUpdateDoc).toHaveBeenCalledWith(
@@ -560,8 +615,8 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({
         docs: [
           makeDoc("doc_stale", {
-            plannerRef: "planner:day:2026-03-23:block:block_old",
-            plannerBucket: "day:2026-03-23",
+            plannerRef: `planner:day:${testDayKey}:block:block_old`,
+            plannerBucket: `day:${testDayKey}`,
             source: "planner",
             title: "Deleted block",
             subject: "Math",
@@ -579,7 +634,12 @@ describe("PlannerTaskSync", () => {
         ],
       });
 
-      const result = await syncDayPlannerTasks("uid123", today, "2026-03-23", []);
+      const result = await syncDayPlannerTasks(
+        "uid123",
+        today,
+        "2026-03-23",
+        []
+      );
 
       expect(result).toEqual({ created: 0, updated: 0, archived: 1 });
       expect(mockUpdateDoc).toHaveBeenCalledWith(
@@ -595,7 +655,12 @@ describe("PlannerTaskSync", () => {
 
       const milestones = ["Finish draft", "Submit report"];
 
-      const result = await syncMonthPlannerTasks("uid123", today, "2026-03", milestones);
+      const result = await syncMonthPlannerTasks(
+        "uid123",
+        today,
+        "2026-03",
+        milestones
+      );
 
       expect(result.created).toBe(2);
       expect(mockBatchSet).toHaveBeenCalledTimes(2);
@@ -606,7 +671,12 @@ describe("PlannerTaskSync", () => {
 
       const milestones = ["Valid milestone", "", "Another valid"];
 
-      const result = await syncMonthPlannerTasks("uid123", today, "2026-03", milestones);
+      const result = await syncMonthPlannerTasks(
+        "uid123",
+        today,
+        "2026-03",
+        milestones
+      );
 
       expect(result.created).toBe(2);
     });
@@ -615,8 +685,8 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({
         docs: [
           makeDoc("doc_month_existing", {
-            plannerRef: "planner:month:2026-03:milestone:1",
-            plannerBucket: "month:2026-03",
+            plannerRef: `planner:month:${testMonthKey}:milestone:1`,
+            plannerBucket: `month:${testMonthKey}`,
             source: "planner",
             title: "Old milestone",
             subject: "Monthly Planner",
@@ -636,7 +706,12 @@ describe("PlannerTaskSync", () => {
 
       const milestones = ["Updated milestone title"];
 
-      const result = await syncMonthPlannerTasks("uid123", today, "2026-03", milestones);
+      const result = await syncMonthPlannerTasks(
+        "uid123",
+        today,
+        "2026-03",
+        milestones
+      );
 
       expect(result).toEqual({ created: 0, updated: 1, archived: 0 });
       expect(mockUpdateDoc).toHaveBeenCalledWith(
@@ -652,8 +727,8 @@ describe("PlannerTaskSync", () => {
       mockGetDocs.mockResolvedValueOnce({
         docs: [
           makeDoc("doc_month_stale", {
-            plannerRef: "planner:month:2026-03:milestone:99",
-            plannerBucket: "month:2026-03",
+            plannerRef: `planner:month:${testMonthKey}:milestone:99`,
+            plannerBucket: `month:${testMonthKey}`,
             source: "planner",
             title: "Removed milestone",
             subject: "Monthly Planner",
@@ -671,7 +746,12 @@ describe("PlannerTaskSync", () => {
         ],
       });
 
-      const result = await syncMonthPlannerTasks("uid123", today, "2026-03", []);
+      const result = await syncMonthPlannerTasks(
+        "uid123",
+        today,
+        "2026-03",
+        []
+      );
 
       expect(result).toEqual({ created: 0, updated: 0, archived: 1 });
       expect(mockUpdateDoc).toHaveBeenCalledWith(
@@ -749,4 +829,3 @@ describe("PlannerTaskSync", () => {
     });
   });
 });
-

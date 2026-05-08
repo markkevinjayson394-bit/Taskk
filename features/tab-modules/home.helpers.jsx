@@ -2,7 +2,7 @@
 // home.helpers.js
 // Pure helper functions for Home dashboard - no React/state
 // Constants
-import { parseDueDate } from "../../utils/academicTaskModel";
+import { parseDueDate, resolveTaskDueDate } from "../../utils/academicTaskModel";
 import {
   daysUntil,
   getGreeting,
@@ -15,7 +15,7 @@ export const PRIORITY_COLOR = {
 };
 export const FOCUS_REFRESH_COOLDOWN_MS = 15 * 1000;
 // Parsing
-export { daysUntil, getGreeting, getTodayString, parseDueDate };
+export { daysUntil, getGreeting, getTodayString, parseDueDate, resolveTaskDueDate };
 export function safeParseObject(raw, fallback = {}) {
   if (!raw) return fallback;
   try {

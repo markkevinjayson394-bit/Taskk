@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
+import * as Notifications from "expo-notifications";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
@@ -35,7 +36,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import DeadlineAlarmModal, {
@@ -49,6 +50,7 @@ import { useNotifications } from "../../context/NotificationContext";
 import {
   CACHE_KEYS,
   loadFromCache,
+  OFFLINE_QUEUE_KEYS,
   saveToCache,
   useOffline,
 } from "../../context/OfflineContext";
@@ -70,6 +72,7 @@ import {
   extractScheduleSubjectNames,
   extractStudentScheduleProfile,
   FILTERS,
+  flushCreateQueue,
   formatDurationMs,
   formatEstimatedMinutes,
   GENERAL_SUBJECT,
@@ -91,6 +94,8 @@ import {
   parsePlannerRef,
   parseSubjectCatalogRaw,
   PENDING_UPDATES_KEY,
+  readCreateQueue,
+  resolveTaskDueDate,
   SCHEDULE_SUBJECT_SOURCES,
   SORT_OPTIONS,
   sortSubjectOptions,
@@ -98,6 +103,7 @@ import {
   SUBJECT_FILTER_ALL_ID,
   TYPE_META,
   TYPE_ROWS,
+  writeCreateQueue,
 } from "../../features/tab-modules/TaskManagerScreen.helpers";
 import {
   buildSubjectIdFromName,
@@ -106,14 +112,26 @@ import {
   getTaskPriorityLevel,
   isTaskCompleted,
   normalizeSubjectName,
+  normalizeTaskDateInput,
   normalizeTaskPriority,
   normalizeTaskType,
 } from "../../utils/academicTaskModel";
 import { toLocalDayKey } from "../../utils/dateHelpers";
-import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
+import {
+  cancelDeadlineAlarms,
+  DEADLINE_NOTIF_TYPE,
+  scheduleDeadlineAlarms,
+} from "../../utils/deadlineAlarmBackground";
 import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
+import {
+  findOfflineQueuedTask,
+  isLocalOnlyTaskId,
+  mergePendingTasksWithOfflineQueue,
+  removeOfflineQueuedTask,
+} from "../../utils/offlineTaskQueue";
 import { syncCalendarDayPlans } from "../../utils/plannerTaskSync";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
+import { clearCheckpoint } from "../../utils/taskOverdueState";
 
 function buildTaskSubjectFields(subjectValue, subjectIdValue) {
   const subjectName = normalizeSubjectName(subjectValue || GENERAL_SUBJECT);
@@ -127,12 +145,10 @@ function buildTaskSubjectFields(subjectValue, subjectIdValue) {
 }
 
 function parseCustomReminderDate(value) {
-  if (!value) return null;
-  const parsed = new Date(value?.toDate?.() || value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return normalizeTaskDateInput(value);
 }
 
-function isValidCustomReminder(reminderDate, dueDate) {
+function isReminderBeforeDue(reminderDate, dueDate) {
   if (!reminderDate || !dueDate) return false;
   if (!(reminderDate instanceof Date) || Number.isNaN(reminderDate.getTime())) {
     return false;
@@ -140,9 +156,71 @@ function isValidCustomReminder(reminderDate, dueDate) {
   if (!(dueDate instanceof Date) || Number.isNaN(dueDate.getTime())) {
     return false;
   }
-  if (reminderDate <= new Date()) return false;
-  if (reminderDate >= dueDate) return false;
+  return reminderDate < dueDate;
+}
+
+function isAtCreationReminder(reminderDate, createdAtValue) {
+  const createdAt = normalizeTaskDateInput(createdAtValue);
+  if (!reminderDate || !createdAt) return false;
+  return Math.abs(reminderDate.getTime() - createdAt.getTime()) < 60 * 1000;
+}
+
+function isValidCustomReminder(
+  reminderDate,
+  dueDate,
+  { allowPast = false } = {}
+) {
+  if (!isReminderBeforeDue(reminderDate, dueDate)) {
+    return false;
+  }
+  if (!allowPast && reminderDate <= new Date()) {
+    return false;
+  }
   return true;
+}
+
+function buildAtCreationReminderPolicy() {
+  return {
+    ...DEFAULT_MANUAL_TASK_REMINDER_POLICY,
+    type: "at_creation",
+  };
+}
+
+function sortPendingTasks(items = []) {
+  const nowMs = Date.now();
+  const fallbackDueMs = Number.MAX_SAFE_INTEGER;
+  return [...items].sort((a, b) => {
+    const aDueMs = resolveTaskDueDate(a)?.getTime?.() ?? fallbackDueMs;
+    const bDueMs = resolveTaskDueDate(b)?.getTime?.() ?? fallbackDueMs;
+    const aIsOverdue = aDueMs < nowMs;
+    const bIsOverdue = bDueMs < nowMs;
+    if (aIsOverdue !== bIsOverdue) return aIsOverdue ? -1 : 1;
+    if (aDueMs !== bDueMs) return aDueMs - bDueMs;
+    return (
+      (Number(a?.priorityLevel) || getTaskPriorityLevel(a?.priority)) -
+      (Number(b?.priorityLevel) || getTaskPriorityLevel(b?.priority))
+    );
+  });
+}
+
+function mergeLocalOnlyHistory(doneItems = [], cachedDoneItems = []) {
+  const merged = new Map();
+  doneItems.forEach((item) => {
+    if (!item?.id) return;
+    merged.set(item.id, item);
+  });
+  cachedDoneItems
+    .filter((item) => isLocalOnlyTaskId(item?.id))
+    .forEach((item) => {
+      if (!item?.id || merged.has(item.id)) return;
+      merged.set(item.id, item);
+    });
+
+  return Array.from(merged.values()).sort((a, b) => {
+    const aCompletedMs = parseDueDate(a?.completedAt)?.getTime?.() ?? 0;
+    const bCompletedMs = parseDueDate(b?.completedAt)?.getTime?.() ?? 0;
+    return bCompletedMs - aCompletedMs;
+  });
 }
 
 export default function TaskManagerScreen() {
@@ -152,6 +230,7 @@ export default function TaskManagerScreen() {
     showAlarm,
     pendingAction,
     dueAtMs,
+    alarmStage,
     filter: filterParam,
     subject: subjectParam,
     subjectId: subjectIdParam,
@@ -162,11 +241,12 @@ export default function TaskManagerScreen() {
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
   })();
+  const routeAlarmStage = normalizeRouteString(alarmStage);
   const { colors, isDark } = useTheme();
   const { isOnline, markSynced, refreshPendingSyncSummary } = useOffline();
 
-  // FIX: Destructure with fallbacks in case context is not yet initialized
   const {
+    settings: notificationSettings,
     rescheduleAll,
     rescheduleDeadlineAlarmsForTask,
     clearTaskAlarmSuppression,
@@ -177,14 +257,18 @@ export default function TaskManagerScreen() {
 
   const [tasks, setTasks] = useState([]);
   const [history, setHistory] = useState([]);
+  //const [tasksLoaded, setTasksLoaded] = useState(false);
   const {
     alarmVisible,
     alarmTask,
+    alarmThresholdKey,
     notDoneAlarm,
     dismissAlarm,
     markDoneAlarm,
     showAlarmForTask,
-  } = useDeadlineAlarmScheduler(tasks);
+  } = useDeadlineAlarmScheduler(tasks, {
+    deadlineWarningEnabled: notificationSettings?.deadlineWarning !== false,
+  });
   const [filter, setFilter] = useState(() => normalizeFilterParam(filterParam));
   const [searchQuery, setSearchQuery] = useState("");
   const [subjectFilterId, setSubjectFilterId] = useState(SUBJECT_FILTER_ALL_ID);
@@ -217,6 +301,7 @@ export default function TaskManagerScreen() {
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
   const [newTaskDueAt, setNewTaskDueAt] = useState(() => getDefaultDueAt());
   const [customReminderAt, setCustomReminderAt] = useState(null);
+  const [activeReminderPresetKey, setActiveReminderPresetKey] = useState(null);
   const [editingTaskId, setEditingTaskId] = useState("");
   const [editingTask, setEditingTask] = useState(null);
   const [showDueDatePicker, setShowDueDatePicker] = useState(false);
@@ -225,6 +310,18 @@ export default function TaskManagerScreen() {
   const [creatingTask, setCreatingTask] = useState(false);
   const [deletingId, setDeletingId] = useState("");
   const [snoozingId, setSnoozingId] = useState("");
+
+  // [FIX GAP-3] pendingAction needs to be BOTH a ref (for sync writes) AND
+  // a state (so DeadlineAlarmModal re-renders when it changes). The ref alone
+  // means the modal never sees updates that happen after its initial render.
+  const pendingActionRef = useRef(null);
+  const [pendingActionState, setPendingActionState] = useState(null);
+
+  // Helper: set both ref and state together so they stay in sync.
+  const setPendingAction = useCallback((value) => {
+    pendingActionRef.current = value;
+    setPendingActionState(value);
+  }, []);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const flushingRef = useRef(false);
@@ -235,12 +332,43 @@ export default function TaskManagerScreen() {
     key: "",
     names: [],
   });
-  const pendingActionRef = useRef(null);
   const handledParamRef = useRef("");
 
   const highlightedTaskId =
     typeof focusTaskId === "string" && focusTaskId ? focusTaskId : "";
   const isEditMode = Boolean(editingTaskId);
+  const editingTaskCreatedAt = normalizeTaskDateInput(editingTask?.createdAt);
+
+  // Bug #4: Handle notification response when app is already open
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener(
+      async (response) => {
+        const data = response.notification.request.content.data ?? {};
+        if (
+          data.type !== DEADLINE_NOTIF_TYPE &&
+          data.notificationType !== DEADLINE_NOTIF_TYPE
+        )
+          return;
+
+        const taskId = data.taskId;
+        if (!taskId) return;
+
+        const task = tasks.find((t) => t.id === taskId);
+        if (!task) return;
+
+        if (typeof showAlarmForTask === "function") {
+          const stageKey =
+            typeof data.stage === "string" && data.stage
+              ? data.stage
+              : typeof data.threshold === "string" && data.threshold
+                ? data.threshold
+                : null;
+          showAlarmForTask(task, stageKey);
+        }
+      }
+    );
+    return () => sub.remove();
+  }, [tasks, showAlarmForTask]);
 
   useEffect(() => {
     const next = normalizeFilterParam(filterParam);
@@ -394,19 +522,23 @@ export default function TaskManagerScreen() {
       focusTaskId,
       pendingAction,
       routeDueAtMs,
+      routeAlarmStage,
       tasksCount: tasks?.length,
       hasShowAlarmFn: typeof showAlarmForTask === "function",
     });
     if (showAlarm !== "1" || !focusTaskId) {
-      console.log("[DEBUG Alarm] Early return: showAlarm !== '1' or no focusTaskId", {
-        showAlarm,
-        focusTaskId,
-      });
+      console.log(
+        "[DEBUG Alarm] Early return: showAlarm !== '1' or no focusTaskId",
+        { showAlarm, focusTaskId }
+      );
       return;
     }
 
-    const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}`;
-    console.log("[DEBUG Alarm] Proceeding to check handledKey", { handledKey, handledParamRef: handledParamRef.current });
+    const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${routeAlarmStage ?? "none"}`;
+    console.log("[DEBUG Alarm] Proceeding to check handledKey", {
+      handledKey,
+      handledParamRef: handledParamRef.current,
+    });
     if (handledParamRef.current === handledKey) {
       console.log("[DEBUG Alarm] Already handled, skipping");
       return;
@@ -420,25 +552,43 @@ export default function TaskManagerScreen() {
         focusTaskId: undefined,
         pendingAction: undefined,
         dueAtMs: undefined,
+        alarmStage: undefined,
       });
     };
 
     const fetchAndShow = async () => {
-      console.log("[DEBUG Alarm] fetchAndShow started", { pendingAction, focusTaskId });
-      pendingActionRef.current =
+      console.log("[DEBUG Alarm] fetchAndShow started", {
+        pendingAction,
+        focusTaskId,
+      });
+
+      // [FIX GAP-3] Use setPendingAction so both ref and state are updated.
+      const resolvedPendingAction =
         pendingAction === "acknowledge" ||
         pendingAction === "markdone" ||
         pendingAction === "notdone"
           ? pendingAction
           : null;
-      console.log("[DEBUG Alarm] pendingActionRef.current set to", pendingActionRef.current);
 
       try {
         let taskToShow = tasks.find((task) => task.id === focusTaskId) || null;
-        console.log("[DEBUG Alarm] taskToShow from local cache:", taskToShow?.id ?? "null");
 
         if (!taskToShow) {
-          console.log("[DEBUG Alarm] Task not in local state, fetching from Firestore");
+          if (isLocalOnlyTaskId(focusTaskId)) {
+            const offlineTask = await findOfflineQueuedTask(
+              auth.currentUser?.uid,
+              focusTaskId
+            );
+            if (offlineTask && !offlineTask.completed) {
+              taskToShow = offlineTask;
+            }
+          }
+        }
+
+        if (!taskToShow) {
+          console.log(
+            "[DEBUG Alarm] Task not in local state, fetching from Firestore"
+          );
           const snap = await getDoc(doc(db, "assignments", focusTaskId));
           if (!snap.exists()) {
             console.log("[DEBUG Alarm] Task does not exist in Firestore");
@@ -473,20 +623,25 @@ export default function TaskManagerScreen() {
           routeDueAtMs !== null
             ? {
                 ...taskToShow,
-                dueAt:
-                  parseDueDate(taskToShow?.dueAt) || new Date(routeDueAtMs),
+                dueAt: resolveTaskDueDate(taskToShow) || new Date(routeDueAtMs),
                 dueAtMs: routeDueAtMs,
               }
             : taskToShow;
-        console.log("[DEBUG Alarm] Calling showAlarmForTask with:", resolvedDue?.id, resolvedDue?.title);
 
-        // FIX: Guard showAlarmForTask before calling
+        console.log(
+          "[DEBUG Alarm] Calling showAlarmForTask with:",
+          resolvedDue?.id,
+          resolvedDue?.title
+        );
+
+        // IMPORTANT: show the modal with the task first, THEN update pendingAction.
         if (typeof showAlarmForTask === "function") {
-          showAlarmForTask(resolvedDue);
+          showAlarmForTask(resolvedDue, routeAlarmStage || null);
           console.log("[DEBUG Alarm] showAlarmForTask called successfully");
-        } else {
-          console.log("[DEBUG Alarm] showAlarmForTask is not a function!", typeof showAlarmForTask);
         }
+
+        setPendingAction(resolvedPendingAction);
+
         handledParamRef.current = handledKey;
         clearAlarmParams();
       } catch (error) {
@@ -507,16 +662,68 @@ export default function TaskManagerScreen() {
     focusTaskId,
     pendingAction,
     routeDueAtMs,
+    routeAlarmStage,
     tasks,
     showAlarmForTask,
     router,
+    setPendingAction,
   ]);
 
   useEffect(() => {
-    if (isOnline) {
-      lastAutoRefreshAtRef.current = Date.now();
-      flushPendingUpdates().then(() => load());
-    }
+    if (!isOnline) return;
+
+    let active = true;
+    lastAutoRefreshAtRef.current = Date.now();
+
+    const syncQueuedChanges = async () => {
+      const currentUser = auth.currentUser;
+      let flushedCreates = 0;
+      await flushPendingUpdates();
+      if (currentUser) {
+        const flushResult = await flushCreateQueue(
+          currentUser.uid,
+          async (item) => {
+            const docRef = await addDoc(
+              collection(db, "assignments"),
+              item.payload
+            );
+            return docRef;
+          },
+          notificationSettings?.soundSettings || {}
+        ).catch((_e) => null);
+        flushedCreates = Number(flushResult?.flushed) || 0;
+        if (flushedCreates > 0 && typeof markSynced === "function") {
+          const createQueueKeys =
+            Array.isArray(flushResult?.remaining) &&
+            flushResult.remaining.length === 0
+              ? [OFFLINE_QUEUE_KEYS.createAssignments(currentUser.uid)]
+              : null;
+          await markSynced(currentUser.uid, createQueueKeys);
+        }
+        if (typeof refreshPendingSyncSummary === "function") {
+          await refreshPendingSyncSummary(currentUser.uid).catch(() => {});
+        }
+        if (flushedCreates > 0 && typeof rescheduleAll === "function") {
+          await rescheduleAll().catch((error) => {
+            warnIfDev(
+              "TaskManagerScreen: failed to rebuild reminders after syncing offline creates:",
+              error
+            );
+          });
+        }
+      }
+      if (active) {
+        await load();
+      }
+    };
+
+    syncQueuedChanges().catch((err) => {
+      warnIfDev("TaskManagerScreen: failed to sync queued changes:", err);
+    });
+
+    return () => {
+      active = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOnline]);
 
@@ -543,7 +750,6 @@ export default function TaskManagerScreen() {
         JSON.stringify(queue)
       );
     }
-    // FIX: Guard refreshPendingSyncSummary before calling
     if (typeof refreshPendingSyncSummary === "function") {
       await refreshPendingSyncSummary(uid);
     }
@@ -732,17 +938,27 @@ export default function TaskManagerScreen() {
 
     if (!isOnline) {
       const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+      const queuedCreates = await readCreateQueue(user.uid);
       if (cached?.data) {
         const cachedPending = stripArchived(cached.data.pending || []);
         const cachedDone = stripArchived(cached.data.done || []);
-        setTasks(cachedPending);
+        const mergedPending = sortPendingTasks(
+          mergePendingTasksWithOfflineQueue(cachedPending, queuedCreates)
+        );
+        setTasks(mergedPending);
         setHistory(cachedDone);
-        await loadSubjectOptions(user.uid, [...cachedPending, ...cachedDone]);
+        await loadSubjectOptions(user.uid, [...mergedPending, ...cachedDone]);
       } else {
-        await loadSubjectOptions(user.uid, []);
+        const mergedPending = sortPendingTasks(
+          mergePendingTasksWithOfflineQueue([], queuedCreates)
+        );
+        setTasks(mergedPending);
+        setHistory([]);
+        await loadSubjectOptions(user.uid, mergedPending);
       }
       setRefreshing(false);
       animateIn();
+     // setTasksLoaded(true);
       return;
     }
 
@@ -759,56 +975,62 @@ export default function TaskManagerScreen() {
         completedAt: normalizeDateToISO(d.data().completedAt),
       }));
       const visible = stripArchived(all);
-      const pending = visible
-        .filter((a) => !isTaskCompleted(a))
-        .sort((a, b) => {
-          const aDue = new Date(a.dueAt),
-            bDue = new Date(b.dueAt);
-          const now = new Date();
-          if (aDue < now !== bDue < now) return aDue < now ? -1 : 1;
-          return (
-            (Number(a.priorityLevel) || getTaskPriorityLevel(a.priority)) -
-            (Number(b.priorityLevel) || getTaskPriorityLevel(b.priority))
-          );
-        });
+      const pending = sortPendingTasks(
+        visible.filter((a) => !isTaskCompleted(a))
+      );
       const done = visible
         .filter((a) => isTaskCompleted(a))
         .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
 
-      setTasks(pending);
-      setHistory(done);
+      const cachedPrev = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+      const queuedCreates = await readCreateQueue(user.uid);
+      const mergedPending = sortPendingTasks(
+        mergePendingTasksWithOfflineQueue(pending, queuedCreates)
+      );
+      const mergedDone = mergeLocalOnlyHistory(
+        done,
+        stripArchived(cachedPrev?.data?.done || [])
+      );
+
+      setTasks(mergedPending);
+      setHistory(mergedDone);
       setVisiblePending(PAGE_SIZE);
       setVisibleHistory(PAGE_SIZE);
-      await loadSubjectOptions(user.uid, visible);
+      await loadSubjectOptions(user.uid, [...mergedPending, ...mergedDone]);
 
-      const cachedPrev = await loadFromCache(CACHE_KEYS.assignments(user.uid));
       await saveToCache(CACHE_KEYS.assignments(user.uid), {
-        pending,
-        done,
         ...(cachedPrev?.data || {}),
+        pending: mergedPending,
+        done: mergedDone,
       });
-      // FIX: Guard markSynced before calling
-      if (typeof markSynced === "function") {
-        await markSynced(user.uid);
-      }
     } catch (err) {
       warnIfDev(
         "TaskManagerScreen: failed to load assignments from Firestore:",
         err
       );
       const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+      const queuedCreates = await readCreateQueue(user.uid);
       if (cached?.data) {
         const cachedPending = stripArchived(cached.data.pending || []);
         const cachedDone = stripArchived(cached.data.done || []);
-        setTasks(cachedPending);
+        const mergedPending = sortPendingTasks(
+          mergePendingTasksWithOfflineQueue(cachedPending, queuedCreates)
+        );
+        setTasks(mergedPending);
         setHistory(cachedDone);
-        await loadSubjectOptions(user.uid, [...cachedPending, ...cachedDone]);
+        await loadSubjectOptions(user.uid, [...mergedPending, ...cachedDone]);
       } else {
-        await loadSubjectOptions(user.uid, []);
+        const mergedPending = sortPendingTasks(
+          mergePendingTasksWithOfflineQueue([], queuedCreates)
+        );
+        setTasks(mergedPending);
+        setHistory([]);
+        await loadSubjectOptions(user.uid, mergedPending);
       }
     } finally {
       setRefreshing(false);
       animateIn();
+    //  setTasksLoaded(true);
     }
   }
 
@@ -832,7 +1054,8 @@ export default function TaskManagerScreen() {
     setNewTaskType(overrides.type ?? "assignment");
     setNewTaskPriority(overrides.priority ?? "medium");
     setNewTaskDueAt(overrides.dueAt ?? getDefaultDueAt());
-    setCustomReminderAt(null);
+    setCustomReminderAt(overrides.customReminderAt ?? null);
+    setActiveReminderPresetKey(overrides.activeReminderPresetKey ?? null);
     setTitleError("");
     setShowDueDatePicker(false);
     setShowDueTimePicker(false);
@@ -866,13 +1089,16 @@ export default function TaskManagerScreen() {
   function openEditTaskModal(task) {
     if (!task || creatingTask || deletingId || !isOnline) return;
     const user = auth.currentUser;
-    const due = parseDueDate(task.dueAt);
+    const due = resolveTaskDueDate(task);
     const resolvedDue = due || getDefaultDueAt();
     const subjectFields = buildTaskSubjectFields(
       task.subjectName || task.subject,
       task.subjectId
     );
     const parsedCustomReminder = parseCustomReminderDate(task.customReminderAt);
+    const atCreationSelected =
+      task?.reminderPolicy?.type === "at_creation" ||
+      isAtCreationReminder(parsedCustomReminder, task?.createdAt);
     setEditingTaskId(task.id);
     setEditingTask(task);
     setNewTaskTitle(String(task.title || ""));
@@ -883,10 +1109,13 @@ export default function TaskManagerScreen() {
     setNewTaskPriority(normalizeTaskPriority(task.priority));
     setNewTaskDueAt(resolvedDue);
     setCustomReminderAt(
-      isValidCustomReminder(parsedCustomReminder, resolvedDue)
+      (isValidCustomReminder(parsedCustomReminder, resolvedDue) ||
+        atCreationSelected) &&
+        parsedCustomReminder
         ? parsedCustomReminder
         : null
     );
+    setActiveReminderPresetKey(atCreationSelected ? "at_creation" : null);
     setShowDueDatePicker(false);
     setShowDueTimePicker(false);
     setShowReminderPicker(false);
@@ -904,6 +1133,7 @@ export default function TaskManagerScreen() {
     setTitleError("");
     setEditingTaskId("");
     setEditingTask(null);
+    setActiveReminderPresetKey(null);
     setShowCreateModal(false);
   }
 
@@ -933,6 +1163,29 @@ export default function TaskManagerScreen() {
       }),
     [newTaskDueAt]
   );
+
+  const dueDateWarning = useMemo(() => {
+    if (isEditMode) return null;
+    const now = new Date();
+    if (!(newTaskDueAt instanceof Date) || isNaN(newTaskDueAt.getTime()))
+      return null;
+    const minDue = new Date(now.getTime() + 5 * 60 * 1000);
+    const maxDue = new Date(
+      now.getFullYear() + 2,
+      now.getMonth(),
+      now.getDate()
+    );
+    if (newTaskDueAt < now)
+      return { type: "error", text: "Due date is in the past." };
+    if (newTaskDueAt < minDue)
+      return {
+        type: "error",
+        text: "Due date is too soon — set at least 5 minutes ahead.",
+      };
+    if (newTaskDueAt > maxDue)
+      return { type: "warn", text: "Due date is more than 2 years out." };
+    return null;
+  }, [newTaskDueAt, isEditMode]);
 
   const dueTimeLabel = useMemo(
     () =>
@@ -965,8 +1218,13 @@ export default function TaskManagerScreen() {
       return;
     }
     setNewTaskDueAt(nextDueAt);
-    if (customReminderAt && !isValidCustomReminder(customReminderAt, nextDueAt)) {
+    const allowPast = activeReminderPresetKey === "at_creation";
+    if (
+      customReminderAt &&
+      !isValidCustomReminder(customReminderAt, nextDueAt, { allowPast })
+    ) {
       setCustomReminderAt(null);
+      setActiveReminderPresetKey(null);
       Alert.alert(
         "Reminder Cleared",
         "Your custom reminder was cleared because it was no longer before the new due date."
@@ -974,16 +1232,23 @@ export default function TaskManagerScreen() {
     }
   }
 
-  function applyCustomReminderSelection(selectedReminder) {
+  function applyCustomReminderSelection(
+    selectedReminder,
+    { presetKey = "custom" } = {}
+  ) {
     if (!selectedReminder) return;
-    if (!isValidCustomReminder(selectedReminder, newTaskDueAt)) {
+    const allowPast = presetKey === "at_creation";
+    if (!isValidCustomReminder(selectedReminder, newTaskDueAt, { allowPast })) {
       Alert.alert(
         "Invalid Reminder",
-        "Reminder must be before the due date and in the future."
+        allowPast
+          ? "Reminder must be before the due date."
+          : "Reminder must be before the due date and in the future."
       );
       return;
     }
     setCustomReminderAt(selectedReminder);
+    setActiveReminderPresetKey(presetKey);
   }
 
   function openReminderPicker() {
@@ -1023,7 +1288,6 @@ export default function TaskManagerScreen() {
   );
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  // FIX: Guard rescheduleAll before invoking — this was the primary crash source
   const queueReminderRefresh = useCallback(
     (reason, extra = {}) => {
       if (typeof rescheduleAll !== "function") {
@@ -1097,33 +1361,159 @@ export default function TaskManagerScreen() {
       return;
     }
     setTitleError("");
+
+    // ── Due date limit validation ──────────────────────────────────────
+    const now = new Date();
+    const minDueAt = new Date(now.getTime() + 5 * 60 * 1000);
+    const maxDueAt = new Date(
+      now.getFullYear() + 2,
+      now.getMonth(),
+      now.getDate()
+    );
+
+    if (!isEditMode) {
+      if (!(newTaskDueAt instanceof Date) || isNaN(newTaskDueAt.getTime())) {
+        Alert.alert("Invalid Date", "Please select a valid due date.");
+        return;
+      }
+      if (newTaskDueAt < minDueAt) {
+        Alert.alert(
+          "Due date too soon",
+          "The due date must be at least 5 minutes from now so reminders have time to schedule."
+        );
+        return;
+      }
+      if (newTaskDueAt > maxDueAt) {
+        Alert.alert(
+          "Due date too far",
+          "The due date cannot be more than 2 years in the future."
+        );
+        return;
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────
+
+    const atCreationSelected = activeReminderPresetKey === "at_creation";
+    const manualReminderPolicy = atCreationSelected
+      ? buildAtCreationReminderPolicy()
+      : DEFAULT_MANUAL_TASK_REMINDER_POLICY;
     if (!isOnline) {
-      Alert.alert(
-        "Offline",
-        isEditMode
-          ? "Task editing needs internet right now. Please reconnect and try again."
-          : "New task creation needs internet right now. Please reconnect and try again."
-      );
-      return;
+      if (isEditMode) {
+        Alert.alert(
+          "Offline",
+          "Task editing needs internet right now. Please reconnect and try again."
+        );
+        return;
+      }
+      try {
+        const localDueDate =
+          newTaskDueAt instanceof Date && !Number.isNaN(newTaskDueAt.getTime())
+            ? newTaskDueAt
+            : getDefaultDueAt();
+        const localCreatedAt = new Date();
+        const localCustomReminder = atCreationSelected
+          ? localCreatedAt
+          : isValidCustomReminder(customReminderAt, localDueDate)
+            ? new Date(customReminderAt)
+            : null;
+        const localPayload = buildTaskCreateData(
+          {
+            userId: user.uid,
+            title,
+            ...subjectFields,
+            dueAt: localDueDate,
+            completed: false,
+            status: "todo",
+            type,
+            priority,
+            source: "manual",
+            customReminderAt: localCustomReminder,
+            reminderPolicy: manualReminderPolicy,
+          },
+          { createdAt: localCreatedAt }
+        );
+        const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const queue = await readCreateQueue(user.uid);
+        const queuedAt = localCreatedAt.toISOString();
+        queue.push({
+          id: tempId,
+          payload: localPayload,
+          queuedAt,
+        });
+        await writeCreateQueue(user.uid, queue);
+
+        const localTask = {
+          id: tempId,
+          ...localPayload,
+          localOnly: true,
+          queuedAt,
+        };
+        const nextPending = sortPendingTasks(
+          mergePendingTasksWithOfflineQueue(tasks, queue)
+        );
+        setTasks(nextPending);
+        void loadSubjectOptions(user.uid, [...nextPending, ...history]);
+
+        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        await saveToCache(CACHE_KEYS.assignments(user.uid), {
+          ...(cached?.data || {}),
+          pending: sortPendingTasks(
+            mergePendingTasksWithOfflineQueue(
+              stripArchived(cached?.data?.pending || []),
+              queue
+            )
+          ),
+          done: stripArchived(cached?.data?.done || []),
+        });
+
+        if (typeof refreshPendingSyncSummary === "function") {
+          refreshPendingSyncSummary(user.uid).catch((_e) => {});
+        }
+        scheduleDeadlineAlarms(localTask).catch((_e) => {});
+        setShowCreateModal(false);
+        setShowSubjectPicker(false);
+        setEditingTaskId("");
+        setEditingTask(null);
+        setActiveReminderPresetKey(null);
+        setFilter("All");
+        setSearchQuery("");
+        return;
+      } catch (_e) {
+        Alert.alert(
+          "Offline",
+          "New task creation needs internet right now. Please reconnect and try again."
+        );
+        return;
+      }
     }
 
     setCreatingTask(true);
     try {
-      // Validate dueAt before Firestore
       const dueDate =
         newTaskDueAt instanceof Date && !Number.isNaN(newTaskDueAt.getTime())
           ? newTaskDueAt
-          : getDefaultDueAt();
+          : null;
+
+      if (!dueDate) {
+        Alert.alert(
+          "Invalid Date",
+          "Please select a valid due date and try again."
+        );
+        setCreatingTask(false);
+        return;
+      }
       if (Number.isNaN(dueDate.getTime())) {
         throw new Error("Invalid due date - cannot create task");
       }
       const dueAtTimestamp = Timestamp.fromDate(dueDate);
-      const customReminderTimestamp = isValidCustomReminder(
-        customReminderAt,
-        dueDate
-      )
-        ? Timestamp.fromDate(customReminderAt)
+      const atCreationReminderDate = atCreationSelected
+        ? editingTaskCreatedAt || new Date()
         : null;
+      const customReminderTimestamp = atCreationSelected
+        ? Timestamp.fromDate(atCreationReminderDate)
+        : isValidCustomReminder(customReminderAt, dueDate)
+          ? Timestamp.fromDate(customReminderAt)
+          : null;
 
       if (isEditMode) {
         if (!editingTaskId) throw new Error("Missing task id for update.");
@@ -1139,10 +1529,9 @@ export default function TaskManagerScreen() {
           customReminderAt: customReminderTimestamp,
           ...(editingTask?.source === "planner"
             ? {}
-            : { reminderPolicy: DEFAULT_MANUAL_TASK_REMINDER_POLICY }),
+            : { reminderPolicy: manualReminderPolicy }),
           updatedAt: serverTimestamp(),
         };
-        // FIX: Guard cancelDeadlineAlarms before calling
         if (editingTask && typeof cancelDeadlineAlarms === "function") {
           await cancelDeadlineAlarms(editingTask);
         }
@@ -1160,7 +1549,7 @@ export default function TaskManagerScreen() {
             priority,
             source: "manual",
             customReminderAt: customReminderTimestamp,
-            reminderPolicy: DEFAULT_MANUAL_TASK_REMINDER_POLICY,
+            reminderPolicy: manualReminderPolicy,
           },
           { createdAt: serverTimestamp() }
         );
@@ -1172,7 +1561,6 @@ export default function TaskManagerScreen() {
       }
       await load();
 
-      // FIX: Guard rescheduleDeadlineAlarmsForTask before calling
       if (typeof rescheduleDeadlineAlarmsForTask === "function") {
         await rescheduleDeadlineAlarmsForTask(editingTaskId || newTaskId);
       }
@@ -1181,6 +1569,7 @@ export default function TaskManagerScreen() {
       setShowSubjectPicker(false);
       setEditingTaskId("");
       setEditingTask(null);
+      setActiveReminderPresetKey(null);
       setFilter("All");
       setSearchQuery("");
     } catch (error) {
@@ -1245,12 +1634,10 @@ export default function TaskManagerScreen() {
         await markSynced(user.uid);
       }
 
-      // FIX: Guard rescheduleDeadlineAlarmsForTask before calling
       if (typeof rescheduleDeadlineAlarmsForTask === "function") {
         await rescheduleDeadlineAlarmsForTask(task.id);
       }
 
-      // FIX: Guard Haptics.selectionAsync before calling (was already using ?. but being explicit)
       await Haptics.selectionAsync?.();
     } catch (error) {
       reportError(error, {
@@ -1272,20 +1659,63 @@ export default function TaskManagerScreen() {
     const user = auth.currentUser;
     if (!user || savingId) return;
 
-    // FIX: Guard Haptics.notificationAsync before calling
     await Haptics.notificationAsync?.(Haptics.NotificationFeedbackType.Success);
 
     const task = tasks.find((t) => t.id === id);
     if (!task) return;
     const update = buildTaskCompletionUpdate(new Date());
+    const completedTask = { ...task, ...update };
 
     setSavingId(id);
     setTasks((prev) => prev.filter((t) => t.id !== id));
-    setHistory((prev) => [{ ...task, ...update }, ...prev]);
+    setHistory((prev) => [completedTask, ...prev]);
 
-    // FIX: Guard cancelDeadlineAlarms before calling
     if (task && typeof cancelDeadlineAlarms === "function") {
-      await cancelDeadlineAlarms(task);
+      try {
+        await cancelDeadlineAlarms(task);
+        await clearCheckpoint(task.id);
+      } catch (cancelErr) {
+        warnIfDev(
+          "markComplete: cancelDeadlineAlarms failed — continuing:",
+          cancelErr
+        );
+      }
+    }
+
+    if (isLocalOnlyTaskId(id)) {
+      try {
+        await removeOfflineQueuedTask(user.uid, id);
+        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        await saveToCache(CACHE_KEYS.assignments(user.uid), {
+          ...(cached?.data || {}),
+          pending: sortPendingTasks(
+            stripArchived(cached?.data?.pending || []).filter(
+              (a) => a.id !== id
+            )
+          ),
+          done: [
+            completedTask,
+            ...stripArchived(cached?.data?.done || []).filter(
+              (a) => a.id !== id
+            ),
+          ],
+        });
+        if (typeof refreshPendingSyncSummary === "function") {
+          await refreshPendingSyncSummary(user.uid);
+        }
+        if (typeof cancelTodayDigestIfNoPendingTasks === "function") {
+          await cancelTodayDigestIfNoPendingTasks(user.uid);
+        }
+      } catch (err) {
+        warnIfDev(
+          "TaskManagerScreen: failed to complete local queued task:",
+          err
+        );
+        await load();
+      } finally {
+        setSavingId("");
+      }
+      return;
     }
 
     if (isOnline) {
@@ -1305,7 +1735,7 @@ export default function TaskManagerScreen() {
         if (cached?.data) {
           await saveToCache(CACHE_KEYS.assignments(user.uid), {
             pending: (cached.data.pending || []).filter((a) => a.id !== id),
-            done: [{ ...task, ...update }, ...(cached.data.done || [])],
+            done: [completedTask, ...(cached.data.done || [])],
           });
         }
       } catch (err) {
@@ -1347,9 +1777,9 @@ export default function TaskManagerScreen() {
         onPress: async () => {
           setDeletingId(task.id);
           try {
-            // FIX: Guard cancelDeadlineAlarms before calling
             if (typeof cancelDeadlineAlarms === "function") {
               await cancelDeadlineAlarms(task);
+              await clearCheckpoint(task.id);
             }
             await deleteDoc(doc(db, "assignments", task.id));
             setTasks((prev) => prev.filter((item) => item.id !== task.id));
@@ -1366,6 +1796,7 @@ export default function TaskManagerScreen() {
               setCustomReminderAt(null);
               setEditingTaskId("");
               setEditingTask(null);
+              setActiveReminderPresetKey(null);
             }
             if (typeof markSynced === "function") {
               await markSynced(user.uid);
@@ -1414,9 +1845,16 @@ export default function TaskManagerScreen() {
             ]);
 
             for (const t of completed) {
-              // FIX: Guard cancelDeadlineAlarms before calling
               if (typeof cancelDeadlineAlarms === "function") {
-                await cancelDeadlineAlarms(t);
+                try {
+                  await cancelDeadlineAlarms(t);
+                } catch (cancelErr) {
+                  warnIfDev(
+                    "bulkComplete: cancelDeadlineAlarms failed for task",
+                    t.id,
+                    cancelErr
+                  );
+                }
               }
               if (isOnline) {
                 try {
@@ -1464,6 +1902,9 @@ export default function TaskManagerScreen() {
       if (!queue.length) return;
       const remaining = [];
       for (const item of queue) {
+        if (isLocalOnlyTaskId(item.id)) {
+          continue;
+        }
         try {
           if (item.action === "complete") {
             await updateDoc(
@@ -1485,7 +1926,9 @@ export default function TaskManagerScreen() {
       setPendingCount(remaining.length);
       if (remaining.length < queue.length) {
         if (typeof markSynced === "function") {
-          await markSynced(user.uid);
+          const completionQueueKeys =
+            remaining.length === 0 ? [PENDING_UPDATES_KEY(user.uid)] : null;
+          await markSynced(user.uid, completionQueueKeys);
         }
         queueReminderRefresh("task_flush_pending", {
           flushedCount: queue.length - remaining.length,
@@ -1545,7 +1988,7 @@ export default function TaskManagerScreen() {
   const overdueCount = useMemo(
     () =>
       tasks.filter((t) => {
-        const d = parseDueDate(t.dueAt);
+        const d = resolveTaskDueDate(t);
         return d && d < nowTick;
       }).length,
     [tasks, nowTick]
@@ -1617,7 +2060,7 @@ export default function TaskManagerScreen() {
     const q = deferredSearchQuery.toLowerCase().trim();
     const result = tasks.filter((t) => {
       if (filter === "Today") {
-        const due = parseDueDate(t.dueAt);
+        const due = resolveTaskDueDate(t);
         const endToday = new Date(nowTick);
         endToday.setHours(23, 59, 59, 999);
         if (
@@ -1627,7 +2070,7 @@ export default function TaskManagerScreen() {
         )
           return false;
       } else if (filter === "Overdue") {
-        const due = parseDueDate(t.dueAt);
+        const due = resolveTaskDueDate(t);
         if (!due || due >= nowTick) return false;
       } else if (filter === "Planner") {
         if (t.source !== "planner") return false;
@@ -1661,15 +2104,15 @@ export default function TaskManagerScreen() {
         const bySubject = aSubject.localeCompare(bSubject);
         if (bySubject !== 0) return bySubject;
         const aDue =
-          parseDueDate(a.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+          resolveTaskDueDate(a)?.getTime() ?? Number.POSITIVE_INFINITY;
         const bDue =
-          parseDueDate(b.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+          resolveTaskDueDate(b)?.getTime() ?? Number.POSITIVE_INFINITY;
         return aDue - bDue;
       });
     }
     return result.sort((a, b) => {
-      const aDue = parseDueDate(a.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
-      const bDue = parseDueDate(b.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+      const aDue = resolveTaskDueDate(a)?.getTime() ?? Number.POSITIVE_INFINITY;
+      const bDue = resolveTaskDueDate(b)?.getTime() ?? Number.POSITIVE_INFINITY;
       return aDue - bDue;
     });
   }, [tasks, filter, deferredSearchQuery, nowTick, subjectFilterId, sortMode]);
@@ -1739,7 +2182,7 @@ export default function TaskManagerScreen() {
     let planner = 0;
 
     tasks.forEach((task) => {
-      const due = parseDueDate(task.dueAt);
+      const due = resolveTaskDueDate(task);
       if (due && due < nowTick) overdue += 1;
       if (task.priority === "high") high += 1;
       if (task.source === "planner") planner += 1;
@@ -2609,6 +3052,7 @@ export default function TaskManagerScreen() {
         dueAt={newTaskDueAt}
         dueDateLabel={dueDateLabel}
         dueTimeLabel={dueTimeLabel}
+        dueDateWarning={dueDateWarning}
         dueQuickOptions={quickDueOptions}
         showDueDatePicker={showDueDatePicker}
         showDueTimePicker={showDueTimePicker}
@@ -2617,7 +3061,9 @@ export default function TaskManagerScreen() {
         customReminderLeadLabel={customReminderLeadLabel}
         showReminderPicker={showReminderPicker}
         showClearedReminderHint={
-          isEditMode && Boolean(editingTask?.customReminderAt) && !customReminderAt
+          isEditMode &&
+          Boolean(editingTask?.customReminderAt) &&
+          !customReminderAt
         }
         onOpenDueDatePicker={() => setShowDueDatePicker(true)}
         onOpenDueTimePicker={() => setShowDueTimePicker(true)}
@@ -2626,7 +3072,10 @@ export default function TaskManagerScreen() {
         onDueDateChange={handleDueDateChange}
         onDueTimeChange={handleDueTimeChange}
         onReminderChange={applyCustomReminderSelection}
-        onClearCustomReminder={() => setCustomReminderAt(null)}
+        onClearCustomReminder={() => {
+          setCustomReminderAt(null);
+          setActiveReminderPresetKey(null);
+        }}
         onApplyDueQuickOption={applyDueQuickOption}
         priorityOptions={CREATE_PRIORITY_OPTIONS}
         priorityValue={newTaskPriority}
@@ -2635,6 +3084,8 @@ export default function TaskManagerScreen() {
         typeMeta={TYPE_META}
         typeValue={newTaskType}
         onChangeType={setNewTaskType}
+        createdAt={editingTaskCreatedAt}
+        activeReminderPresetKey={activeReminderPresetKey}
         onSubmit={handleSaveTask}
       />
 
@@ -2642,8 +3093,9 @@ export default function TaskManagerScreen() {
       <DeadlineAlarmModal
         visible={alarmVisible}
         task={alarmTask}
+        thresholdKey={alarmThresholdKey}
         onNotDone={async () => {
-          pendingActionRef.current = null;
+          setPendingAction(null);
           if (typeof notDoneAlarm === "function") {
             await notDoneAlarm();
           }
@@ -2651,23 +3103,19 @@ export default function TaskManagerScreen() {
         onMarkDone={async () => {
           const taskId = alarmTask?.id;
           if (!taskId) return;
-          pendingActionRef.current = null;
+          setPendingAction(null);
           if (typeof markDoneAlarm === "function") {
             await markDoneAlarm();
           }
           await markComplete(taskId, { refreshReminders: false });
-          // FIX: Guard clearTaskAlarmSuppression and rescheduleDeadlineAlarmsForTask
           if (typeof clearTaskAlarmSuppression === "function") {
             await clearTaskAlarmSuppression(taskId);
-          }
-          if (typeof rescheduleDeadlineAlarmsForTask === "function") {
-            await rescheduleDeadlineAlarmsForTask(taskId);
           }
           if (typeof dismissAlarm === "function") {
             dismissAlarm();
           }
         }}
-        pendingAction={pendingActionRef.current}
+        pendingAction={pendingActionState}
       />
     </View>
   );
@@ -2677,7 +3125,6 @@ export default function TaskManagerScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   container: { paddingBottom: 32 },
-
   hero: {
     backgroundColor: "#f59e0b",
     paddingBottom: 22,
@@ -2751,7 +3198,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     marginTop: 1,
   },
-
   searchWrap: {
     flexDirection: "row",
     alignItems: "center",
@@ -2761,7 +3207,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   searchInput: { flex: 1, fontSize: 14, fontWeight: "500" },
-
   controlsCard: {
     marginHorizontal: 16,
     marginTop: 12,
@@ -2836,7 +3281,6 @@ const styles = StyleSheet.create({
     borderRadius: 99,
   },
   subjectFilterBadgeText: { fontSize: 10, fontWeight: "800" },
-
   toolbarRow: {
     flexDirection: "column",
     alignItems: "stretch",
@@ -2877,7 +3321,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   controlsSummaryText: { fontSize: 11, fontWeight: "700" },
-
   analyticsCard: {
     marginHorizontal: 16,
     marginTop: 10,
@@ -2899,7 +3342,6 @@ const styles = StyleSheet.create({
   },
   analyticsValue: { fontSize: 16, fontWeight: "900", marginBottom: 2 },
   analyticsLabel: { fontSize: 10, fontWeight: "700", textAlign: "center" },
-
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -2912,9 +3354,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 12, fontWeight: "800", flex: 1 },
   sectionCount: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 99 },
   sectionCountText: { fontSize: 11, fontWeight: "800" },
-
   taskList: { paddingHorizontal: 16 },
-
   loadMoreBtn: {
     marginHorizontal: 16,
     marginTop: 6,
@@ -2925,7 +3365,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadMoreText: { fontSize: 12, fontWeight: "700" },
-
   historyToggle: {
     marginHorizontal: 16,
     marginTop: 14,
@@ -3000,5 +3439,3 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 });
-
-

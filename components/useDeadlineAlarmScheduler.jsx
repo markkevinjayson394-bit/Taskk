@@ -1,19 +1,51 @@
+/**
+ * components/useDeadlineAlarmScheduler.js
+ *
+ * CHANGES:
+ * - [FIX GAP-3] showAlarmForTask: when the task is already the active alarm,
+ *   update its thresholdKey instead of silently no-oping. This ensures that
+ *   when a native alarm restore path calls showAlarmForTask(task, stageKey),
+ *   the correct stage propagates into alarmThresholdKey → DeadlineAlarmModal.
+ * - [FIX] notifee.cancelNotification() called in notDoneAlarm/markDoneAlarm
+ *   before advancing the queue so the ongoing shade notification is dismissed.
+ */
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
+import {
+  FOREGROUND_THRESHOLDS,
+  OVERDUE_CHAIN,
+} from "../utils/deadlineConstants";
 import { warnIfDev } from "../utils/logger";
-import { parseDueDate } from "./DeadlineAlarmModal.helpers";
+import { buildDeadlineNotificationId } from "../utils/notificationIds";
+import { parseDueDate, resolveTaskDueDate } from "./DeadlineAlarmModal.helpers";
+
+let notifee = null;
+try {
+  notifee = require("@notifee/react-native").default;
+} catch (_e) {}
 
 const ACK_STORE_KEY = "deadline_alarm_acks_v1";
-const ACK_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const CHECK_INTERVAL_MS = 15_000;
-const OVERDUE_BUCKET_MS = 5 * 60 * 1000;
+const ACK_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 5_000; // was 1_000
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DAILY_OVERDUE_WINDOW_MS = 60 * 60 * 1000;
 
-export const FOREGROUND_THRESHOLDS = [
-  { key: "1d", ms: 24 * 60 * 60 * 1000, window: 5 * 60 * 1000 },
-  { key: "2h", ms: 2 * 60 * 60 * 1000, window: 3 * 60 * 1000 },
-  { key: "30m", ms: 30 * 60 * 1000, window: 2 * 60 * 1000 },
-  { key: "due", ms: 0, window: 10 * 60 * 1000 },
-];
+const OVERDUE_THRESHOLDS = OVERDUE_CHAIN.filter(
+  ({ stage }) => stage !== "due" && stage !== "daily"
+).map(({ stage: key, delayMs: ms }) => ({
+  key,
+  ms,
+  window:
+    ms === 15 * 60 * 1000
+      ? 5 * 60 * 1000
+      : ms === 60 * 60 * 1000
+        ? 10 * 60 * 1000
+        : 15 * 60 * 1000,
+}));
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function loadAcks() {
   try {
@@ -57,20 +89,100 @@ function ackKey(taskId, thresholdKey) {
   return `${taskId}:${thresholdKey}`;
 }
 
-function findTriggeredThreshold(task, lastCheckedAt, nowMs) {
-  if (task?.completed) return null;
+function getDailyAckBucket(dueMs, nowMs) {
+  if (!Number.isFinite(dueMs) || nowMs < dueMs + DAY_MS) {
+    return 0;
+  }
+  // Anchor to local midnight of the day after due date
+  const duePlusOne = new Date(dueMs + DAY_MS);
 
-  const due = parseDueDate(task?.dueAt);
+  const firstBucketMidnight = new Date(
+    duePlusOne.getFullYear(),
+    duePlusOne.getMonth(),
+    duePlusOne.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  if (nowMs < firstBucketMidnight) return 0;
+
+  const nowDate = new Date(nowMs);
+  const nowMidnight = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  return Math.floor((nowMidnight - firstBucketMidnight) / DAY_MS) + 1;
+}
+
+function resolveAckKeyForThreshold(task, thresholdKey, nowMs) {
+  if (!thresholdKey) return null;
+  if (thresholdKey !== "daily") return thresholdKey;
+
+  const due =
+    resolveTaskDueDate(task) ?? (task?.dueAt ? parseDueDate(task.dueAt) : null);
+  const dueMs = due?.getTime?.();
+  const bucket = getDailyAckBucket(dueMs, nowMs);
+  return bucket > 0 ? `daily_${bucket}` : "daily";
+}
+
+function findTriggeredThreshold(
+  task,
+  lastCheckedAt,
+  nowMs,
+  { deadlineWarningEnabled = true, pendingAcksRef } = {}
+) {
+  if (task?.completed || deadlineWarningEnabled === false) return null;
+
+  const due = resolveTaskDueDate(task);
   if (!due) return null;
 
   const dueMs = due.getTime();
   if (nowMs >= dueMs) {
     const crossedDue = dueMs > lastCheckedAt && dueMs <= nowMs;
-    if (crossedDue) {
-      return "due";
+    const justBecameOverdue =
+      nowMs - dueMs < 10 * 60 * 1000 &&
+      !crossedDue;
+    if (crossedDue || justBecameOverdue) {
+      const ackKey = "due";
+      if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+      return { thresholdKey: "due", ackKey };
     }
-    const overdueBucket = Math.floor((nowMs - dueMs) / OVERDUE_BUCKET_MS);
-    return `overdue_${overdueBucket}`;
+
+    for (const threshold of OVERDUE_THRESHOLDS) {
+      const triggerAt = dueMs + threshold.ms;
+      const crossedSinceLast = triggerAt > lastCheckedAt && triggerAt <= nowMs;
+      const withinWindow =
+        nowMs >= triggerAt && nowMs <= triggerAt + threshold.window;
+      if (crossedSinceLast || withinWindow) {
+        const ackKey = threshold.key;
+        if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+        return { thresholdKey: threshold.key, ackKey };
+      }
+    }
+
+    const dailyBucket = getDailyAckBucket(dueMs, nowMs);
+    if (dailyBucket > 0) {
+      const triggerAt = dueMs + DAY_MS * dailyBucket;
+      const crossedSinceLast = triggerAt > lastCheckedAt && triggerAt <= nowMs;
+      const withinWindow =
+        nowMs >= triggerAt && nowMs <= triggerAt + DAILY_OVERDUE_WINDOW_MS;
+      if (crossedSinceLast || withinWindow) {
+        const ackKey = `daily_${dailyBucket}`;
+        if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+        return {
+          thresholdKey: "daily",
+          ackKey,
+        };
+      }
+    }
+
+    return null;
   }
 
   for (const threshold of FOREGROUND_THRESHOLDS) {
@@ -82,29 +194,85 @@ function findTriggeredThreshold(task, lastCheckedAt, nowMs) {
       nowMs >= triggerAt && nowMs <= triggerAt + threshold.window;
 
     if (crossedSinceLast || withinWindow) {
-      return threshold.key;
+      const ackKey = threshold.key;
+      if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+      return { thresholdKey: threshold.key, ackKey };
     }
   }
 
   return null;
 }
 
-function saveOverdueAckBuckets(acks, taskId, dueAt, nowMs) {
+function saveOverdueAckEntries(acks, taskId, dueAt, nowMs) {
   const dueMs = parseDueDate(dueAt)?.getTime?.();
   if (!Number.isFinite(dueMs) || nowMs < dueMs) return;
 
-  const currentBucket = Math.floor((nowMs - dueMs) / OVERDUE_BUCKET_MS);
-  for (let bucket = 0; bucket <= currentBucket; bucket += 1) {
-    acks[ackKey(taskId, `overdue_${bucket}`)] = true;
+  OVERDUE_THRESHOLDS.forEach((threshold) => {
+    if (nowMs >= dueMs + threshold.ms) {
+      acks[ackKey(taskId, threshold.key)] = true;
+    }
+  });
+
+  const dailyBucket = getDailyAckBucket(dueMs, nowMs);
+  for (let bucket = 1; bucket <= dailyBucket; bucket += 1) {
+    acks[ackKey(taskId, `daily_${bucket}`)] = true;
   }
 }
 
-export function useDeadlineAlarmScheduler(pendingTasks = []) {
+/**
+ * resolveNotifeeIdsForAlarm
+ *
+ * Returns all notifee notification IDs that could be posted for the given
+ * alarm queue entry. We cancel all of them so the user's shade is cleared
+ * regardless of which exact ID notifee used when the alarm fired.
+ */
+function resolveNotifeeIdsForAlarm(alarmEntry) {
+  if (!alarmEntry?.task?.id) return [];
+  const taskId = alarmEntry.task.id;
+  const thresholdKey = alarmEntry.thresholdKey;
+
+  const ids = new Set();
+
+  ids.add(buildDeadlineNotificationId(taskId, thresholdKey || "due"));
+
+  try {
+    ids.add(buildDeadlineNotificationId(taskId, "due"));
+    if (thresholdKey) {
+      ids.add(buildDeadlineNotificationId(taskId, thresholdKey));
+    }
+  } catch (_e) {
+    // no-op
+  }
+
+  return Array.from(ids);
+}
+
+/**
+ * cancelNotifeeAlarmNotifications
+ */
+async function cancelNotifeeAlarmNotifications(alarmEntry) {
+  if (!notifee) return;
+  const ids = resolveNotifeeIdsForAlarm(alarmEntry);
+  await Promise.all(
+    ids.map((id) => notifee.cancelNotification(id).catch(() => {}))
+  );
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+export function useDeadlineAlarmScheduler(
+  pendingTasks = [],
+  { deadlineWarningEnabled = true } = {}
+) {
   const [alarmVisible, setAlarmVisible] = useState(false);
   const alarmQueueRef = useRef([]);
+  const checkAlarmsRef = useRef(null);
   const [activeAlarm, setActiveAlarm] = useState(null);
   const acksRef = useRef({});
-  const lastCheckedAtRef = useRef(Date.now());
+  const [acksLoaded, setAcksLoaded] = useState(false);
+  const lastCheckedAtRef = useRef(Date.now() - 2_000);
+  const prevTaskIdsRef = useRef(new Set());
+  const pendingAcksRef = useRef(new Set());
 
   const dismissAlarm = useCallback(() => {
     setAlarmVisible(false);
@@ -115,50 +283,68 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
     loadAcks()
       .then((a) => {
         acksRef.current = a;
+        setAcksLoaded(true);
       })
       .catch((err) => {
         warnIfDev("useDeadlineAlarmScheduler: failed to load acks:", err);
         acksRef.current = {};
+        setAcksLoaded(true);
       });
   }, []);
 
+  useEffect(() => {
+    if (deadlineWarningEnabled !== false) return;
+    alarmQueueRef.current = [];
+    setAlarmVisible(false);
+    setActiveAlarm(null);
+  }, [deadlineWarningEnabled]);
+
   const checkAlarms = useCallback(() => {
+    // NOTE: pendingTasks reference is expected to be stable by the parent.
+    // If it changes on every render, this callback will be recreated and
+    // any interval logic may effectively reset.
+
     const nowMs = Date.now();
     const lastCheckedAt = lastCheckedAtRef.current || nowMs;
     lastCheckedAtRef.current = nowMs;
 
+    if (deadlineWarningEnabled === false) {
+      return;
+    }
+
     for (const task of pendingTasks) {
       if (task?.completed) continue;
 
-      const triggeredThreshold = findTriggeredThreshold(
-        task,
-        lastCheckedAt,
-        nowMs
-      );
-      if (!triggeredThreshold) continue;
+      const triggered = findTriggeredThreshold(task, lastCheckedAt, nowMs, {
+        deadlineWarningEnabled,
+        pendingAcksRef,
+      });
+      if (!triggered) continue;
 
-      const key = ackKey(task.id, triggeredThreshold);
+      const key = ackKey(task.id, triggered.ackKey);
       if (acksRef.current[key]) continue;
 
-      // Check not already in queue
-      if (alarmQueueRef.current.find((q) => q.taskId === task.id)) continue;
+      if (alarmQueueRef.current.find(
+        (q) => q.taskId === task.id && q.thresholdKey === triggered.thresholdKey
+      )) continue;
 
       alarmQueueRef.current.push({
         taskId: task.id,
         task,
-        thresholdKey: triggeredThreshold,
+        thresholdKey: triggered.thresholdKey,
+        ackKey: triggered.ackKey,
       });
+      pendingAcksRef.current.add(key);
     }
 
     if (!activeAlarm && alarmQueueRef.current.length > 0) {
-      setActiveAlarm(alarmQueueRef.current[0]);
+      const [next, ...rest] = alarmQueueRef.current;
+      alarmQueueRef.current = rest;
+      setActiveAlarm(next);
       setAlarmVisible(true);
     }
-  }, [activeAlarm, pendingTasks]);
+  }, [activeAlarm, deadlineWarningEnabled, pendingTasks]);
 
-  // When an alarm is dismissed (Done/Not Done), check if there's a next one queued.
-  // checkAlarms already covers this when activeAlarm changes, but the interval
-  // (CHECK_INTERVAL_MS) may delay showing the next alarm by up to 15 seconds.
   useEffect(() => {
     if (activeAlarm) return;
     if (alarmQueueRef.current.length === 0) return;
@@ -169,40 +355,90 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
   }, [activeAlarm]);
 
   useEffect(() => {
-    lastCheckedAtRef.current = Date.now();
-    checkAlarms();
-    const id = setInterval(checkAlarms, CHECK_INTERVAL_MS);
-    return () => clearInterval(id);
+    checkAlarmsRef.current = checkAlarms;
   }, [checkAlarms]);
+
+  useEffect(() => {
+    let appStateSub = null;
+    const handleAppStateChange = (nextState) => {
+      if (nextState === "active") {
+        checkAlarmsRef.current?.();
+      }
+    };
+
+    if (AppState.addEventListener) {
+      appStateSub = AppState.addEventListener("change", handleAppStateChange);
+    }
+
+    return () => {
+      if (appStateSub) {
+        appStateSub.remove();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!acksLoaded) return;
+    lastCheckedAtRef.current = Date.now() - 2_000;
+    checkAlarmsRef.current?.();
+    const id = setInterval(() => checkAlarmsRef.current?.(), CHECK_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [acksLoaded]);
+
+  useEffect(() => {
+    const currentIds = new Set(pendingTasks.map(t => t.id));
+    const hasNewTask = [...currentIds].some(id => !prevTaskIdsRef.current.has(id));
+    if (hasNewTask) {
+      lastCheckedAtRef.current = Date.now() - CHECK_INTERVAL_MS - 1000;
+    }
+    prevTaskIdsRef.current = currentIds;
+    checkAlarmsRef.current?.();
+  }, [pendingTasks]);
 
   const persistCurrentAlarmAck = useCallback(async () => {
     if (!activeAlarm) return;
 
     const nowMs = Date.now();
-    let resolvedThresholdKey = activeAlarm.thresholdKey;
-    if (!resolvedThresholdKey) {
-      const task = activeAlarm.task;
-      resolvedThresholdKey = findTriggeredThreshold(
-        task,
+    let resolvedThreshold = null;
+    if (activeAlarm.thresholdKey) {
+      resolvedThreshold = {
+        thresholdKey: activeAlarm.thresholdKey,
+        ackKey:
+          activeAlarm.ackKey ||
+          resolveAckKeyForThreshold(
+            activeAlarm.task,
+            activeAlarm.thresholdKey,
+            nowMs
+          ),
+      };
+    } else {
+      resolvedThreshold = findTriggeredThreshold(
+        activeAlarm.task,
         nowMs - CHECK_INTERVAL_MS,
-        nowMs
+        nowMs,
+        { deadlineWarningEnabled: true }
       );
     }
 
-    if (resolvedThresholdKey) {
-      acksRef.current[ackKey(activeAlarm.task.id, resolvedThresholdKey)] = true;
+    if (resolvedThreshold?.ackKey) {
+      acksRef.current[ackKey(activeAlarm.task.id, resolvedThreshold.ackKey)] =
+        true;
     }
-    saveOverdueAckBuckets(
+    saveOverdueAckEntries(
       acksRef.current,
       activeAlarm.task.id,
-      activeAlarm.task?.dueAt,
+      resolveTaskDueDate(activeAlarm.task)?.toISOString() ?? activeAlarm.task?.dueAt,
       nowMs
     );
     await saveAcks(acksRef.current);
+    if (resolvedThreshold?.ackKey) {
+      pendingAcksRef.current.delete(ackKey(activeAlarm.task.id, resolvedThreshold.ackKey));
+    }
   }, [activeAlarm]);
 
   const acknowledgeAlarm = useCallback(async () => {
     if (!activeAlarm) return;
+    await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
     alarmQueueRef.current.shift();
     const next = alarmQueueRef.current[0] || null;
@@ -212,6 +448,7 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
 
   const markDoneAlarm = useCallback(async () => {
     if (!activeAlarm) return;
+    await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
     alarmQueueRef.current.shift();
     const next = alarmQueueRef.current[0] || null;
@@ -221,52 +458,59 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
 
   const showAlarmForTask = useCallback(
     (task, thresholdKey = null) => {
-      console.log("[DEBUG AlarmScheduler] showAlarmForTask called", {
-        taskId: task?.id,
-        taskTitle: task?.title,
-        thresholdKey,
-        currentActiveAlarm: activeAlarm?.taskId,
-        queueLength: alarmQueueRef.current.length,
-        alarmVisible,
-      });
       if (!task || task?.completed) {
-        console.log(
-          "[DEBUG AlarmScheduler] Task is null/completed, returning early"
-        );
         return;
       }
-      const entry = { taskId: task.id, task, thresholdKey };
-      const alreadyQueued = alarmQueueRef.current.find(
+
+      if (activeAlarm && activeAlarm.taskId === task.id) {
+        if (thresholdKey && thresholdKey !== activeAlarm.thresholdKey) {
+          setActiveAlarm((prev) =>
+            prev ? { ...prev, thresholdKey, task } : prev
+          );
+        }
+        setAlarmVisible(true);
+        return;
+      }
+
+      const entry = {
+        taskId: task.id,
+        task,
+        thresholdKey,
+        ackKey: resolveAckKeyForThreshold(task, thresholdKey, Date.now()),
+      };
+
+      const existingIdx = alarmQueueRef.current.findIndex(
         (q) => q.taskId === task.id
       );
-      console.log("[DEBUG AlarmScheduler] Already in queue?", !!alreadyQueued);
-      if (alreadyQueued) return;
+      if (existingIdx !== -1) {
+        if (thresholdKey) {
+          alarmQueueRef.current[existingIdx] = {
+            ...alarmQueueRef.current[existingIdx],
+            thresholdKey,
+            task,
+          };
+        }
+        if (!activeAlarm && existingIdx === 0) {
+          const [next, ...rest] = alarmQueueRef.current;
+          alarmQueueRef.current = rest;
+          setActiveAlarm(next);
+          setAlarmVisible(true);
+        }
+        return;
+      }
+
       alarmQueueRef.current.push(entry);
-      console.log(
-        "[DEBUG AlarmScheduler] Pushed to queue, queue length:",
-        alarmQueueRef.current.length
-      );
       if (!activeAlarm) {
-        console.log(
-          "[DEBUG AlarmScheduler] No active alarm, setting active and visible true"
-        );
         setActiveAlarm(entry);
         setAlarmVisible(true);
-        console.log(
-          "[DEBUG AlarmScheduler] State updated, alarmVisible should be true"
-        );
-      } else {
-        console.log(
-          "[DEBUG AlarmScheduler] Active alarm exists, just queued. Visible stays:",
-          alarmVisible
-        );
       }
     },
-    [activeAlarm, alarmVisible]
+    [activeAlarm]
   );
 
   const snoozeAlarm = useCallback(async () => {
     if (!activeAlarm) return;
+    await cancelNotifeeAlarmNotifications(activeAlarm);
     alarmQueueRef.current.shift();
     const next = alarmQueueRef.current[0] || null;
     setActiveAlarm(next);
@@ -275,6 +519,7 @@ export function useDeadlineAlarmScheduler(pendingTasks = []) {
 
   const notDoneAlarm = useCallback(async () => {
     if (!activeAlarm) return;
+    await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
     alarmQueueRef.current.shift();
     const next = alarmQueueRef.current[0] || null;

@@ -1,5 +1,5 @@
-import { clampText } from '@/utils/parsing';
 import { warnIfDev } from "./logger";
+import { clampText } from "./parsing";
 
 const TASK_TYPES = [
   "assignment",
@@ -112,6 +112,15 @@ export function parseDueDate(value) {
   return normalizeTaskDateInput(value);
 }
 
+export function resolveTaskDueDate(task = {}) {
+  if (!task || typeof task !== "object") return null;
+  return (
+    normalizeTaskDateInput(task.dueAt) ??
+    normalizeTaskDateInput(task.dueDate) ??
+    null
+  );
+}
+
 export function normalizeEstimatedMinutes(value) {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Math.round(Number(value));
@@ -146,23 +155,33 @@ export function normalizeReminderPolicy(value) {
   const modeInput =
     typeof value.mode === "string" ? value.mode.trim().toLowerCase() : "";
   const mode = REMINDER_MODES.includes(modeInput) ? modeInput : "default";
+  const typeInput =
+    typeof value.type === "string" ? value.type.trim().toLowerCase() : "";
+  const type = typeInput === "at_creation" ? typeInput : null;
 
   const leadMinutes = normalizeReminderLeadMinutes(value.leadMinutes);
   const acknowledgeRequired = Boolean(value.acknowledgeRequired);
   const dailyOverdue = Boolean(value.dailyOverdue);
 
   const hasCustomFields =
-    leadMinutes.length > 0 || acknowledgeRequired || dailyOverdue;
+    leadMinutes.length > 0 ||
+    acknowledgeRequired ||
+    dailyOverdue ||
+    type === "at_creation";
   if (!hasCustomFields && mode === "default") {
     return null;
   }
 
-  return {
+  const normalized = {
     mode,
     leadMinutes,
     acknowledgeRequired,
     dailyOverdue,
   };
+  if (type === "at_creation") {
+    normalized.type = type;
+  }
+  return normalized;
 }
 
 export function normalizeSubtasks(subtasks = []) {
@@ -170,7 +189,10 @@ export function normalizeSubtasks(subtasks = []) {
   return subtasks
     .slice(0, 50)
     .map((item, index) => {
-      const title = clampText(typeof item?.title === "string" ? item.title.trim() : "", 120);
+      const title = clampText(
+        typeof item?.title === "string" ? item.title.trim() : "",
+        120
+      );
       if (!title) return null;
       return {
         id:
@@ -201,7 +223,10 @@ export function isTaskCompleted(task = {}) {
 }
 
 export function buildTaskCreateData(input = {}, meta = {}) {
-  const title = clampText(typeof input.title === "string" ? input.title.trim() : "", 160);
+  const title = clampText(
+    typeof input.title === "string" ? input.title.trim() : "",
+    160
+  );
   const subjectName = normalizeSubjectName(input.subjectName ?? input.subject);
   const priority = normalizeTaskPriority(input.priority);
   const completed = normalizeCompletedFlag(input.completed);
@@ -209,6 +234,7 @@ export function buildTaskCreateData(input = {}, meta = {}) {
   const dueAt = normalizeTaskDateInput(input.dueAt);
   const startedAt = normalizeTaskDateInput(input.startedAt);
   const completedAtInput = normalizeTaskDateInput(input.completedAt);
+  const customReminderAt = normalizeTaskDateInput(input.customReminderAt);
   const estimatedMinutes = normalizeEstimatedMinutes(input.estimatedMinutes);
   const reminderPolicy = normalizeReminderPolicy(input.reminderPolicy);
 
@@ -235,6 +261,9 @@ export function buildTaskCreateData(input = {}, meta = {}) {
 
   if (estimatedMinutes !== null) {
     data.estimatedMinutes = estimatedMinutes;
+  }
+  if (customReminderAt) {
+    data.customReminderAt = customReminderAt;
   }
   if (reminderPolicy) {
     data.reminderPolicy = reminderPolicy;
@@ -299,5 +328,4 @@ export {
   TASK_STATUS,
   TASK_TYPES
 };
-
 

@@ -4,10 +4,10 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import {
   collection,
-  deleteDoc,
   getDocs,
   query,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -41,6 +41,14 @@ const MENU = [
     color: "#0ea5e9",
     bg: "#0ea5e918",
     desc: "Manage all course schedules",
+  },
+  {
+    icon: "calendar-outline",
+    label: "Weekly Schedule Builder",
+    route: "/(admin)/WeeklySchedule",
+    color: "#ec4899",
+    bg: "#ec489918",
+    desc: "Visual drag-and-drop schedule builder",
   },
   {
     icon: "people",
@@ -175,7 +183,12 @@ export default function AdminHome() {
             style: "destructive",
             onPress: async () => {
               try {
-                await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+                const BATCH_SIZE = 500;
+                for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+                  const batch = writeBatch(db);
+                  snap.docs.slice(i, i + BATCH_SIZE).forEach((d) => batch.delete(d.ref));
+                  await batch.commit();
+                }
                 Alert.alert("Done", "All announcements cleared.");
                 loadStats(false);
               } catch (err) {

@@ -10,7 +10,10 @@ export function parsePlannerRef(ref) {
   if (calendarMatch) {
     const planId = (calendarMatch[2] || "").trim();
     if (!planId) {
-      console.warn("parsePlannerRef: malformed calendar ref (empty planId):", ref);
+      console.warn(
+        "parsePlannerRef: malformed calendar ref (empty planId):",
+        ref
+      );
       return null;
     }
     return {
@@ -23,17 +26,23 @@ export function parsePlannerRef(ref) {
   if (dayMatch) {
     const blockId = (dayMatch[2] || "").trim();
     if (!blockId) {
-      console.warn("parsePlannerRef: malformed day-planner ref (empty blockId):", ref);
+      console.warn(
+        "parsePlannerRef: malformed day-planner ref (empty blockId):",
+        ref
+      );
       return null;
     }
     return { mode: "day", dayKey: dayMatch[1], blockId };
   }
-  const monthMatch = value.match(/^planner:month:(\d{4}-\d{2}):milestone:(\d+)$/);
+  const monthMatch = value.match(
+    /^planner:month:(\d{4}-\d{2}):milestone:(\d+)$/
+  );
   if (monthMatch)
     return {
       mode: "month",
       monthKey: monthMatch[1],
       milestoneIndex: Number(monthMatch[2]),
     };
+  console.warn("parsePlannerRef: unrecognized ref format:", ref);
   return null;
 }

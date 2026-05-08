@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert,
   FlatList,
@@ -273,7 +274,35 @@ export default function WeeklySchedule() {
   const [schoolYear, setSchoolYear] = useState(DEFAULT_SCHOOL_YEAR);
   const [activeDay, setActiveDay] = useState(0);
 
+  const DRAFT_KEY = "admin_weekly_schedule_draft_v1";
+
   const [schedule, setSchedule] = useState(() => blankSchedule());
+
+  // Restore draft on mount
+  useEffect(() => {
+    AsyncStorage.getItem(DRAFT_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (saved?.schedule) setSchedule(saved.schedule);
+        if (saved?.college) setCollege(saved.college);
+        if (saved?.program) setProgram(saved.program);
+        if (saved?.yearLevel) setYearLevel(saved.yearLevel);
+        if (saved?.section) setSection(saved.section);
+        if (saved?.semester) setSemester(saved.semester);
+        if (saved?.schedType) setSchedType(saved.schedType);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Save draft whenever schedule or header fields change
+  useEffect(() => {
+    AsyncStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ schedule, college, program, yearLevel, section, semester, schedType })
+    ).catch(() => {});
+  }, [schedule, college, program, yearLevel, section, semester, schedType]);
+
   const [copiedDay, setCopiedDay] = useState(null);
 
   // Entry modal state
@@ -645,6 +674,20 @@ export default function WeeklySchedule() {
                 <Text style={styles.addSubjTxt}>+ Add Subject</Text>
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity
+              style={[styles.copyDayBtn, { marginTop: 8 }]}
+              onPress={() => {
+                setSchedule(blankSchedule());
+                setCollege("");
+                setProgram("");
+                setYearLevel("");
+                setSection("");
+                AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
+              }}
+            >
+              <Text style={[styles.copyDayTxt, { color: "#ef4444" }]}>Clear Draft</Text>
+            </TouchableOpacity>
           </View>
 
           {dayEntries.length === 0 ? (

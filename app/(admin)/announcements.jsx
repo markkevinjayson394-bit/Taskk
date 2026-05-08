@@ -61,7 +61,7 @@ export default function AdminAnnouncements() {
       const snap = await getDocs(
         query(collection(db, "announcements"), orderBy("createdAt", "desc"))
       );
-      setAnnouncements(snap.docs.map((announcement) => ({ id: announcement.id, ...announcement.data() })));
+      setAnnouncements(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
       setVisibleCount(PAGE_SIZE);
     } catch (err) {
       console.warn("Failed to load announcements:", err);
@@ -93,18 +93,22 @@ export default function AdminAnnouncements() {
     try {
       setPickingImage(true);
       const pickedUri = result.assets[0].uri;
-      const base64 = await FileSystem.readAsStringAsync(pickedUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      const sizeKB = (base64.length * 0.75) / 1024;
 
-      if (sizeKB > MAX_IMAGE_KB) {
+      // Check file size before reading into memory to avoid OOM on low-RAM devices
+      const fileInfo = await FileSystem.getInfoAsync(pickedUri);
+      const estimatedKB = (fileInfo.size ?? 0) / 1024;
+      if (estimatedKB > MAX_IMAGE_KB * 1.4) {
+        // 1.4× because base64 is ~33% larger than raw bytes
         Alert.alert(
           "Image Too Large",
-          `Image is about ${Math.round(sizeKB)} KB. Please crop or choose a smaller image (max ${MAX_IMAGE_KB} KB).`
+          `This image is too large (${Math.round(estimatedKB)} KB). Please choose a smaller image (max ${MAX_IMAGE_KB} KB after compression).`
         );
         return;
       }
+
+      const base64 = await FileSystem.readAsStringAsync(pickedUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
       setImageBase64(`data:image/jpeg;base64,${base64}`);
     } catch (err) {

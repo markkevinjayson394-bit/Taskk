@@ -7,10 +7,15 @@
  * - Larger, bolder labels and section headers
  * - Card text no longer clipped or invisible on dark backgrounds
  * - Pull-to-refresh still works as before
+ *
+ * FIX: stableUpcomingAssignments memoization key is now computed inside
+ *      the useMemo callback (not in the dependency array) to prevent
+ *      "Cannot read property 'map' of undefined" when upcomingAssignments
+ *      is transiently undefined between async state updates.
  */
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   collection,
   doc,
@@ -49,11 +54,6 @@ import {
   useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
-import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
-import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
-import { formatDeadlineCountdown } from "../../utils/deadlineTime";
-import { reportError, reportWarning } from "../../utils/logger";
-import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import {
   PRIORITY_COLOR,
   daysUntil,
@@ -62,10 +62,20 @@ import {
   parseDueDate,
   safeParseObject,
 } from "../../features/tab-modules/home.helpers";
+import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
+import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
+import { formatDeadlineCountdown } from "../../utils/deadlineTime";
+import { reportError, reportWarning } from "../../utils/logger";
+import {
+  clearPendingAlarmAction,
+  getPendingAlarmAction,
+} from "../../utils/nativeAlarm";
+import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import {
   calculateDailyWorkload,
   getWorkloadLabel,
 } from "../../utils/workloadCalculator";
+import { isLocalOnlyTaskId, removeOfflineQueuedTask } from "../../utils/offlineTaskQueue";
 
 const PLANS_KEY = (uid) => `exam_prep_plans_${uid}`;
 const STATUS_CARD_WIDTH = 300;
@@ -280,8 +290,57 @@ export default function HomeDashboard() {
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
-  const { alarmVisible, alarmTask, acknowledgeAlarm } =
-    useDeadlineAlarmScheduler(upcomingAssignments);
+
+  // FIX: compute the memoization key safely inside the callback instead of
+  // calling .map() directly in the dependency array.  If upcomingAssignments
+  // is ever transiently undefined the previous code threw
+  // "Cannot read property 'map' of undefined" and crashed the component.
+  const assignmentsKey = (upcomingAssignments ?? [])
+    .map((t) => `${t.id}:${t.completed}`)
+    .join(",");
+
+  const stableUpcomingAssignments = useMemo(
+    () => upcomingAssignments ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [assignmentsKey]
+  );
+
+  const {
+    alarmVisible,
+    alarmTask,
+    alarmThresholdKey,
+    acknowledgeAlarm,
+    notDoneAlarm,
+    markDoneAlarm,
+    showAlarmForTask,
+  } = useDeadlineAlarmScheduler(stableUpcomingAssignments);
+
+  const { focusTaskId, showAlarm } = useLocalSearchParams();
+
+  useEffect(() => {
+    if (showAlarm !== "1" || !focusTaskId) return;
+
+    const task = upcomingAssignments.find((t) => t.id === focusTaskId);
+    if (task) {
+      showAlarmForTask(task, null);
+    }
+  }, [showAlarm, focusTaskId, upcomingAssignments, showAlarmForTask]);
+
+  // Also handle native pending action on app cold launch:
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const pending = await getPendingAlarmAction();
+      if (!pending?.alarmId || cancelled) return;
+      const task = upcomingAssignments.find((t) => t.id === pending.alarmId);
+      if (task) showAlarmForTask(task, null);
+      await clearPendingAlarmAction();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [upcomingAssignments, showAlarmForTask]);
+
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
   const queueReminderRefresh = useCallback(
@@ -569,13 +628,32 @@ export default function HomeDashboard() {
     fetchDashboardData(false, { forceRefresh: true });
   };
   const markDone = async (assignment) => {
+    if (!assignment?.id) return;
+    const user = auth.currentUser;
+    if (!user) return;
+
     try {
       await cancelDeadlineAlarms(assignment);
-      await updateDoc(
-        doc(db, "assignments", assignment.id),
-        buildTaskCompletionUpdate(new Date())
-      );
-      queueReminderRefresh("mark_done", { taskId: assignment?.id || null });
+
+      if (isLocalOnlyTaskId(assignment.id)) {
+        // Task exists only in the offline queue — remove it there instead
+        await removeOfflineQueuedTask(user.uid, assignment.id);
+      } else if (isOnline) {
+        await updateDoc(
+          doc(db, "assignments", assignment.id),
+          buildTaskCompletionUpdate(new Date())
+        );
+      } else {
+        // Queue the completion for later sync (same pattern as TaskManagerScreen)
+        const PENDING_UPDATES_KEY = (uid) => `pending_complete_${uid}`;
+        const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+        const raw = await AsyncStorage.getItem(PENDING_UPDATES_KEY(user.uid));
+        const queue = raw ? JSON.parse(raw) : [];
+        queue.push({ id: assignment.id, action: "complete", queuedAt: new Date().toISOString() });
+        await AsyncStorage.setItem(PENDING_UPDATES_KEY(user.uid), JSON.stringify(queue));
+      }
+
+      queueReminderRefresh("mark_done", { taskId: assignment.id });
       fetchDashboardData(false, { forceRefresh: true });
     } catch (error) {
       reportError(error, {
@@ -583,10 +661,7 @@ export default function HomeDashboard() {
         tags: { location: "home_dashboard_mark_done" },
         extra: { taskId: assignment?.id || null },
       });
-      Alert.alert(
-        "Task update failed",
-        "Could not mark this task as done. Please try again."
-      );
+      Alert.alert("Task update failed", "Could not mark this task as done. Please try again.");
     }
   };
   const greeting = getGreeting();
@@ -1516,6 +1591,14 @@ export default function HomeDashboard() {
       <DeadlineAlarmModal
         visible={alarmVisible}
         task={alarmTask}
+        thresholdKey={alarmThresholdKey}
+        onNotDone={notDoneAlarm}
+        onMarkDone={async () => {
+          if (alarmTask?.id) {
+            await markDone(alarmTask);
+          }
+          await markDoneAlarm();
+        }}
         onAcknowledge={acknowledgeAlarm}
       />
     </View>
@@ -2063,5 +2146,3 @@ const styles = StyleSheet.create({
   annBody: { fontSize: 13, fontWeight: "500", lineHeight: 19, marginBottom: 8 },
   annAudience: { fontSize: 11, fontWeight: "700" },
 });
-
-

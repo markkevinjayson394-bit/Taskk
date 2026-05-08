@@ -5,39 +5,33 @@
  *
  * Architecture: reactive + minimal
  * Does NOT fire its own alarms. Instead:
- * - Queries Firestore for overdue incomplete tasks
+ * - Inspects the merged remote + offline pending task set
  * - For each task with a stored checkpoint but no matching scheduled alarm,
  *   repairs the broken chain by scheduling the current checkpoint alarm
  */
 import * as Notifications from "expo-notifications";
-import {
-  collection,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  where,
-} from "firebase/firestore";
-import { Platform } from "react-native";
+import { enableNetwork } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
 import {
   bootstrapDeadlineAlarmChannel,
   cancelDeadlineAlarms,
-  DEADLINE_CATEGORY_ID,
-  DEADLINE_CHANNEL_ID,
-  DEADLINE_NOTIF_TYPE
+  getNext8AM,
+  rescheduleAllDeadlineAlarms,
+  scheduleNextOverdueAlarm,
 } from "./deadlineAlarmBackground";
 import { reportError, warnIfDev } from "./logger";
+import { buildNotificationId } from "./notificationIds";
 import {
-  canScheduleExactAlarms,
-  isNativeAlarmSupported,
-  scheduleNativeAlarm,
-} from "./nativeAlarm";
+  clearPendingNotificationReschedule,
+  clearTaskRescheduleIntent,
+  clearTaskRescheduleIntents,
+  listTaskRescheduleIntents,
+  readPendingNotificationReschedule,
+} from "./notificationScheduleRecovery";
 import {
-  buildManagedNotificationData,
-  buildNotificationId,
-} from "./notificationIds";
-import { isPlannerTask } from "./taskFilters";
+  getOverdueTasks,
+  readSchedulablePendingTasks,
+} from "./pendingTaskSources";
 import { getCheckpoint, OVERDUE_CHAIN } from "./taskOverdueState";
 
 let TaskManager = null;
@@ -54,7 +48,6 @@ try {
 } catch (err) {
   warnIfDev("BackgroundFetch unavailable:", err);
 }
-
 
 const MAX_TASKS_PER_RUN = 20;
 
@@ -75,13 +68,6 @@ const isTaskManagerTaskDefined = (taskName) => {
 
 export const BACKGROUND_ALARM_TASK = "background-deadline-alarm-checker";
 
-const withTimeout = (promise, ms) =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), ms)
-    ),
-  ]);
 
 try {
   if (
@@ -92,26 +78,59 @@ try {
     TaskManager.defineTask(BACKGROUND_ALARM_TASK, async () => {
       const user = auth.currentUser;
       if (!user) {
-        warnIfDev("[BackgroundTask] No user — skipping");
+        warnIfDev("[BackgroundTask] No user - skipping");
         return backgroundFetchResult.NoData;
       }
 
       try {
+        // Re-enable network in case firebase.js disabled it
+        await enableNetwork(db).catch(() => {});
+
         await bootstrapDeadlineAlarmChannel();
 
         const now = Date.now();
-        const overdueQuery = query(
-          collection(db, "assignments"),
-          where("userId", "==", user.uid),
-          where("completed", "==", false),
-          where("dueAt", "<=", new Date(now)),
-          orderBy("dueAt", "asc"),
-          limit(MAX_TASKS_PER_RUN)
+        const pendingTasks = await readSchedulablePendingTasks(user.uid, {
+          warnContext: "backgroundAlarmChecker",
+        });
+        const pendingTaskMap = new Map(
+          pendingTasks.map((task) => [String(task.id || ""), task])
         );
-        const FIRESTORE_QUERY_TIMEOUT_MS = 10000; // 10s max for the query
-        const snap = await withTimeout(
-          getDocs(overdueQuery),
-          FIRESTORE_QUERY_TIMEOUT_MS
+        const pendingReschedule = await readPendingNotificationReschedule();
+        const pendingTaskIntents = await listTaskRescheduleIntents(user.uid);
+        let recoveredSchedules = 0;
+
+        if (
+          pendingReschedule?.uid === user.uid ||
+          pendingTaskIntents.length > 0
+        ) {
+          const tasksToRecover =
+            pendingReschedule?.uid === user.uid
+              ? pendingTasks
+              : pendingTaskIntents
+                  .map((taskId) => pendingTaskMap.get(taskId))
+                  .filter(Boolean);
+
+          if (tasksToRecover.length > 0) {
+            await rescheduleAllDeadlineAlarms(tasksToRecover);
+            recoveredSchedules += tasksToRecover.length;
+          }
+
+          if (pendingReschedule?.uid === user.uid) {
+            await clearPendingNotificationReschedule(user.uid);
+            await clearTaskRescheduleIntents(user.uid);
+          } else {
+            for (const taskId of pendingTaskIntents) {
+              if (!pendingTaskMap.has(taskId)) {
+                await cancelDeadlineAlarms({ id: taskId });
+              }
+              await clearTaskRescheduleIntent(user.uid, taskId);
+            }
+          }
+        }
+
+        const overdueTasks = getOverdueTasks(pendingTasks, now).slice(
+          0,
+          MAX_TASKS_PER_RUN
         );
 
         // Get all currently scheduled notification identifiers
@@ -126,9 +145,7 @@ try {
 
         let repaired = 0;
 
-        for (const docSnap of snap.docs) {
-          const task = { id: docSnap.id, ...docSnap.data() };
-          if (isPlannerTask(task)) continue;
+        for (const task of overdueTasks) {
           if (task.status === "done" || task.completed === true) {
             await cancelDeadlineAlarms(task);
             continue;
@@ -141,123 +158,50 @@ try {
           const expectedId = buildNotificationId(
             "deadline-overdue",
             task.id,
-            checkpoint.stage
+            checkpoint.key    // ← confirmed: uses .key (normalized in Step 2)
           );
           if (scheduledIds.has(expectedId)) continue;
 
-          const REPAIR_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+          const TRIGGER_GRACE_MS = 2 * 60 * 1000;
           if (
-            checkpoint.scheduledAt &&
-            Date.now() - checkpoint.scheduledAt < REPAIR_COOLDOWN_MS
+            Number.isFinite(checkpoint.triggerAtMs) &&
+            checkpoint.triggerAtMs > now + 30 * 1000
           ) {
             continue;
           }
+          if (
+            Number.isFinite(checkpoint.triggerAtMs) &&
+            now - checkpoint.triggerAtMs < TRIGGER_GRACE_MS
+          ) {
+            continue;
+          }
+          // REMOVED: REPAIR_COOLDOWN_MS check — it blocked repairs for 10 minutes
+          // even when the alarm definitively did not fire
 
-          // Chain is broken — repair by scheduling the current checkpoint alarm
-          const dueAtMs = new Date(
-            task.dueAt?.toDate?.() || task.dueAt
-          ).getTime();
+          // Chain is broken - repair by scheduling the current checkpoint alarm
           const currentCheckpoint = OVERDUE_CHAIN.find(
-            (c) => c.key === checkpoint.stage
+            (c) => c.key === checkpoint.key   // ← confirmed: uses .key
           );
           if (!currentCheckpoint) continue;
 
-          // Fire repair alarm 30 seconds from now to avoid spamming immediately
-          const repairTriggerAt = now + 30 * 1000;
-          const id = buildNotificationId(
-            "deadline-overdue",
-            task.id,
-            checkpoint.stage
-          );
-          const taskTitle =
-            typeof task.title === "string" && task.title.trim()
-              ? task.title.trim()
-              : "Task";
-          const subject = task.subject || task.subjectName || "General";
-          const overdueMin = Math.round((now - dueAtMs) / 60000);
-          const body = `"${taskTitle}" (${subject}) is ${overdueMin} min overdue. Mark it done or acknowledge.`;
+          // Fire repair alarm 30 seconds from now to avoid spamming immediately.
+          const isDaily = currentCheckpoint.key === "daily";
+          const repairTriggerAt = isDaily
+            ? getNext8AM().getTime()       // daily must fire at 8 AM, not in 30s
+            : now + 30 * 1000;
 
-          const data = buildManagedNotificationData(id, {
-            type: DEADLINE_NOTIF_TYPE,
-            notificationType: DEADLINE_NOTIF_TYPE,
-            taskId: task.id,
-            taskTitle,
-            subject,
-            dueAtMs: Number.isFinite(dueAtMs) ? dueAtMs : null,
-            stage: checkpoint.stage,
-            acknowledgeRequired: true,
+          const repairedId = await scheduleNextOverdueAlarm({
+            task,
+            checkpoint: { key: currentCheckpoint.key, delayMs: currentCheckpoint.delayMs },
+            triggerAt: repairTriggerAt,
           });
-
-          const extra =
-            Platform.OS === "android"
-              ? {
-                  channelId: DEADLINE_CHANNEL_ID,
-                  priority: "max",
-                  sticky: true,
-                  autoDismiss: false,
-                  sound: "ctu_alarm.wav",
-                  vibrationPattern: [0, 400, 200, 400, 200, 800],
-                }
-              : {};
-
-          const exactAlarmResult =
-            Platform.OS === "android" && isNativeAlarmSupported
-              ? await canScheduleExactAlarms()
-              : { status: "unsupported" };
-          const exactAllowed =
-            exactAlarmResult?.status === "success" &&
-            exactAlarmResult?.value === true;
-
-          if (exactAllowed) {
-            try {
-              const nativeId = await scheduleNativeAlarm({
-                alarmId: id,
-                triggerAt: repairTriggerAt,
-                title: "Task still overdue",
-                body,
-                payload: data,
-              });
-              if (nativeId) {
-                repaired += 1;
-                continue; // Only skip expo fallback if native succeeded
-              }
-            } catch (err) {
-              warnIfDev("Background repair native alarm failed:", err);
-            }
-          }
-
-          try {
-            await Notifications.cancelScheduledNotificationAsync(id).catch(
-              () => {}
-            );
-            await Notifications.scheduleNotificationAsync({
-              identifier: id,
-              content: {
-                title: "Task still overdue",
-                body,
-                data,
-                categoryIdentifier: DEADLINE_CATEGORY_ID,
-                ...extra,
-              },
-              trigger:
-                Platform.OS === "android"
-                  ? {
-                      type: "date",
-                      date: new Date(repairTriggerAt),
-                      channelId: DEADLINE_CHANNEL_ID,
-                    }
-                  : { date: new Date(repairTriggerAt) },
-            });
-            repaired += 1;
-          } catch (err) {
-            warnIfDev("Background repair expo notification failed:", err);
-          }
+          if (repairedId) repaired += 1;
         }
 
         warnIfDev(
-          `[BackgroundTask] Repaired ${repaired} broken chains for ${user.uid}`
+          `[BackgroundTask] Recovered ${recoveredSchedules} schedules and repaired ${repaired} broken chains for ${user.uid}`
         );
-        return repaired > 0
+        return recoveredSchedules > 0 || repaired > 0
           ? backgroundFetchResult.NewData
           : backgroundFetchResult.NoData;
       } catch (err) {

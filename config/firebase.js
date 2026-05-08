@@ -6,11 +6,18 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { getApps, initializeApp } from "firebase/app";
-import { getAuth, getReactNativePersistence, initializeAuth } from "firebase/auth";
+import {
+  getAuth,
+  // @ts-ignore
+  getReactNativePersistence,
+  initializeAuth,
+} from "firebase/auth";
 import {
   disableNetwork,
   enableNetwork,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
 } from "firebase/firestore";
 import { AppState } from "react-native";
 
@@ -139,22 +146,41 @@ try {
   }
 }
 
-/** @type {Firestore} */
+/**
+ * Firestore with offline persistence enabled via persistentLocalCache.
+ * This allows getDoc/getDocs to serve from the local cache when offline,
+ * complementing the AsyncStorage fallback in profile.jsx and other screens.
+ * @type {Firestore}
+ */
 const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+  }),
 });
+
+let disableNetworkTimer = null;
 
 // Handle app state changes to avoid Firestore stream errors
 // when the app goes to background and comes back to foreground
 AppState.addEventListener("change", async (state) => {
   try {
     if (state === "background") {
-      await disableNetwork(db);
+      // Wait 3s before disabling — avoids killing requests on brief interruptions
+      // (e.g. permission dialogs, system overlays, quick app switches)
+      disableNetworkTimer = setTimeout(async () => {
+        await disableNetwork(db);
+      }, 3000);
     } else if (state === "active") {
+      if (disableNetworkTimer) {
+        clearTimeout(disableNetworkTimer);
+        disableNetworkTimer = null;
+      }
       await enableNetwork(db);
+      // Give Firestore ~500ms to re-establish streams before new requests land
+      await new Promise(res => setTimeout(res, 500));
     }
   } catch (e) {
-    // Silently ignore — Firestore may already be in the correct state
     console.warn("Firestore network toggle warning:", e);
   }
 });

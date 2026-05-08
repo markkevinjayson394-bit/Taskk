@@ -2,10 +2,10 @@ import React from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 import { useTheme } from "../context/ThemeContext";
-import { parseDueDate } from "../utils/academicTaskModel";
+import { resolveTaskDueDate } from "../utils/academicTaskModel";
 
 function formatTaskDue(value) {
-  const due = parseDueDate(value);
+  const due = value instanceof Date ? value : null;
   if (!due) return "No due date";
   return due.toLocaleString("en-US", {
     month: "short",
@@ -19,7 +19,7 @@ export default function Task({ task, style, ...rest }) {
   const { colors, isDark } = useTheme();
   const title = String(task?.title || "Untitled Task").trim() || "Untitled Task";
   const subject = task?.subjectName || task?.subject || "General";
-  const dueLabel = formatTaskDue(task?.dueDate || task?.dueAt);
+  const dueLabel = formatTaskDue(resolveTaskDueDate(task));
 
   return (
     <View

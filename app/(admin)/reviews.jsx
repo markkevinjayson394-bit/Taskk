@@ -65,6 +65,7 @@ export default function AdminReviews() {
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [markingId, setMarkingId] = useState(null);
 
   const fetchReviews = async () => {
     try {
@@ -92,6 +93,8 @@ export default function AdminReviews() {
   );
 
   const markRead = async (item) => {
+    if (markingId) return; // prevent concurrent taps
+    setMarkingId(item.id);
     try {
       await updateDoc(doc(db, "reviews", item.id), { status: "read" });
       setReviews((prev) =>
@@ -100,6 +103,8 @@ export default function AdminReviews() {
     } catch (_err) {
       warnIfDev("AdminReviews: failed to mark review as read:", _err);
       Alert.alert("Update Failed", "Unable to update the review status.");
+    } finally {
+      setMarkingId(null);
     }
   };
 
@@ -212,9 +217,10 @@ export default function AdminReviews() {
                   <TouchableOpacity
                     style={[
                       styles.markBtn,
-                      { borderColor: colors.border },
+                      { borderColor: colors.border, opacity: markingId === item.id ? 0.5 : 1 },
                     ]}
                     onPress={() => markRead(item)}
+                    disabled={markingId === item.id}
                   >
                     <Text style={[styles.markText, { color: colors.muted }]}>
                       Mark as read

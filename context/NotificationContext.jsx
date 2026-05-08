@@ -6,7 +6,7 @@
  * NOTIFICATIONS HANDLED:
  * 1. Class Reminder        X min before each class
  * 2. Study Session Reminder before planner study blocks
- * 3. Deadline Warning      7d, 3d, 1d, 12h, 6h, 3h, 2h, 1h, 30m, 15m, due-time follow-ups, daily overdue
+ * 3. Deadline Warning      1d, 2h, 30m, due-time follow-ups, daily overdue
  * 4. Morning Briefing      every day at 7:00 AM
  * 5. Daily Time Audit      every day at 9:00 PM
  * 6. Sunday Planning       every Sunday at 6:00 PM
@@ -50,7 +50,9 @@ import {
 } from "../utils/classScheduleCache";
 import {
   cancelDeadlineAlarms,
+  handleDeadlineAlarmResponse,
   rescheduleAllDeadlineAlarms,
+  scheduleDeadlineAlarms,
 } from "../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { reportError, reportWarning, warnIfDev } from "../utils/logger";
@@ -74,6 +76,20 @@ import {
   buildManagedNotificationData,
   buildNotificationId,
 } from "../utils/notificationIds";
+import {
+  clearPendingNotificationReschedule,
+  clearTaskRescheduleIntent,
+  clearTaskRescheduleIntents,
+  listTaskRescheduleIntents,
+  readPendingNotificationReschedule,
+  writePendingNotificationReschedule,
+  writeTaskRescheduleIntent,
+} from "../utils/notificationScheduleRecovery";
+import {
+  findOfflineQueuedTask,
+  isLocalOnlyTaskId,
+} from "../utils/offlineTaskQueue";
+import { readSchedulablePendingTasks } from "../utils/pendingTaskSources";
 import { findBestScheduleDoc } from "../utils/scheduleMatcher";
 import { isPlannerTask } from "../utils/taskFilters";
 
@@ -133,7 +149,8 @@ const KEYS = {
   customNotifs: (uid) => keyForUser("notif_custom", uid),
   ackSuppress: (uid) => keyForUser("notif_ack_suppress_until", uid),
   seenAnnouncements: (uid) => `notif_seen_announcements_${uid}`,
-  batteryPromptDismiss: (uid) => keyForUser("notif_battery_prompt_dismiss", uid),
+  batteryPromptDismiss: (uid) =>
+    keyForUser("notif_battery_prompt_dismiss", uid),
 };
 const ANDROID_CHANNEL_ID = "study-reminders-v4";
 const ANDROID_NOTIFICATION_SOUND = "ctu_alarm.wav";
@@ -147,8 +164,8 @@ const NOTIF_DEBUG = ENV_NOTIF_DEBUG === "1" || ENV_NOTIF_DEBUG === "true";
 const ANNOUNCEMENT_FETCH_LIMIT = 40;
 const ANNOUNCEMENT_POLL_MS = 2 * 60 * 1000;
 const ANNOUNCEMENT_TRACK_LIMIT = 200;
-const DAILY_TRIGGER_LOOKAHEAD_DAYS = 7;
-const WEEKLY_TRIGGER_LOOKAHEAD_WEEKS = 4;
+const DAILY_TRIGGER_LOOKAHEAD_DAYS = 3; // was 7
+const WEEKLY_TRIGGER_LOOKAHEAD_WEEKS = 2; // was 4
 const TOMORROW_DIGEST_HOUR = 19;
 const TOMORROW_DIGEST_MINUTE = 0;
 const TOMORROW_DIGEST_PREVIEW_LIMIT = 3;
@@ -593,17 +610,21 @@ export function NotificationProvider({ children }) {
   const suppressPromptUntilRef = useRef({});
   const scheduleGateRef = useRef({ inFlight: false, lastKey: "", lastAt: 0 });
   const scheduleRunRef = useRef(false);
+  const pendingScheduleRequestRef = useRef(null);
   const lastScheduleStateRef = useRef({ key: "", at: 0 });
   const bypassCooldownTaskIdsRef = useRef(new Set());
   const manualRescheduleRef = useRef({ timer: null, waiters: [] });
   const exactAlarmPermissionMissingLoggedRef = useRef(false);
+  const exactAlarmPermissionGrantedRef = useRef(null);
   const mountedRef = useRef(true);
   const batteryOptimizationCheckedRef = useRef(false);
-  const [showBatteryOptimizationPrompt, setShowBatteryOptimizationPrompt] = useState(false);
+  const [showBatteryOptimizationPrompt, setShowBatteryOptimizationPrompt] =
+    useState(false);
 
   const persistPromptSuppressionMap = async () => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
+    if (!settingsLoadedRef.current) return; // ADD THIS GUARD
     try {
       await AsyncStorage.setItem(
         KEYS.ackSuppress(uid),
@@ -681,6 +702,27 @@ export function NotificationProvider({ children }) {
             await rescheduleAll();
           }
         }
+
+        if (Platform.OS === "android" && isNativeAlarmSupported) {
+          const exactAlarmResult = await canScheduleExactAlarms();
+          const exactAlarmGranted =
+            exactAlarmResult?.status === "success"
+              ? exactAlarmResult.value
+              : null;
+          const previousExactAlarmGranted =
+            exactAlarmPermissionGrantedRef.current;
+          exactAlarmPermissionGrantedRef.current = exactAlarmGranted;
+
+          if (
+            previousExactAlarmGranted === false &&
+            exactAlarmGranted === true &&
+            auth.currentUser &&
+            settingsLoadedRef.current
+          ) {
+            exactAlarmPermissionMissingLoggedRef.current = false;
+            await rescheduleAll();
+          }
+        }
       } catch (err) {
         warnIfDev(
           "NotificationContext: failed to refresh permission on foreground:",
@@ -719,16 +761,19 @@ export function NotificationProvider({ children }) {
     if (!Number.isFinite(triggerAt) || triggerAt <= Date.now()) return null;
 
     const exactAlarmResult = await canScheduleExactAlarms();
-    if (exactAlarmResult?.status !== "success" || !exactAlarmResult.value) {
+    const exactAlarmGranted =
+      exactAlarmResult?.status === "success" ? exactAlarmResult.value : null;
+    exactAlarmPermissionGrantedRef.current = exactAlarmGranted;
+
+    if (exactAlarmGranted === false) {
       if (!exactAlarmPermissionMissingLoggedRef.current) {
         debugNotif("nativeAlarm.permission_missing", {
           alarmId,
           status: exactAlarmResult?.status,
-          reason: "exact_alarm_not_allowed",
+          reason: "using_inexact_alarm_fallback",
         });
         exactAlarmPermissionMissingLoggedRef.current = true;
       }
-      return null;
     }
 
     try {
@@ -1090,6 +1135,20 @@ export function NotificationProvider({ children }) {
       const currentCustom = Array.isArray(customNotifsRef.current)
         ? customNotifsRef.current
         : [];
+      let hasPendingRecovery = false;
+      try {
+        const [pendingReschedule, pendingTaskIntents] = await Promise.all([
+          readPendingNotificationReschedule(),
+          listTaskRescheduleIntents(user.uid),
+        ]);
+        hasPendingRecovery =
+          pendingReschedule?.uid === user.uid || pendingTaskIntents.length > 0;
+      } catch (err) {
+        warnIfDev(
+          "NotificationContext: failed to read persisted reschedule recovery state:",
+          err
+        );
+      }
       let scheduleKey = "";
       try {
         scheduleKey = JSON.stringify({
@@ -1119,7 +1178,10 @@ export function NotificationProvider({ children }) {
           currentSettings,
           currentTimes,
           currentCustom,
-          { reason: "auth_state" }
+          {
+            force: hasPendingRecovery,
+            reason: hasPendingRecovery ? "startup_recovery" : "auth_state",
+          }
         );
         if (!mountedRef.current) return;
         try {
@@ -1200,6 +1262,13 @@ export function NotificationProvider({ children }) {
 
     const handleResponse = async (response) => {
       notificationResponsePendingRef.current = true;
+
+      try {
+        await handleDeadlineAlarmResponse(response);
+      } catch (err) {
+        warnIfDev("handleDeadlineAlarmResponse failed:", err);
+      }
+
       try {
         const payload = extractAckPayloadFromNotification(
           response?.notification
@@ -1288,7 +1357,7 @@ export function NotificationProvider({ children }) {
     const handleReceived = async (notification) => {
       const payload = extractAckPayloadFromNotification(notification);
       if (!payload) return;
-      // If suppressed, dismiss silently — no overlay shown.
+      // If suppressed, dismiss silently - no overlay shown.
       if (payload.taskId && isPromptSuppressed(payload.taskId)) {
         await dismissPresentedNotification(payload.notificationId);
       }
@@ -1426,6 +1495,14 @@ export function NotificationProvider({ children }) {
         warnIfDev("NotificationContext: enableBackgroundAlarms failed:", err);
       });
 
+      if (Platform.OS === "android" && isNativeAlarmSupported) {
+        const exactAlarmResult = await canScheduleExactAlarms();
+        exactAlarmPermissionGrantedRef.current =
+          exactAlarmResult?.status === "success"
+            ? exactAlarmResult.value
+            : null;
+      }
+
       // Android 14+ requires explicit USE_FULL_SCREEN_INTENT permission for full-screen alarms
       if (Platform.OS === "android" && Platform.Version >= 34) {
         try {
@@ -1448,10 +1525,15 @@ export function NotificationProvider({ children }) {
       if (uid && !batteryOptimizationCheckedRef.current) {
         batteryOptimizationCheckedRef.current = true;
         const dismissedKey = KEYS.batteryPromptDismiss(uid);
-        const wasDismissed = await AsyncStorage.getItem(dismissedKey).catch(() => null);
+        const wasDismissed = await AsyncStorage.getItem(dismissedKey).catch(
+          () => null
+        );
         if (!wasDismissed) {
           const batteryResult = await isIgnoringBatteryOptimizations();
-          if (batteryResult?.status === "success" && batteryResult.value === false) {
+          if (
+            batteryResult?.status === "success" &&
+            batteryResult.value === false
+          ) {
             await AsyncStorage.setItem(dismissedKey, "1").catch(() => {});
             setShowBatteryOptimizationPrompt(true);
           }
@@ -1551,6 +1633,9 @@ export function NotificationProvider({ children }) {
     setTimes(loadedTimes);
     setCustomNotifs(Array.isArray(loadedCustom) ? loadedCustom : []);
     setSettingsLoaded(true);
+
+    // Persist cleaned suppression map now that we're loaded
+    await persistPromptSuppressionMap();
   };
 
   const scheduleAllNotifications = async (
@@ -1565,11 +1650,12 @@ export function NotificationProvider({ children }) {
       reason = "manual_refresh",
       bypassCooldownTaskIds = [],
     } = options;
-    if (Array.isArray(bypassCooldownTaskIds)) {
-      bypassCooldownTaskIds
-        .filter((id) => typeof id === "string" && id)
-        .forEach((id) => bypassCooldownTaskIdsRef.current.add(id));
-    }
+    const normalizedBypassCooldownTaskIds = Array.isArray(bypassCooldownTaskIds)
+      ? bypassCooldownTaskIds.filter((id) => typeof id === "string" && id)
+      : [];
+    normalizedBypassCooldownTaskIds.forEach((id) =>
+      bypassCooldownTaskIdsRef.current.add(id)
+    );
     currentSettings = currentSettings || DEFAULT_SETTINGS;
     currentTimes = currentTimes || DEFAULT_TIMES;
     currentCustom = Array.isArray(currentCustom) ? currentCustom : [];
@@ -1586,22 +1672,58 @@ export function NotificationProvider({ children }) {
     }
     const now = Date.now();
     const shouldApplyCooldown =
-      reason === "auth_state" &&
-      !force &&
-      bypassCooldownTaskIdsRef.current.size === 0;
+      !force && bypassCooldownTaskIdsRef.current.size === 0;
     if (
       shouldApplyCooldown &&
       lastScheduleStateRef.current.key === scheduleKey &&
       now - lastScheduleStateRef.current.at < SCHEDULE_REBUILD_COOLDOWN_MS
     ) {
+      normalizedBypassCooldownTaskIds.forEach((id) =>
+        bypassCooldownTaskIdsRef.current.delete(id)
+      );
       return;
     }
-    if (scheduleRunRef.current && !force) return;
+    if (scheduleRunRef.current) {
+      pendingScheduleRequestRef.current = {
+        uid,
+        currentSettings,
+        currentTimes,
+        currentCustom,
+        options: {
+          force,
+          reason,
+          bypassCooldownTaskIds: normalizedBypassCooldownTaskIds,
+        },
+      };
+      normalizedBypassCooldownTaskIds.forEach((id) =>
+        bypassCooldownTaskIdsRef.current.delete(id)
+      );
+      return;
+    }
     scheduleRunRef.current = true;
     lastScheduleStateRef.current = { key: scheduleKey, at: now };
+    let scheduleSucceeded = false;
+
     try {
       if (!NOTIFICATIONS_AVAILABLE) return;
       if (!permissionRef.current) return;
+      try {
+        await writePendingNotificationReschedule({
+          uid,
+          reason,
+          queuedAt: now,
+        });
+      } catch (err) {
+        warnIfDev(
+          "NotificationContext: failed to persist pending reschedule state:",
+          err
+        );
+      }
+
+      // Capture old IDs before scheduling new ones
+      const raw = await AsyncStorage.getItem(KEYS.scheduledIds(uid));
+      const prevIds = raw ? JSON.parse(raw) : [];
+
       const scheduled = [];
       if (currentSettings.morningBriefing) {
         const t = currentTimes.morningBriefing || DEFAULT_TIMES.morningBriefing;
@@ -1707,73 +1829,113 @@ export function NotificationProvider({ children }) {
           });
         }
       }
-      const userSnap = await getDoc(doc(db, "users", uid));
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        const studentInfo = userData.studentInfo || {};
-        if (currentSettings.classReminder && studentInfo.course) {
-          const ids = await scheduleClassReminders(
-            uid,
-            studentInfo,
-            currentTimes
-          );
-          scheduled.push(...ids);
-        }
-        if (currentSettings.studySessionReminder) {
-          const ids = await scheduleStudySessionReminders(uid, currentTimes);
-          scheduled.push(...ids);
-        }
-        if (currentSettings.deadlineWarning) {
-          const ids = await scheduleDeadlineWarnings(uid, currentSettings);
-          scheduled.push(...toScheduledIdArray(ids));
-        }
-      }
-      // Capture old IDs before overwriting
-      const raw = await AsyncStorage.getItem(KEYS.scheduledIds(uid));
-      const prevIds = raw ? JSON.parse(raw) : [];
-
-      await AsyncStorage.setItem(
-        KEYS.scheduledIds(uid),
-        JSON.stringify(scheduled)
-      );
-
-      // Cancel old notifications after new ones are safely saved
+      let studentInfo = {};
       try {
-        for (const id of prevIds) {
-          if (!scheduled.includes(id)) {
-            try {
-              if (isNativeAlarmScheduledId(id)) {
-                await cancelNativeAlarmByScheduledId(id);
-              } else if (
-                NOTIFICATIONS_AVAILABLE &&
-                typeof Notifications.cancelScheduledNotificationAsync ===
-                  "function"
-              ) {
-                await Notifications.cancelScheduledNotificationAsync(id);
-              }
-            } catch (_err) {}
-          }
+        const userSnap = await getDoc(doc(db, "users", uid));
+        if (userSnap.exists()) {
+          const userData = userSnap.data();
+          studentInfo = userData.studentInfo || {};
         }
       } catch (err) {
-        warnIfDev("Failed to cancel stale notifications:", err);
+        warnIfDev(
+          "NotificationContext: failed to load user profile for notification scheduling:",
+          err
+        );
+      }
+      if (currentSettings.classReminder && studentInfo.course) {
+        const ids = await scheduleClassReminders(
+          uid,
+          studentInfo,
+          currentTimes
+        );
+        scheduled.push(...ids);
+      }
+      if (currentSettings.studySessionReminder) {
+        const ids = await scheduleStudySessionReminders(uid, currentTimes);
+        scheduled.push(...ids);
+      }
+      if (currentSettings.deadlineWarning) {
+        const ids = await scheduleDeadlineWarnings(uid, currentSettings);
+        scheduled.push(...toScheduledIdArray(ids));
       }
 
       debugNotif("schedule.complete", {
         uid,
         totalScheduled: scheduled.length,
       });
+      scheduleSucceeded = true;
+
+      // Cancel stale IDs only on success (using prevIds captured before scheduling)
+      if (scheduleSucceeded) {
+        for (const id of prevIds) {
+          if (!scheduled.includes(id)) {
+            try {
+              if (isNativeAlarmScheduledId(id)) {
+                await cancelNativeAlarmByScheduledId(id);
+              } else if (NOTIFICATIONS_AVAILABLE) {
+                await Notifications.cancelScheduledNotificationAsync(id);
+              }
+            } catch (_err) {}
+          }
+        }
+      }
+
+      await AsyncStorage.setItem(
+        KEYS.scheduledIds(uid),
+        JSON.stringify(scheduled)
+      );
     } catch (err) {
       reportError(err, {
         message: "Failed to schedule notifications.",
         tags: { location: "notification_schedule_all", userId: uid },
       });
     } finally {
-      if (Array.isArray(bypassCooldownTaskIds)) {
-        bypassCooldownTaskIds
-          .filter((id) => typeof id === "string" && id)
-          .forEach((id) => bypassCooldownTaskIdsRef.current.delete(id));
-      }
+      normalizedBypassCooldownTaskIds.forEach((id) =>
+        bypassCooldownTaskIdsRef.current.delete(id)
+      );
       scheduleRunRef.current = false;
+      const pendingRequest = pendingScheduleRequestRef.current;
+      pendingScheduleRequestRef.current = null;
+      if (pendingRequest) {
+        try {
+          await writePendingNotificationReschedule({
+            uid: pendingRequest.uid,
+            reason: pendingRequest.options?.reason,
+            queuedAt: Date.now(),
+          });
+        } catch (err) {
+          warnIfDev(
+            "NotificationContext: failed to persist queued reschedule state:",
+            err
+          );
+        }
+      } else if (scheduleSucceeded) {
+        try {
+          await clearPendingNotificationReschedule(uid);
+        } catch (err) {
+          warnIfDev(
+            "NotificationContext: failed to clear pending reschedule state:",
+            err
+          );
+        }
+        try {
+          await clearTaskRescheduleIntents(uid);
+        } catch (err) {
+          warnIfDev(
+            "NotificationContext: failed to clear task reschedule intents:",
+            err
+          );
+        }
+      }
+      if (pendingRequest) {
+        void scheduleAllNotifications(
+          pendingRequest.uid,
+          pendingRequest.currentSettings,
+          pendingRequest.currentTimes,
+          pendingRequest.currentCustom,
+          pendingRequest.options
+        );
+      }
     }
   };
 
@@ -1781,10 +1943,29 @@ export function NotificationProvider({ children }) {
     const user = auth.currentUser;
     if (!user || !taskId) return;
 
-    bypassCooldownTaskIdsRef.current.add(taskId);
+    let completed = false;
     try {
+      await writeTaskRescheduleIntent(user.uid, taskId, {
+        reason: `task_update_${taskId}`,
+      });
       await cancelAlarmNotificationsForTask(taskId);
       await cancelDeadlineAlarms({ id: taskId });
+
+      if (isLocalOnlyTaskId(taskId)) {
+        const offlineTask = await findOfflineQueuedTask(user.uid, taskId);
+        if (!offlineTask) {
+          completed = true;
+          return;
+        }
+        await scheduleDeadlineAlarms(offlineTask, {
+          taskAlarmSoundUri: settingsRef.current.taskAlarmSoundUri,
+          taskAlarmSoundLabel: settingsRef.current.taskAlarmSoundLabel,
+        });
+        completed = true;
+        return;
+      }
+
+      bypassCooldownTaskIdsRef.current.add(taskId);
       await scheduleAllNotifications(
         user.uid,
         settingsRef.current,
@@ -1796,9 +1977,21 @@ export function NotificationProvider({ children }) {
           bypassCooldownTaskIds: [taskId],
         }
       );
+      completed = true;
     } catch (err) {
       bypassCooldownTaskIdsRef.current.delete(taskId);
       warnIfDev("rescheduleDeadlineAlarmsForTask failed:", err);
+    } finally {
+      if (completed) {
+        try {
+          await clearTaskRescheduleIntent(user.uid, taskId);
+        } catch (err) {
+          warnIfDev(
+            "NotificationContext: failed to clear task reschedule intent:",
+            err
+          );
+        }
+      }
     }
   };
 
@@ -1821,7 +2014,7 @@ export function NotificationProvider({ children }) {
           nextSettings,
           nextTimes,
           nextCustomNotifs,
-          { force: true, reason }
+          { reason }
         );
         if (syncRemote) {
           await saveSettingsToFirestore(uid, {
@@ -1984,7 +2177,7 @@ export function NotificationProvider({ children }) {
   };
 
   //
-  // [FIX 1] scheduleClassReminders — skip reminders whose weekly slot has
+  // [FIX 1] scheduleClassReminders - skip reminders whose weekly slot has
   // already passed this week to prevent Android catch-up firing all at once.
   //
   const scheduleClassReminders = async (
@@ -2041,7 +2234,7 @@ export function NotificationProvider({ children }) {
           continue;
         }
 
-        const WEEKS_AHEAD = 4;
+        const WEEKS_AHEAD = 2; // was 4 in class reminders
         for (let week = 0; week < WEEKS_AHEAD; week++) {
           const baseDate = new Date(nextOccurrence);
           baseDate.setDate(baseDate.getDate() + week * 7);
@@ -2056,19 +2249,22 @@ export function NotificationProvider({ children }) {
             `w${week}`
           );
 
-          const nativeId = await scheduleNativeAlarm({
-            alarmId,
-            triggerAt: baseDate.getTime(),
+          const scheduledId = await scheduleManagedDateNotification({
+            identifier: alarmId,
             title: `Class in ${minutesBefore} minutes`,
             body: `${cls.subject || "Your class"} starts at ${cls.startLabel}`,
-            payload: buildManagedNotificationData(alarmId, {
-              type: "class_reminder",
-              subject: cls.subject,
-              day: cls.dayName,
-            }),
+            triggerDate: baseDate,
+            contentExtra: {
+              data: {
+                type: "class_reminder",
+                subject: cls.subject,
+                day: cls.dayName,
+              },
+            },
+            preferExactAlarm: true,
           });
 
-          ids.push(...toScheduledIdArray(nativeId));
+          ids.push(...toScheduledIdArray(scheduledId));
         }
 
         const existingEnd = lastClassEndByDay[cls.dayOfWeek];
@@ -2275,30 +2471,21 @@ export function NotificationProvider({ children }) {
   ) => {
     const ids = [];
     try {
-      const snap = await getDocs(
-        query(
-          collection(db, "assignments"),
-          where("userId", "==", uid),
-          where("completed", "==", false)
-        )
-      );
+      const pendingTasks = await readSchedulablePendingTasks(uid, {
+        warnContext: "notification_deadline_schedule",
+      });
       const now = new Date();
       const tomorrowTasks = [];
       const todayTasks = [];
-      const pendingTasks = [];
-      for (const d of snap.docs) {
-        const task = { id: d.id, ...d.data() };
-        if (task?.plannerArchived) continue;
+      for (const task of pendingTasks) {
         if (isPlannerAssignment(task)) continue;
-        if (task.completed || task.status === "done") continue;
         const due = parseFirestoreDate(task?.dueAt);
         if (!due) continue;
         const taskTitle = task.title || "Task";
         const subjectLabel = task.subjectName || task.subject || "No subject";
-        pendingTasks.push(task);
         if (isDueTomorrow(due, now)) {
           tomorrowTasks.push({
-            id: d.id,
+            id: task.id,
             title: taskTitle,
             subject: subjectLabel,
             due,
@@ -2308,7 +2495,7 @@ export function NotificationProvider({ children }) {
         }
         if (isDueToday(due, now)) {
           todayTasks.push({
-            id: d.id,
+            id: task.id,
             title: taskTitle,
             subject: subjectLabel,
             due,
@@ -2465,7 +2652,8 @@ export function NotificationProvider({ children }) {
   ) => {
     if (!NOTIFICATIONS_AVAILABLE) return [];
     try {
-      const firstTrigger = getNextWeekdayTime(weekday, hour, minute);
+      const now = new Date();
+      const firstTrigger = getNextWeekdayTime(weekday, hour, minute, now);
       const ids = [];
       for (
         let weekOffset = 0;
@@ -2620,25 +2808,17 @@ export function NotificationProvider({ children }) {
   };
 
   /**
-   * Reschedules deadline alarms immediately — no debounce.
-   * Deadline alarms fetch fresh task data from Firestore and should not
-   * be delayed since task due dates are time-sensitive.
+   * Reschedules deadline alarms immediately - no debounce.
+   * Deadline alarms read the latest merged remote + offline task set and should
+   * not be delayed since task due dates are time-sensitive.
    */
   const rescheduleDeadlineAlarmsImmediate = async () => {
     const user = auth.currentUser;
     if (!user) return;
     try {
-      const pendingTasksSnap = await getDocs(
-        query(
-          collection(db, "assignments"),
-          where("userId", "==", user.uid),
-          where("completed", "==", false)
-        )
-      );
-      const pendingTasks = pendingTasksSnap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
+      const pendingTasks = await readSchedulablePendingTasks(user.uid, {
+        warnContext: "notification_deadline_reschedule",
+      });
       await rescheduleAllDeadlineAlarms(pendingTasks, {
         taskAlarmSoundUri: settingsRef.current.taskAlarmSoundUri,
         taskAlarmSoundLabel: settingsRef.current.taskAlarmSoundLabel,
@@ -2851,6 +3031,8 @@ export function NotificationProvider({ children }) {
         rescheduleDeadlineAlarmsImmediate,
         sendTestNotification,
         getNotificationDiagnostics,
+        scheduleManagedDateNotification,
+        getAlarmStyleContentOptions,
       }}
     >
       {children}
@@ -2893,6 +3075,8 @@ export function useNotifications() {
         reason: "Notifications unavailable.",
       }),
       getNotificationDiagnostics: async () => ({}),
+      scheduleManagedDateNotification: async () => null,
+      getAlarmStyleContentOptions: () => ({}),
     };
   return ctx;
 }

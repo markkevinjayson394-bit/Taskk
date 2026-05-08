@@ -49,19 +49,23 @@ import {
   useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
-import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
-import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
-import { formatDeadlineCountdown } from "../../utils/deadlineTime";
-import { reportError, reportWarning } from "../../utils/logger";
-import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import {
   PRIORITY_COLOR,
   daysUntil,
   getGreeting,
   getTodayString,
-  parseDueDate,
+  resolveTaskDueDate,
   safeParseObject,
 } from "../../features/tab-modules/home.helpers";
+import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
+import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
+import { formatDeadlineCountdown } from "../../utils/deadlineTime";
+import { reportError, reportWarning } from "../../utils/logger";
+import {
+  isLocalOnlyTaskId,
+  removeOfflineQueuedTask,
+} from "../../utils/offlineTaskQueue";
+import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import {
   calculateDailyWorkload,
   getWorkloadLabel,
@@ -76,7 +80,7 @@ const WORKLOAD_COLOR = {
   Moderate: "#f59e0b",
   Heavy: "#ef4444",
 };
-// Workload Banner
+
 function WorkloadBanner({ tasks, colors }) {
   const score = calculateDailyWorkload(tasks);
   const label = getWorkloadLabel(score);
@@ -141,6 +145,7 @@ function WorkloadBanner({ tasks, colors }) {
     </View>
   );
 }
+
 function DashboardSectionHeader({
   title,
   hint,
@@ -184,6 +189,7 @@ function DashboardSectionHeader({
     </View>
   );
 }
+
 function buildAcademicLabel({ course, year, section, semester, academicYear }) {
   const parts = [];
   if (course) parts.push(course);
@@ -223,6 +229,7 @@ function parseTimeToMinutes(value) {
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return hour * 60 + minute;
 }
+
 function getClassTimeRange(cls) {
   let start = parseTimeToMinutes(cls?.start);
   let end = parseTimeToMinutes(cls?.end);
@@ -236,6 +243,7 @@ function getClassTimeRange(cls) {
   if (end === null || end <= start) end = start + 60;
   return { start, end };
 }
+
 function formatMinutesToClock(totalMinutes) {
   if (typeof totalMinutes !== "number" || Number.isNaN(totalMinutes)) return "";
   const safeMinutes = Math.max(0, Math.min(totalMinutes, 23 * 60 + 59));
@@ -246,11 +254,12 @@ function formatMinutesToClock(totalMinutes) {
   if (hour12 === 0) hour12 = 12;
   return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
 }
+
 export default function HomeDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
-  const { rescheduleAll } = useNotifications();
+  const { rescheduleAll, rescheduleDeadlineAlarmsForTask, clearTaskAlarmSuppression } = useNotifications();
   const {
     isOnline,
     lastSync,
@@ -258,6 +267,7 @@ export default function HomeDashboard() {
     checkConnectivity,
     markSynced,
   } = useOffline();
+
   const [fullName, setFullName] = useState("");
   const [semester, setSemester] = useState("");
   const [academicYear, setAcademicYear] = useState("");
@@ -265,29 +275,37 @@ export default function HomeDashboard() {
   const [year, setYear] = useState("");
   const [section, setSection] = useState("");
   const [needsAcademicInfo, setNeedsAcademicInfo] = useState(false);
+
   const [todayClasses, setTodayClasses] = useState([]);
   const [currentClassId, setCurrentClassId] = useState(null);
   const [nextClassId, setNextClassId] = useState(null);
   const [upcomingAssignments, setUpcomingAssignments] = useState([]);
+
   const [announcements, setAnnouncements] = useState([]);
   const [upcomingExams, setUpcomingExams] = useState([]);
   const [examPlans, setExamPlans] = useState({});
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showingCached, setShowingCached] = useState(false);
   const [nowTick, setNowTick] = useState(() => new Date());
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
+
   const {
     alarmVisible,
     alarmTask,
+    alarmThresholdKey,
     acknowledgeAlarm,
     notDoneAlarm,
   } = useDeadlineAlarmScheduler(upcomingAssignments);
+
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
+
   const queueReminderRefresh = useCallback(
     (reason, extra = {}) => {
       void rescheduleAll().catch((error) => {
@@ -300,15 +318,13 @@ export default function HomeDashboard() {
     },
     [rescheduleAll]
   );
-  //  Auto-refresh when tab gets focused
+
   useFocusEffect(
     useCallback(() => {
       if (!hasLoaded.current) {
-        // First load - show full loading screen
         fetchDashboardData(true, { forceRefresh: true });
         hasLoaded.current = true;
       } else {
-        // Subsequent focus - silent background refresh
         const now = Date.now();
         if (now - lastSilentRefreshAtRef.current >= FOCUS_REFRESH_COOLDOWN_MS) {
           lastSilentRefreshAtRef.current = now;
@@ -318,12 +334,35 @@ export default function HomeDashboard() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
   );
+
   useEffect(() => {
     const tick = setInterval(() => {
       setNowTick(new Date());
     }, 60 * 1000);
     return () => clearInterval(tick);
   }, []);
+
+  useEffect(() => {
+    if (todayClasses.length === 0) return;
+    const nowMinutes =
+      nowTick.getHours() * 60 + nowTick.getMinutes();
+
+    const current = todayClasses.find((cls) => {
+      const range = getClassTimeRange(cls);
+      return range
+        ? nowMinutes >= range.start && nowMinutes < range.end
+        : false;
+    });
+
+    const next = todayClasses.find((cls) => {
+      const range = getClassTimeRange(cls);
+      return range ? range.start > nowMinutes : false;
+    });
+
+    setCurrentClassId(current?._localId || null);
+    setNextClassId(next?._localId || null);
+  }, [nowTick, todayClasses]);
+
   const animateIn = () => {
     fadeAnim.setValue(0);
     slideAnim.setValue(24);
@@ -340,6 +379,7 @@ export default function HomeDashboard() {
       }),
     ]).start();
   };
+
   const applyWeekSchedule = (weekSchedule = {}) => {
     const todayName = new Date().toLocaleString("en-US", { weekday: "long" });
     const classesToday = (weekSchedule[todayName] || [])
@@ -352,24 +392,31 @@ export default function HomeDashboard() {
         const bStart = getClassTimeRange(b)?.start ?? Number.POSITIVE_INFINITY;
         return aStart - bStart;
       });
+
     setTodayClasses(classesToday);
+
     const now = new Date();
     const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
     const current = classesToday.find((cls) => {
       const range = getClassTimeRange(cls);
       return range
         ? nowMinutes >= range.start && nowMinutes < range.end
         : false;
     });
+
     const next = classesToday.find((cls) => {
       const range = getClassTimeRange(cls);
       return range ? range.start > nowMinutes : false;
     });
+
     setCurrentClassId(current?._localId || null);
     setNextClassId(next?._localId || null);
   };
+
   const loadFromOfflineCache = async (uid, { markCached = false } = {}) => {
     if (markCached) setShowingCached(true);
+
     const [profileCache, scheduleCache, assignmentsCache, announcementsCache] =
       await Promise.all([
         loadFromCache(CACHE_KEYS.profile(uid)),
@@ -377,9 +424,11 @@ export default function HomeDashboard() {
         loadFromCache(CACHE_KEYS.assignments(uid)),
         loadFromCache(CACHE_KEYS.announcements(uid)),
       ]);
+
     if (profileCache?.data?.fullName) {
       setFullName(profileCache.data.fullName || "");
     }
+
     const cachedInfo = profileCache?.data?.studentInfo || {};
     setSemester(cachedInfo.semester || "");
     setAcademicYear(cachedInfo.academicYear || "");
@@ -389,6 +438,7 @@ export default function HomeDashboard() {
     setNeedsAcademicInfo(
       !cachedInfo.course || !cachedInfo.year || !cachedInfo.section
     );
+
     if (scheduleCache?.data) {
       applyWeekSchedule(scheduleCache.data || {});
     } else {
@@ -396,32 +446,38 @@ export default function HomeDashboard() {
       setCurrentClassId(null);
       setNextClassId(null);
     }
+
     const cachedPending = stripArchived(assignmentsCache?.data?.pending || []);
     setUpcomingAssignments(cachedPending);
+
     const now = new Date();
     const exams = cachedPending
       .filter(
         (t) =>
           t.type === "exam" &&
-          parseDueDate(t.dueAt) !== null &&
-          parseDueDate(t.dueAt) > now
+          resolveTaskDueDate(t) !== null &&
+          resolveTaskDueDate(t) > now
       )
       .sort((a, b) => {
-        const aDate = parseDueDate(a.dueAt);
-        const bDate = parseDueDate(b.dueAt);
+        const aDate = resolveTaskDueDate(a);
+        const bDate = resolveTaskDueDate(b);
         if (!aDate || !bDate) return 0;
         return aDate - bDate;
       })
       .slice(0, 3);
+
     setUpcomingExams(exams);
+
     const rawPlans = await AsyncStorage.getItem(PLANS_KEY(uid));
     setExamPlans(safeParseObject(rawPlans, {}));
+
     if (announcementsCache?.data) {
       setAnnouncements(announcementsCache.data);
     } else {
       setAnnouncements([]);
     }
   };
+
   const fetchDashboardData = async (
     showLoadingSpinner = false,
     { forceRefresh = false } = {}
@@ -433,22 +489,26 @@ export default function HomeDashboard() {
       }
       lastSilentRefreshAtRef.current = now;
     }
+
     if (showLoadingSpinner) setLoading(true);
+
     try {
       const user = auth.currentUser;
       if (!user) return;
+
       await loadFromOfflineCache(user.uid, { markCached: !isOnline });
-      if (!isOnline) {
-        return;
-      }
+
+      if (!isOnline) return;
+
       const userSnap = await getDoc(doc(db, "users", user.uid));
       if (!userSnap.exists()) {
         setNeedsAcademicInfo(true);
         return;
       }
+
       const userData = userSnap.data();
       setFullName(userData.fullName || "");
-      // Also set semester and academic year from studentInfo
+
       const profile = userData.studentInfo || {};
       const {
         college,
@@ -457,16 +517,20 @@ export default function HomeDashboard() {
         section: scheduleSection,
         scheduleType,
       } = profile;
+
       setSemester(profile.semester || "");
       setAcademicYear(profile.academicYear || "");
       setCourse(scheduleCourse || "");
       setYear(scheduleYear || "");
       setSection(scheduleSection || "");
+
       await saveToCache(CACHE_KEYS.profile(user.uid), userData);
+
       const hasScheduleProfile = Boolean(
         scheduleCourse && scheduleYear && scheduleSection
       );
       setNeedsAcademicInfo(!hasScheduleProfile);
+
       const schedulePromise = hasScheduleProfile
         ? findBestScheduleDoc(db, {
             college,
@@ -476,6 +540,7 @@ export default function HomeDashboard() {
             scheduleType,
           })
         : Promise.resolve(null);
+
       const assignmentsPromise = getDocs(
         query(
           collection(db, "assignments"),
@@ -484,9 +549,11 @@ export default function HomeDashboard() {
           orderBy("dueAt")
         )
       );
+
       const announcementsPromise = getDocs(
         query(collection(db, "announcements"), orderBy("createdAt", "desc"))
       );
+
       const rawPlansPromise = AsyncStorage.getItem(PLANS_KEY(user.uid));
 
       const [scheduleMatch, aSnap, annSnap, rawPlans] = await Promise.all([
@@ -513,6 +580,7 @@ export default function HomeDashboard() {
         aSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
       );
       setUpcomingAssignments(allTasks);
+
       const assignmentsCache = await loadFromCache(
         CACHE_KEYS.assignments(user.uid)
       );
@@ -521,14 +589,16 @@ export default function HomeDashboard() {
         pending: allTasks,
         done: cachedDone,
       });
-      //  Upcoming exams
+
       const now = new Date();
       const exams = allTasks
-        .filter((t) => t.type === "exam" && parseDueDate(t.dueAt) > now)
-        .sort((a, b) => parseDueDate(a.dueAt) - parseDueDate(b.dueAt))
+        .filter((t) => t.type === "exam" && resolveTaskDueDate(t) > now)
+        .sort((a, b) => resolveTaskDueDate(a) - resolveTaskDueDate(b))
         .slice(0, 3);
+
       setUpcomingExams(exams);
       setExamPlans(safeParseObject(rawPlans, {}));
+
       const filtered = annSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((a) => {
@@ -549,9 +619,11 @@ export default function HomeDashboard() {
             return true;
           return false;
         });
+
       setAnnouncements(filtered);
       await saveToCache(CACHE_KEYS.announcements(user.uid), filtered);
-      await markSynced();
+
+      await markSynced(user.uid);
       setShowingCached(false);
     } catch (error) {
       reportWarning(error, {
@@ -559,8 +631,11 @@ export default function HomeDashboard() {
         tags: { location: "home_dashboard_load" },
         extra: { userId: auth.currentUser?.uid || null },
       });
+
       if (auth.currentUser) {
-        await loadFromOfflineCache(auth.currentUser.uid, { markCached: true });
+        await loadFromOfflineCache(auth.currentUser.uid, {
+          markCached: true,
+        });
       }
     } finally {
       setLoading(false);
@@ -568,20 +643,127 @@ export default function HomeDashboard() {
       animateIn();
     }
   };
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchDashboardData(false, { forceRefresh: true });
   };
+
   const markDone = async (assignment) => {
+    if (!assignment?.id) return;
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Optimistic removal
+    setUpcomingAssignments(prev => prev.filter(t => t.id !== assignment.id));
+    setUpcomingExams(prev => prev.filter(t => t.id !== assignment.id));
+
     try {
-      await cancelDeadlineAlarms(assignment);
-      await updateDoc(
-        doc(db, "assignments", assignment.id),
-        buildTaskCompletionUpdate(new Date())
-      );
-      queueReminderRefresh("mark_done", { taskId: assignment?.id || null });
-      fetchDashboardData(false, { forceRefresh: true });
+      // Step 1: Cancel alarms — never let this abort the whole flow
+      try {
+        await cancelDeadlineAlarms(assignment);
+      } catch (cancelErr) {
+        reportWarning(cancelErr, {
+          message: "cancelDeadlineAlarms failed during markDone — continuing.",
+          tags: { location: "home_dashboard_mark_done_cancel_alarms" },
+          extra: { taskId: assignment?.id },
+        });
+      }
+
+      // Step 2: Local-only task path — only valid when offline.
+      // If online, fall through to Firestore so the doc gets written.
+      if (isLocalOnlyTaskId(assignment.id) && !isOnline) {
+        await removeOfflineQueuedTask(user.uid, assignment.id);
+        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        if (cached?.data) {
+          await saveToCache(CACHE_KEYS.assignments(user.uid), {
+            ...cached.data,
+            pending: (cached.data.pending || []).filter(
+              (t) => t.id !== assignment.id
+            ),
+          });
+        }
+        queueReminderRefresh("mark_done", { taskId: assignment.id });
+        return;
+      }
+
+      // Step 3: Offline path
+      if (!isOnline) {
+        const PENDING_UPDATES_KEY = (uid) => `pending_updates_${uid}`;
+        const raw = await AsyncStorage.getItem(PENDING_UPDATES_KEY(user.uid));
+        const queue = raw ? JSON.parse(raw) : [];
+        queue.push({
+          id: assignment.id,
+          action: "complete",
+          queuedAt: new Date().toISOString(),
+        });
+        await AsyncStorage.setItem(
+          PENDING_UPDATES_KEY(user.uid),
+          JSON.stringify(queue)
+        );
+        return;
+      }
+
+      // Step 4: Online path — check doc exists first
+      const taskRef = doc(db, "assignments", assignment.id);
+      const taskSnap = await getDoc(taskRef);
+      if (!taskSnap.exists()) {
+        // Doc missing from Firestore — clean up locally and exit gracefully
+        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        if (cached?.data) {
+          await saveToCache(CACHE_KEYS.assignments(user.uid), {
+            ...cached.data,
+            pending: (cached.data.pending || []).filter(
+              (t) => t.id !== assignment.id
+            ),
+          });
+        }
+        queueReminderRefresh("mark_done_no_doc", { taskId: assignment.id });
+        return;
+      }
+
+      const completionUpdate = buildTaskCompletionUpdate(new Date());
+      await updateDoc(taskRef, completionUpdate);
+
+      const completedTask = { ...assignment, ...completionUpdate };
+      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+      if (cached?.data) {
+        await saveToCache(CACHE_KEYS.assignments(user.uid), {
+          ...cached.data,
+          pending: (cached.data.pending || []).filter(t => t.id !== assignment.id),
+          done: [completedTask, ...(cached.data.done || [])],
+        });
+      }
+
+      // Step 5: Alarm cleanup — never let these abort the flow
+      try {
+        if (typeof clearTaskAlarmSuppression === "function") {
+          await clearTaskAlarmSuppression(assignment.id);
+        }
+      } catch (suppressErr) {
+        reportWarning(suppressErr, {
+          message: "clearTaskAlarmSuppression failed — non-critical.",
+          tags: { location: "home_dashboard_mark_done_suppress" },
+        });
+      }
+
+      try {
+        if (typeof rescheduleDeadlineAlarmsForTask === "function") {
+          await rescheduleDeadlineAlarmsForTask(assignment.id);
+        } else {
+          queueReminderRefresh("mark_done", { taskId: assignment.id });
+        }
+      } catch (rescheduleErr) {
+        reportWarning(rescheduleErr, {
+          message: "rescheduleDeadlineAlarmsForTask failed — falling back.",
+          tags: { location: "home_dashboard_mark_done_reschedule" },
+        });
+        queueReminderRefresh("mark_done_fallback", { taskId: assignment.id });
+      }
+
     } catch (error) {
+      // Roll back optimistic removal
+      fetchDashboardData(false, { forceRefresh: true });
       reportError(error, {
         message: "Failed to mark a dashboard task as done.",
         tags: { location: "home_dashboard_mark_done" },
@@ -593,20 +775,18 @@ export default function HomeDashboard() {
       );
     }
   };
+  // ─────────────────────────────────────────────────────────────────────────
+
   const greeting = getGreeting();
   const nowMinutes = nowTick.getHours() * 60 + nowTick.getMinutes();
-  const overdueCount = useMemo(() => {
-    return upcomingAssignments.filter((a) => {
-      const due = parseDueDate(a.dueAt);
-      return due && due < nowTick;
-    }).length;
-  }, [upcomingAssignments, nowTick]);
+
   const workloadTasks = upcomingAssignments;
   const workloadSummary = useMemo(() => {
     const score = calculateDailyWorkload(workloadTasks);
     const label = getWorkloadLabel(score);
     return { score, label, color: WORKLOAD_COLOR[label] || colors.primary };
   }, [colors.primary, workloadTasks]);
+
   const academicLabel = useMemo(() => {
     return buildAcademicLabel({
       course,
@@ -616,33 +796,39 @@ export default function HomeDashboard() {
       academicYear,
     });
   }, [academicYear, course, section, semester, year]);
+
   const urgentTasks = useMemo(() => {
     return [...upcomingAssignments]
       .sort((a, b) => {
         const aDue =
-          parseDueDate(a.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+          resolveTaskDueDate(a)?.getTime() ?? Number.POSITIVE_INFINITY;
         const bDue =
-          parseDueDate(b.dueAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+          resolveTaskDueDate(b)?.getTime() ?? Number.POSITIVE_INFINITY;
         return aDue - bDue;
       })
       .slice(0, 3);
   }, [upcomingAssignments]);
+
   const currentClass = useMemo(() => {
     return currentClassId
       ? todayClasses.find((item) => item._localId === currentClassId) || null
       : null;
   }, [currentClassId, todayClasses]);
+
   const nextClass = useMemo(() => {
     return nextClassId
       ? todayClasses.find((item) => item._localId === nextClassId) || null
       : null;
   }, [nextClassId, todayClasses]);
+
   const lastClass = useMemo(() => {
     return todayClasses.length > 0
       ? todayClasses[todayClasses.length - 1]
       : null;
   }, [todayClasses]);
+
   const lastClassRange = getClassTimeRange(lastClass);
+
   const classesFinishedToday = Boolean(
     todayClasses.length > 0 &&
     !currentClass &&
@@ -650,6 +836,7 @@ export default function HomeDashboard() {
     lastClassRange &&
     nowMinutes >= lastClassRange.end
   );
+
   if (loading) {
     return (
       <View style={[styles.root, { backgroundColor: colors.background }]}>
@@ -658,12 +845,12 @@ export default function HomeDashboard() {
       </View>
     );
   }
-  //  Derived card/text colors
-  // Ensure all card text is always readable regardless of theme
+
   const cardBg = colors.card;
   const textPrimary = colors.text;
   const textSecondary = isDark ? "#94a3b8" : "#64748b";
   const borderColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)";
+
   const pendingTotalCount = Number(pendingSyncSummary?.total || 0);
   const hasAnyCachedData = Boolean(
     todayClasses.length ||
@@ -673,6 +860,8 @@ export default function HomeDashboard() {
   );
   const showOfflineNoCache = !isOnline && !hasAnyCachedData;
   const latestAnnouncement = announcements[0] || null;
+
+  // ── focusCard (fixed currentClass branch) ─────────────────────────────────
   const focusCard = (() => {
     if (needsAcademicInfo) {
       return {
@@ -684,43 +873,28 @@ export default function HomeDashboard() {
         actionRoute: "/(tabs)/profile",
       };
     }
+
     if (currentClass) {
       const currentRange = getClassTimeRange(currentClass);
       const nextRange = getClassTimeRange(nextClass);
       return {
         title: currentClass.subject || "Class in progress",
         body: nextClass
-          ? `In class now. ${nextClass.subject || "Your next class"} starts at ${formatMinutesToClock(nextRange?.start ?? nowMinutes + 60)}.`
-          : `In class now. It ends at ${formatMinutesToClock(currentRange?.end ?? nowMinutes + 60)}.`,
-        icon: "play-circle-outline",
+          ? `Next: ${nextClass.subject || "class"} at ${formatMinutesToClock(
+              nextRange?.start ?? nowMinutes + 60
+            )}. Use the gap to prepare what you need.`
+          : `Ends at ${formatMinutesToClock(
+              currentRange?.end ?? nowMinutes + 60
+            )}. Stay focused!`,
+        icon: "book-outline",
         color: "#10b981",
         actionLabel: "Open Schedule",
         actionRoute: "/(tabs)/schedule",
       };
     }
-    if (overdueCount > 0) {
-      return {
-        title: `Clear ${overdueCount} overdue task${overdueCount > 1 ? "s" : ""}`,
-        body: "Start with the closest deadline to get back on track before adding new work.",
-        icon: "alert-circle-outline",
-        color: "#ef4444",
-        actionLabel: "Open Tasks",
-        actionRoute: "/(tabs)/assignments",
-      };
-    }
-    if (nextClass) {
-      const nextRange = getClassTimeRange(nextClass);
-      return {
-        title: `Next: ${nextClass.subject || "Upcoming class"}`,
-        body: `Starts at ${formatMinutesToClock(nextRange?.start ?? nowMinutes + 60)}. Use the gap to prepare what you need.`,
-        icon: "time-outline",
-        color: colors.primary,
-        actionLabel: "Open Schedule",
-        actionRoute: "/(tabs)/schedule",
-      };
-    }
+
     const urgentExam = upcomingExams[0];
-    const urgentExamDate = parseDueDate(urgentExam?.dueAt);
+    const urgentExamDate = resolveTaskDueDate(urgentExam);
     if (urgentExam && urgentExamDate) {
       const days = daysUntil(urgentExamDate.toISOString());
       if (days <= 3) {
@@ -734,26 +908,33 @@ export default function HomeDashboard() {
         };
       }
     }
+
     if (classesFinishedToday && upcomingAssignments.length > 0) {
       return {
         title: "Classes are done. Finish one more task.",
-        body: `You still have ${upcomingAssignments.length} pending task${upcomingAssignments.length > 1 ? "s" : ""} today.`,
+        body: `You still have ${upcomingAssignments.length} pending task${
+          upcomingAssignments.length > 1 ? "s" : ""
+        } today.`,
         icon: "checkmark-circle-outline",
         color: "#6366f1",
         actionLabel: "Open Tasks",
         actionRoute: "/(tabs)/assignments",
       };
     }
+
     if (todayClasses.length === 0 && upcomingAssignments.length > 0) {
       return {
         title: "No classes today",
-        body: `Use the free time to move ${upcomingAssignments.length} pending task${upcomingAssignments.length > 1 ? "s" : ""} forward.`,
+        body: `Use the free time to move ${upcomingAssignments.length} pending task${
+          upcomingAssignments.length > 1 ? "s" : ""
+        } forward.`,
         icon: "sunny-outline",
         color: "#0ea5e9",
         actionLabel: "Open Tasks",
         actionRoute: "/(tabs)/assignments",
       };
     }
+
     return {
       title: "Plan your study blocks",
       body: "Turn your remaining work into a simple day plan before the day drifts.",
@@ -763,6 +944,8 @@ export default function HomeDashboard() {
       actionRoute: "/(tabs)/CalendarPlannerScreen",
     };
   })();
+  // ─────────────────────────────────────────────────────────────────────────
+
   const todayPlanItems = (() => {
     if (needsAcademicInfo) {
       return [
@@ -783,7 +966,9 @@ export default function HomeDashboard() {
       items.push({
         key: "current",
         title: currentClass.subject || "Class in progress",
-        detail: `Ends at ${formatMinutesToClock(currentRange?.end ?? nowMinutes + 60)}`,
+        detail: `Ends at ${formatMinutesToClock(
+          currentRange?.end ?? nowMinutes + 60
+        )}`,
         icon: "play-circle-outline",
         color: "#10b981",
         route: "/(tabs)/schedule",
@@ -793,7 +978,9 @@ export default function HomeDashboard() {
       items.push({
         key: "next",
         title: nextClass.subject || "Upcoming class",
-        detail: `Starts at ${formatMinutesToClock(nextRange?.start ?? nowMinutes + 60)}`,
+        detail: `Starts at ${formatMinutesToClock(
+          nextRange?.start ?? nowMinutes + 60
+        )}`,
         icon: "time-outline",
         color: colors.primary,
         route: "/(tabs)/schedule",
@@ -801,7 +988,9 @@ export default function HomeDashboard() {
     } else if (todayClasses.length > 0) {
       items.push({
         key: "classes",
-        title: `${todayClasses.length} class${todayClasses.length > 1 ? "es" : ""} scheduled today`,
+        title: `${todayClasses.length} class${
+          todayClasses.length > 1 ? "es" : ""
+        } scheduled today`,
         detail: lastClassRange
           ? `Last class ends at ${formatMinutesToClock(lastClassRange.end)}`
           : "Open your schedule for the full day view.",
@@ -826,7 +1015,7 @@ export default function HomeDashboard() {
       });
     }
     const firstTask = urgentTasks[0];
-    const taskDue = parseDueDate(firstTask?.dueAt);
+    const taskDue = resolveTaskDueDate(firstTask);
     if (firstTask && taskDue) {
       items.push({
         key: "task",
@@ -838,7 +1027,7 @@ export default function HomeDashboard() {
       });
     }
     const nextExam = upcomingExams[0];
-    const examDue = parseDueDate(nextExam?.dueAt);
+    const examDue = resolveTaskDueDate(nextExam);
     if (nextExam && examDue) {
       const examDays = daysUntil(examDue.toISOString());
       items.push({
@@ -852,6 +1041,7 @@ export default function HomeDashboard() {
     }
     return items.slice(0, 3);
   })();
+
   const quickActions = [
     {
       key: "schedule",
@@ -897,7 +1087,10 @@ export default function HomeDashboard() {
         <View
           style={[
             styles.hero,
-            { backgroundColor: colors.primary, paddingTop: insets.top + 18 },
+            {
+              backgroundColor: colors.primary,
+              paddingTop: insets.top + 18,
+            },
           ]}
         >
           <View style={styles.heroInner}>
@@ -946,8 +1139,12 @@ export default function HomeDashboard() {
           <View style={styles.heroCircle} />
           <View style={styles.heroCircle2} />
         </View>
+
         <Animated.View
-          style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
+          style={{
+            opacity: fadeAnim,
+            transform: [{ translateY: slideAnim }],
+          }}
         >
           <DashboardSectionHeader
             title="Next Move"
@@ -957,7 +1154,10 @@ export default function HomeDashboard() {
           <TouchableOpacity
             style={[
               styles.focusCard,
-              { backgroundColor: cardBg, borderColor: `${focusCard.color}33` },
+              {
+                backgroundColor: cardBg,
+                borderColor: `${focusCard.color}33`,
+              },
             ]}
             onPress={() => router.push(focusCard.actionRoute)}
             activeOpacity={0.9}
@@ -1065,6 +1265,7 @@ export default function HomeDashboard() {
               <Ionicons name="arrow-forward" size={14} color="#fff" />
             </View>
           </TouchableOpacity>
+
           {(showingCached || !isOnline) && !showOfflineNoCache && (
             <View
               style={[
@@ -1087,6 +1288,7 @@ export default function HomeDashboard() {
               </Text>
             </View>
           )}
+
           {showOfflineNoCache && (
             <EmptyStateCard
               title="No cached data yet"
@@ -1098,7 +1300,9 @@ export default function HomeDashboard() {
               style={{ marginHorizontal: 18, marginTop: 12 }}
             />
           )}
+
           <WorkloadBanner tasks={workloadTasks} colors={colors} />
+
           <DashboardSectionHeader
             title="Start Now"
             hint="Jump straight into planning, tasks, or class time."
@@ -1150,6 +1354,7 @@ export default function HomeDashboard() {
               </TouchableOpacity>
             ))}
           </View>
+
           <DashboardSectionHeader
             title={"Today's Plan"}
             hint="Your classes, deadlines, and next study step."
@@ -1200,6 +1405,7 @@ export default function HomeDashboard() {
               </TouchableOpacity>
             ))}
           </View>
+
           <DashboardSectionHeader
             title="Urgent Tasks"
             hint="Closest deadlines first."
@@ -1216,7 +1422,7 @@ export default function HomeDashboard() {
             />
           ) : (
             urgentTasks.map((item) => {
-              const due = parseDueDate(item.dueAt);
+              const due = resolveTaskDueDate(item);
               const isOverdue = due && due < nowTick;
               const dueStr = due
                 ? formatDeadlineCountdown(due, nowTick, { style: "short" })
@@ -1278,7 +1484,9 @@ export default function HomeDashboard() {
                         <Text
                           style={[
                             styles.dueText,
-                            { color: isOverdue ? "#ef4444" : textSecondary },
+                            {
+                              color: isOverdue ? "#ef4444" : textSecondary,
+                            },
                           ]}
                         >
                           {dueStr}
@@ -1297,6 +1505,7 @@ export default function HomeDashboard() {
               );
             })
           )}
+
           {/*  EXAM PREP  */}
           {upcomingExams.length > 0 && (
             <>
@@ -1309,7 +1518,7 @@ export default function HomeDashboard() {
                 colors={colors}
               />
               {upcomingExams.slice(0, 2).map((exam) => {
-                const examDue = parseDueDate(exam.dueAt);
+                const examDue = resolveTaskDueDate(exam);
                 if (!examDue) return null;
                 const days = daysUntil(examDue.toISOString());
                 const urgColor = urgencyColor(days);
@@ -1413,7 +1622,9 @@ export default function HomeDashboard() {
                             <Text
                               style={[
                                 styles.todaySessionText,
-                                { color: isDark ? "#93c5fd" : "#2563eb" },
+                                {
+                                  color: isDark ? "#93c5fd" : "#2563eb",
+                                },
                               ]}
                             >
                               Study session scheduled for today!
@@ -1468,6 +1679,7 @@ export default function HomeDashboard() {
               })}
             </>
           )}
+
           {/*  ANNOUNCEMENTS  */}
           <DashboardSectionHeader
             title="Latest Announcement"
@@ -1514,26 +1726,32 @@ export default function HomeDashboard() {
               </Text>
             </TouchableOpacity>
           )}
+
           <View style={{ height: 24 }} />
         </Animated.View>
       </ScrollView>
+
       <DeadlineAlarmModal
         visible={alarmVisible}
         task={alarmTask}
+        thresholdKey={alarmThresholdKey}
         onNotDone={async () => {
           await notDoneAlarm();
           fetchDashboardData(false, { forceRefresh: true });
         }}
         onMarkDone={async () => {
+          // acknowledgeAlarm first so the modal closes immediately
+          // even if the Firestore write is slow
+          await acknowledgeAlarm();
           if (alarmTask?.id) {
             await markDone(alarmTask);
           }
-          await acknowledgeAlarm();
         }}
       />
     </View>
   );
 }
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
   container: { paddingBottom: 32 },
@@ -2073,8 +2291,11 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   annTitle: { fontSize: 14, fontWeight: "800", marginBottom: 5 },
-  annBody: { fontSize: 13, fontWeight: "500", lineHeight: 19, marginBottom: 8 },
+  annBody: {
+    fontSize: 13,
+    fontWeight: "500",
+    lineHeight: 19,
+    marginBottom: 8,
+  },
   annAudience: { fontSize: 11, fontWeight: "700" },
 });
-
-

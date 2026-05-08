@@ -1,13 +1,9 @@
-import { THRESHOLDS } from "./deadlineConstants";
+import {
+  FOREGROUND_THRESHOLDS,
+  OVERDUE_THRESHOLDS
+} from "./deadlineConstants";
 
 export const NOTIFICATION_ID_PREFIX = "ctu-notif";
-
-const DEADLINE_THRESHOLD_TO_MINUTES = Object.fromEntries(
-  THRESHOLDS.filter((t) => t.key !== "due").map((t) => [
-    t.key,
-    `${Math.round(t.ms / 60000)}m`,
-  ])
-);
 
 function sanitizeNotificationIdPart(value, fallback = "item") {
   const text =
@@ -47,9 +43,14 @@ export function buildDeadlineNotificationId(taskId, thresholdKey) {
     return buildNotificationId("deadline-due", taskId, "due");
   }
 
-  const minutesLabel = DEADLINE_THRESHOLD_TO_MINUTES[thresholdKey];
-  if (minutesLabel) {
-    return buildNotificationId("deadline-lead", taskId, minutesLabel);
+  const foregroundKeys = new Set(FOREGROUND_THRESHOLDS.map((t) => t.key));
+  if (foregroundKeys.has(thresholdKey)) {
+    return buildNotificationId("deadline-lead", taskId, thresholdKey);
+  }
+
+  const overdueKeys = new Set(OVERDUE_THRESHOLDS.map((t) => t.key));
+  if (overdueKeys.has(thresholdKey) || thresholdKey === "daily") {
+    return buildNotificationId("deadline-overdue", taskId, thresholdKey);
   }
 
   return buildNotificationId("deadline", taskId, thresholdKey);

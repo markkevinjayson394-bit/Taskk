@@ -66,9 +66,9 @@ describe("Workload Calculator", () => {
 
   test("getWorkloadLabel ranges", () => {
     expect(getWorkloadLabel(0)).toBe("Light");
-    expect(getWorkloadLabel(49)).toBe("Light");
-    expect(getWorkloadLabel(50)).toBe("Moderate");
-    expect(getWorkloadLabel(79)).toBe("Moderate");
-    expect(getWorkloadLabel(80)).toBe("Heavy");
+    expect(getWorkloadLabel(9)).toBe("Light");
+    expect(getWorkloadLabel(10)).toBe("Moderate");
+    expect(getWorkloadLabel(19)).toBe("Moderate");
+    expect(getWorkloadLabel(20)).toBe("Heavy");
   });
 });

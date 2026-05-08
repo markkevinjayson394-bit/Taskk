@@ -1,9 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import {
-  DateTimePickerAndroid,
-} from "@react-native-community/datetimepicker";
-import { useCallback, useEffect, useState } from "react";
+import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { useFocusEffect } from "@react-navigation/native";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Linking,
@@ -53,7 +51,7 @@ const NOTIFICATION_ITEMS = [
     colorKey: "danger",
     title: "Deadline Warnings",
     description:
-      "Warns at 7d, 3d, 1d, 12h, 6h, 3h, 2h, 1h, 30m, 15m, due-time, plus follow-ups and daily overdue reminders",
+      "Warns at 1d, 2h, 30m, and 1 minute before due time, plus due-time, follow-ups, and daily overdue reminders.",
     timeKey: null,
   },
   {
@@ -229,6 +227,8 @@ export default function NotificationSettings() {
     canScheduleExactAlarms,
     openExactAlarmSettings,
     sendTestNotification,
+    scheduleManagedDateNotification,
+    getAlarmStyleContentOptions,
     taskAlarmTonePickerAvailable,
     taskAlarmAudioPickerAvailable,
     pickTaskAlarmTone,
@@ -236,7 +236,8 @@ export default function NotificationSettings() {
     showBatteryOptimizationPrompt,
     dismissBatteryPrompt,
   } = useNotifications();
-  const [batteryOptimizationStatus, setBatteryOptimizationStatus] = useState(null);
+  const [batteryOptimizationStatus, setBatteryOptimizationStatus] =
+    useState(null);
   const [exactAlarmStatus, setExactAlarmStatus] = useState(null);
   const [scheduleLastSynced, setScheduleLastSynced] = useState(null);
   const checkBatteryOptimizationStatus = useCallback(async () => {
@@ -245,7 +246,8 @@ export default function NotificationSettings() {
       return;
     }
     try {
-      const allowed = await isIgnoringBatteryOptimizations();
+      const result = await isIgnoringBatteryOptimizations();
+      const allowed = result?.status === "success" ? result.value : false;
       setBatteryOptimizationStatus(allowed);
     } catch (err) {
       console.warn("Battery optimization check failed:", err);
@@ -302,7 +304,8 @@ export default function NotificationSettings() {
     useCallback(() => refreshScheduleSyncState(), [refreshScheduleSyncState])
   );
   const handleBatteryOptimization = async () => {
-    const success = requestIgnoreBatteryOptimizations();
+    const result = requestIgnoreBatteryOptimizations();
+    const success = result?.status === "success";
     if (success) {
       setTimeout(() => checkBatteryOptimizationStatus(), 1000);
       Alert.alert(
@@ -310,7 +313,10 @@ export default function NotificationSettings() {
         "Select 'Unrestricted' or 'Don't optimize' then return here."
       );
     } else {
-      Alert.alert("Not Available", "Battery optimization setting is not available on this device.");
+      Alert.alert(
+        "Not Available",
+        "Battery optimization setting is not available on this device."
+      );
     }
   };
 
@@ -505,7 +511,6 @@ export default function NotificationSettings() {
     if (granted) {
       Alert.alert("Enabled", "You will now receive reminders.");
       await rescheduleAll();
-      // FIX: removed undefined checkExactAlarmPermission() call
     } else {
       Alert.alert(
         "Permission Denied",
@@ -698,7 +703,11 @@ export default function NotificationSettings() {
                   { backgroundColor: `${colors.warning}40` },
                 ]}
               >
-                <Ionicons name="battery-charging-outline" size={12} color="#fff" />
+                <Ionicons
+                  name="battery-charging-outline"
+                  size={12}
+                  color="#fff"
+                />
                 <Text style={styles.statPillText}>Battery restricted</Text>
               </View>
             )}
@@ -797,9 +806,7 @@ export default function NotificationSettings() {
                   ]}
                   onPress={handleBatteryOptimization}
                 >
-                  <Text
-                    style={[styles.halfBtnText, { color: colors.warning }]}
-                  >
+                  <Text style={[styles.halfBtnText, { color: colors.warning }]}>
                     Open Settings
                   </Text>
                 </TouchableOpacity>
@@ -829,11 +836,7 @@ export default function NotificationSettings() {
               onPress={handleExactAlarmPermission}
             >
               <View style={styles.permissionLeft}>
-                <Ionicons
-                  name="alarm"
-                  size={22}
-                  color={colors.danger}
-                />
+                <Ionicons name="alarm" size={22} color={colors.danger} />
                 <View>
                   <Text
                     style={[styles.permissionTitle, { color: colors.danger }]}
@@ -846,7 +849,8 @@ export default function NotificationSettings() {
                       { color: `${colors.danger}cc` },
                     ]}
                   >
-                    After app updates, this permission resets. Enable it for full-screen alarm popups.
+                    After app updates, this permission resets. Enable it for
+                    full-screen alarm popups.
                   </Text>
                 </View>
               </View>
@@ -889,7 +893,8 @@ export default function NotificationSettings() {
                       { color: `${colors.warning}cc` },
                     ]}
                   >
-                    Enable for reliable background notifications via &quot;Don&apos;t optimize&quot;
+                    Enable for reliable background notifications via
+                    &quot;Don&apos;t optimize&quot;
                   </Text>
                 </View>
               </View>
@@ -1136,6 +1141,66 @@ export default function NotificationSettings() {
             </View>
           )}
         </View>
+        {/* Test Full-Screen Popup */}
+        <TouchableOpacity
+          style={[
+            styles.permissionBox,
+            {
+              backgroundColor: `${colors.danger}10`,
+              borderColor: colors.danger,
+            },
+          ]}
+          onPress={async () => {
+            const triggerDate = new Date(Date.now() + 30000);
+            const result = await scheduleManagedDateNotification({
+              identifier: `alarm_popup_test_${Date.now()}`,
+              title: "Full-Screen Popup Test",
+              body: "This is a test of the full-screen popup alarm. Check your lock screen!",
+              triggerDate,
+              contentExtra: {
+                data: {
+                  type: "alarm_popup_test",
+                  acknowledgeRequired: true,
+                  isPopupTest: true,
+                },
+                ...getAlarmStyleContentOptions({
+                  includeActions: true,
+                  dueNow: true,
+                  sticky: true,
+                }),
+              },
+              preferExactAlarm: true,
+            });
+            if (result) {
+              Alert.alert(
+                "Test Scheduled",
+                "A full-screen popup test will fire in 30 seconds. Make sure your lock screen is showing and check for a popup alarm."
+              );
+            } else {
+              Alert.alert("Test Failed", "Could not schedule popup test.");
+            }
+          }}
+        >
+          <View style={styles.permissionLeft}>
+            <Ionicons
+              name="phone-portrait-outline"
+              size={22}
+              color={colors.danger}
+            />
+            <View>
+              <Text style={[styles.permissionTitle, { color: colors.danger }]}>
+                Test Full-Screen Popup
+              </Text>
+              <Text
+                style={[styles.permissionSub, { color: `${colors.danger}cc` }]}
+              >
+                Fires in 30 seconds — tests lock screen popup
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.danger} />
+        </TouchableOpacity>
+
         {/* Test Notification */}
         <TouchableOpacity
           style={[
@@ -1167,26 +1232,17 @@ export default function NotificationSettings() {
               color={colors.primary}
             />
             <View>
-              <Text
-                style={[styles.permissionTitle, { color: colors.primary }]}
-              >
+              <Text style={[styles.permissionTitle, { color: colors.primary }]}>
                 Send Test Notification
               </Text>
               <Text
-                style={[
-                  styles.permissionSub,
-                  { color: `${colors.primary}cc` },
-                ]}
+                style={[styles.permissionSub, { color: `${colors.primary}cc` }]}
               >
                 Verify your notification settings are working
               </Text>
             </View>
           </View>
-          <Ionicons
-            name="chevron-forward"
-            size={16}
-            color={colors.primary}
-          />
+          <Ionicons name="chevron-forward" size={16} color={colors.primary} />
         </TouchableOpacity>
 
         {/* Permissions & Access */}
@@ -1240,7 +1296,7 @@ export default function NotificationSettings() {
                 </Text>
                 <Text style={[styles.cardDesc, { color: colors.muted }]}>
                   {batteryOptimizationStatus === true
-                    ? "Unrestricted mode is active  background notifications are reliable."
+                    ? "Unrestricted mode is active — background notifications are reliable."
                     : "Restrictive mode may delay notifications. Tap to enable unrestricted."}
                 </Text>
               </View>
@@ -1265,7 +1321,9 @@ export default function NotificationSettings() {
               <Ionicons
                 name="alarm"
                 size={18}
-                color={exactAlarmStatus === false ? colors.danger : colors.success}
+                color={
+                  exactAlarmStatus === false ? colors.danger : colors.success
+                }
               />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.cardTitle, { color: colors.text }]}>
@@ -1273,7 +1331,7 @@ export default function NotificationSettings() {
                 </Text>
                 <Text style={[styles.cardDesc, { color: colors.muted }]}>
                   {exactAlarmStatus === true
-                    ? "Exact alarms are enabled  full-screen popups will appear for deadline alarms."
+                    ? "Exact alarms are enabled — full-screen popups will appear for deadline alarms."
                     : "Exact alarms are disabled. Tap to open settings and re-enable them after an app update."}
                 </Text>
               </View>
@@ -1356,7 +1414,13 @@ export default function NotificationSettings() {
               {item.key === "classReminder" &&
                 scheduleLastSynced !== null &&
                 scheduleLastSynced > 7 && (
-                  <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      marginTop: 6,
+                    }}
+                  >
                     <Ionicons
                       name="warning-outline"
                       size={12}
@@ -1373,7 +1437,9 @@ export default function NotificationSettings() {
                         },
                       ]}
                     >
-                      Class schedule last synced {Math.floor(scheduleLastSynced)} days ago. Connect to internet to refresh.
+                      Class schedule last synced{" "}
+                      {Math.floor(scheduleLastSynced)} days ago. Connect to
+                      internet to refresh.
                     </Text>
                   </View>
                 )}
@@ -1443,7 +1509,7 @@ export default function NotificationSettings() {
         {customNotifs.length === 0 ? (
           <EmptyStateCard
             title="No custom reminders yet"
-            message="Tap Add New to create your own reminder  study sessions, medicine, anything."
+            message="Tap Add New to create your own reminder — study sessions, medicine, anything."
             icon="notifications-outline"
             style={{ borderStyle: "dashed" }}
           />
@@ -2201,5 +2267,3 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 });
-
-

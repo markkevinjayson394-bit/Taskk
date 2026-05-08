@@ -1,4 +1,4 @@
-import { parseDueDate } from "./academicTaskModel";
+import { parseDueDate, resolveTaskDueDate } from "./academicTaskModel";
 
 export function buildQuickDueOptions(baseDate = new Date()) {
   const now = parseDueDate(baseDate) || new Date();
@@ -59,7 +59,7 @@ export function getQuickCreateDueAt(filter, now = new Date()) {
 }
 
 export function getQuickSnoozePlan(task, now = new Date()) {
-  const due = parseDueDate(task?.dueAt);
+  const due = resolveTaskDueDate(task);
   if (!due) {
     return {
       label: "Tomorrow",

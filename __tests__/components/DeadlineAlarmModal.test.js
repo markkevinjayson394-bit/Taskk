@@ -6,20 +6,83 @@ import DeadlineAlarmModal, {
 } from "../../components/DeadlineAlarmModal";
 import { render } from "../../utils/test-utils";
 
-// ─── Harness ────────────────────────────────────────────────────────────────
-// The harness mirrors what the real screen does: it reads alarmVisible from
-// the hook and shows the task title while the alarm is active, or "No alarm"
-// once the hook has dismissed it (alarmVisible === false).
-function SchedulerHarness({ tasks }) {
-  const { alarmVisible, alarmTask, notDoneAlarm } =
-    useDeadlineAlarmScheduler(tasks);
+// â”€â”€â”€ Mock all dependencies that DeadlineAlarmModal imports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+jest.mock("../../components/DeadlineAlarmModal.helpers", () => ({
+  parseDueDate: (val) => (val ? new Date(val) : null),
+  resolveTaskDueDate: jest.fn((task) =>
+    task?.dueAt ? new Date(task.dueAt) : null
+  ),
+  formatDeadlineCountdown: jest.fn(() => "5m"),
+  stopAlarmSound: jest.fn().mockResolvedValue(undefined),
+  stopVibration: jest.fn(),
+  playAlarmSound: jest.fn(),
+  startVibration: jest.fn(),
+  PRIORITY_COLOR: {},
+  TYPE_META: {
+    custom: { icon: "ellipse", label: "Task" },
+  },
+}));
 
-  // alarmVisible drives the text shown. When the hook clears the alarm
-  // (after notDoneAlarm persists the snooze) alarmVisible becomes false
-  // and "No alarm" is rendered.
+jest.mock("../../utils/deadlineAlarmBackground", () => ({
+  cancelDeadlineAlarms: jest.fn().mockResolvedValue(undefined),
+  DEADLINE_CATEGORY_ID: "deadline",
+  DEADLINE_CHANNEL_ID: "deadline-channel",
+  DEADLINE_NOTIF_TYPE: "deadline_alarm",
+  scheduleNextOverdueAlarm: jest.fn().mockResolvedValue("native-alarm-1"),
+}));
+
+jest.mock("../../utils/nativeAlarm", () => ({
+  stopActiveNativeAlarm: jest.fn().mockResolvedValue(undefined),
+  forceStopNativeAlarm: jest.fn().mockResolvedValue(undefined),
+  isNativeAlarmSupported: false,
+  scheduleNativeAlarm: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock("expo-notifications", () => ({
+  scheduleNotificationAsync: jest.fn().mockResolvedValue(undefined),
+  cancelScheduledNotificationAsync: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("expo-haptics", () => ({
+  notificationAsync: jest.fn().mockResolvedValue(undefined),
+  NotificationFeedbackType: { Warning: "warning", Success: "success" },
+}));
+
+jest.mock("../../utils/deadlineConstants", () => ({
+  THRESHOLDS: [
+    { key: "1d", ms: 24 * 60 * 60 * 1000 },
+    { key: "2h", ms: 2 * 60 * 60 * 1000 },
+    { key: "30m", ms: 30 * 60 * 1000 },
+    { key: "due", ms: 0 },
+  ],
+}));
+
+jest.mock("../../utils/deadlineTime", () => ({
+  getUrgencyMeta: () => ({ color: "#ef4444" }),
+}));
+
+jest.mock("../../utils/notificationIds", () => ({
+  buildDeadlineNotificationId: jest.fn(() => "notif-id"),
+  buildManagedNotificationData: jest.fn(() => ({})),
+  buildNotificationId: jest.fn(() => "notif-id"),
+}));
+
+jest.mock("../../utils/taskOverdueState", () => ({
+  advanceCheckpoint: jest.fn(async () => ({
+    key: "+15m",
+    delayMs: 15 * 60 * 1000,
+  })),
+}));
+
+// â”€â”€â”€ Harness â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function SchedulerHarness({ tasks, deadlineWarningEnabled = true }) {
+  const { alarmVisible, alarmTask, alarmThresholdKey, notDoneAlarm } =
+    useDeadlineAlarmScheduler(tasks, { deadlineWarningEnabled });
+
   return (
     <>
       <Text>{alarmVisible ? alarmTask?.title : "No alarm"}</Text>
+      <Text>{alarmThresholdKey || "No threshold"}</Text>
       <TouchableOpacity onPress={notDoneAlarm}>
         <Text>Not Done Hook</Text>
       </TouchableOpacity>
@@ -27,13 +90,13 @@ function SchedulerHarness({ tasks }) {
   );
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 describe("Deadline alarm flow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // ── 1. Not Done callback ─────────────────────────────────────────────────
+  // â”€â”€ 1. Not Done callback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   test("pressing Not Done on the modal notifies the caller", async () => {
     const onNotDone = jest.fn();
     const task = {
@@ -45,18 +108,52 @@ describe("Deadline alarm flow", () => {
       type: "project",
     };
 
-    const { getAllByText } = render(
+    const { getByRole } = render(
       <DeadlineAlarmModal visible task={task} onNotDone={onNotDone} />
     );
 
-    fireEvent.press(getAllByText(/not done/i)[0]);
+    // Use getByRole to unambiguously target the button (not the info paragraph
+    // text that also contains "Not Done") and wait for the async handler.
+    await act(async () => {
+      fireEvent.press(getByRole("button", { name: /not done/i }));
+    });
 
     await waitFor(() => {
       expect(onNotDone).toHaveBeenCalled();
     });
   });
 
-  // ── 2. Done callback ─────────────────────────────────────────────────────
+  test("native Not Done action auto-advances the overdue chain", async () => {
+    const onNotDone = jest.fn();
+    const { scheduleNextOverdueAlarm } = jest.requireMock(
+      "../../utils/deadlineAlarmBackground"
+    );
+    const task = {
+      id: "task-overdue-1",
+      title: "Submit capstone draft",
+      subject: "Research",
+      dueAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      priority: "high",
+      type: "project",
+    };
+
+    render(
+      <DeadlineAlarmModal
+        visible
+        task={task}
+        onNotDone={onNotDone}
+        pendingAction="notdone"
+        thresholdKey="due"
+      />
+    );
+
+    await waitFor(() => {
+      expect(onNotDone).toHaveBeenCalled();
+      expect(scheduleNextOverdueAlarm).toHaveBeenCalled();
+    });
+  });
+
+  // â”€â”€ 2. Done callback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   test("pressing Done on the modal cancels all alarms", async () => {
     const onMarkDone = jest.fn();
     const task = {
@@ -68,51 +165,89 @@ describe("Deadline alarm flow", () => {
       type: "project",
     };
 
-    const { getByText } = render(
+    const { getByRole } = render(
       <DeadlineAlarmModal visible task={task} onMarkDone={onMarkDone} />
     );
 
-    fireEvent.press(getByText(/^done$/i));
+    await act(async () => {
+      fireEvent.press(getByRole("button", { name: /^done$/i }));
+    });
 
     await waitFor(() => {
       expect(onMarkDone).toHaveBeenCalled();
     });
   });
 
-  // ── 3. Scheduler – surfaces task then hides after "Not Done" ─────────────
+  // â”€â”€ 3. Scheduler â€“ surfaces task then hides after "Not Done" â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   test("scheduler surfaces a soon-due task and persists not-done", async () => {
     const task = {
       id: "task-2",
       title: "Prepare oral report",
-      dueAt: new Date(Date.now() + 29 * 60 * 1000).toISOString(), // 29 min → triggers 30-min alarm
+      dueAt: new Date(Date.now() + 29 * 60 * 1000).toISOString(),
       completed: false,
     };
 
     const { getByText } = render(<SchedulerHarness tasks={[task]} />);
 
-    // Wait for the scheduler to surface the task
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    // Alarm should now be visible with the task title
     await waitFor(() => {
       expect(getByText("Prepare oral report")).toBeTruthy();
     });
 
-    // Press "Not Done" – the hook should persist state and clear the alarm
     await act(async () => {
       fireEvent.press(getByText("Not Done Hook"));
-      // Allow microtasks (AsyncStorage.setItem) to settle
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    // The hook must have called AsyncStorage.setItem to persist the snooze
     expect(AsyncStorage.setItem).toHaveBeenCalled();
 
-    // After dismissal the harness should show "No alarm"
     await waitFor(() => {
       expect(getByText("No alarm")).toBeTruthy();
+    });
+  });
+
+  test("scheduler uses explicit overdue checkpoints", async () => {
+    const task = {
+      id: "task-overdue-2",
+      title: "Finish chemistry lab",
+      dueAt: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+      completed: false,
+    };
+
+    const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(getByText("Finish chemistry lab")).toBeTruthy();
+      expect(getByText("+15m")).toBeTruthy();
+    });
+  });
+
+  test("scheduler respects the deadline warning setting", async () => {
+    const task = {
+      id: "task-3",
+      title: "Read case study",
+      dueAt: new Date(Date.now() + 29 * 60 * 1000).toISOString(),
+      completed: false,
+    };
+
+    const { getByText } = render(
+      <SchedulerHarness tasks={[task]} deadlineWarningEnabled={false} />
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(getByText("No alarm")).toBeTruthy();
+      expect(getByText("No threshold")).toBeTruthy();
     });
   });
 });

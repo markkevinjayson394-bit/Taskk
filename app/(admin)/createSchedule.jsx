@@ -51,15 +51,21 @@ export default function CreateSchedule() {
   /* ---------- SAFE PARAM HANDLING ---------- */
   const existingData = useMemo(() => {
     if (!params.scheduleData) return null;
-    if (typeof params.scheduleData === "string") {
+
+    // Expo Router can deliver params as an array — always take the first item
+    const raw = Array.isArray(params.scheduleData)
+      ? params.scheduleData[0]
+      : params.scheduleData;
+
+    if (typeof raw === "string") {
       try {
-        return JSON.parse(params.scheduleData);
+        return JSON.parse(raw);
       } catch (err) {
         console.warn("Invalid scheduleData param:", err);
         return null;
       }
     }
-    return params.scheduleData;
+    return raw ?? null;
   }, [params.scheduleData]);
 
 
@@ -160,7 +166,9 @@ export default function CreateSchedule() {
   useEffect(() => {
     if (!repeatEditor) return;
     const list = weekClasses[repeatEditor.day] || [];
-    if (!list[repeatEditor.index]) {
+    // Use stable ID instead of index to find the class
+    const stillExists = list.some((cls) => cls.id === repeatEditor.stableId);
+    if (!stillExists) {
       setRepeatEditor(null);
       setRepeatTargets({});
     }
@@ -242,11 +250,11 @@ export default function CreateSchedule() {
   };
 
   const startRepeatClass = (day, index) => {
-    if (
-      repeatEditor &&
-      repeatEditor.day === day &&
-      repeatEditor.index === index
-    ) {
+    const cls = weekClasses[day]?.[index];
+    if (!cls) return;
+    const stableId = cls.id;
+
+    if (repeatEditor?.day === day && repeatEditor?.stableId === stableId) {
       setRepeatEditor(null);
       setRepeatTargets({});
       return;
@@ -257,7 +265,7 @@ export default function CreateSchedule() {
       if (dayName !== day) initialTargets[dayName] = false;
     });
     setRepeatTargets(initialTargets);
-    setRepeatEditor({ day, index });
+    setRepeatEditor({ day, stableId });
   };
 
   const toggleRepeatTarget = (dayName) => {
@@ -274,8 +282,14 @@ export default function CreateSchedule() {
 
   const applyRepeatClass = () => {
     if (!repeatEditor) return;
-    const { day, index } = repeatEditor;
-    const sourceClass = weekClasses[day]?.[index];
+    const { day, stableId } = repeatEditor;
+    const list = weekClasses[day] || [];
+    const index = list.findIndex((cls) => cls.id === stableId);
+    if (index === -1) {
+      cancelRepeatClass();
+      return;
+    }
+    const sourceClass = list[index];
     if (!sourceClass) {
       cancelRepeatClass();
       return;
@@ -437,9 +451,19 @@ export default function CreateSchedule() {
       });
       const cloneDocId = buildScheduleDocId(clonePayload);
       const targetRef = doc(db, "schedules", cloneDocId);
-      const existingSnap = await getDoc(targetRef);
+      // Also check the legacy ID format in case it was saved before the new naming scheme
+      const legacyCloneId = buildLegacyScheduleDocId({
+        course: clonePayload.course,
+        year: clonePayload.year,
+        section: clonePayload.section,
+      });
+      const legacyCloneRef = doc(db, "schedules", legacyCloneId);
+      const [existingSnap, legacySnap] = await Promise.all([
+        getDoc(targetRef),
+        getDoc(legacyCloneRef),
+      ]);
 
-      if (existingSnap.exists()) {
+      if (existingSnap.exists() || legacySnap.exists()) {
         Alert.alert(
           "Target Already Exists",
           `A schedule already exists for Year ${targetYear}, Section ${targetSection}. Overwrite it?`,

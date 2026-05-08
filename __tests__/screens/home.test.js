@@ -1,15 +1,17 @@
-import { fireEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, waitFor } from "@testing-library/react-native";
 import HomeDashboard from "../../app/(tabs)/home";
 import { render } from "../../utils/test-utils";
+
 const mockPush = jest.fn();
 const mockRescheduleAll = jest.fn(() => Promise.resolve());
 const mockMarkSynced = jest.fn(() => Promise.resolve());
-const mockLoadFromCache = jest.fn(() => Promise.resolve(null));
+const mockLoadFromCache = jest.fn();
 const mockSaveToCache = jest.fn(() => Promise.resolve());
 const mockGetDoc = jest.fn();
 const mockGetDocs = jest.fn();
 const mockUpdateDoc = jest.fn(() => Promise.resolve());
 const mockCancelAssignmentNotifications = jest.fn(() => Promise.resolve());
+
 jest.mock("expo-router", () => {
   const React = require("react");
   return {
@@ -19,6 +21,7 @@ jest.mock("expo-router", () => {
     },
   };
 });
+
 jest.mock("../../context/ThemeContext", () => ({
   ThemeProvider: ({ children }) => children,
   useTheme: () => ({
@@ -33,9 +36,11 @@ jest.mock("../../context/ThemeContext", () => ({
     isDark: false,
   }),
 }));
+
 jest.mock("../../context/NotificationContext", () => ({
   useNotifications: () => ({ rescheduleAll: mockRescheduleAll }),
 }));
+
 jest.mock("../../context/OfflineContext", () => ({
   CACHE_KEYS: {
     profile: (uid) => `cache_profile_${uid}`,
@@ -54,10 +59,12 @@ jest.mock("../../context/OfflineContext", () => ({
     markSynced: mockMarkSynced,
   }),
 }));
+
 jest.mock("../../config/firebase", () => ({
   auth: { currentUser: { uid: "student-1" } },
   db: {},
 }));
+
 jest.mock("firebase/firestore", () => ({
   doc: jest.fn((...args) => args),
   collection: jest.fn((...args) => args),
@@ -68,32 +75,95 @@ jest.mock("firebase/firestore", () => ({
   getDocs: (...args) => mockGetDocs(...args),
   updateDoc: (...args) => mockUpdateDoc(...args),
 }));
+
 jest.mock("../../utils/scheduleMatcher", () => ({
   findBestScheduleDoc: jest.fn(() => Promise.resolve(null)),
 }));
+
 jest.mock("../../utils/deadlineAlarmBackground", () => ({
-  cancelDeadlineAlarms: (...args) =>
-    mockCancelAssignmentNotifications(...args),
+  cancelDeadlineAlarms: (...args) => mockCancelAssignmentNotifications(...args),
 }));
+
 jest.mock("../../components/DeadlineAlarmModal", () => ({
   __esModule: true,
   default: () => null,
   useDeadlineAlarmScheduler: () => ({
     alarmVisible: false,
     alarmTask: null,
+    alarmThresholdKey: null,
     acknowledgeAlarm: jest.fn(),
+    notDoneAlarm: jest.fn(),
   }),
 }));
+
 jest.mock("@sentry/react-native", () => ({
   captureException: jest.fn(),
 }));
+
+// ─── Cache shape helpers ──────────────────────────────────────────────────────
+// Each key prefix maps to the exact shape the component reads.
+// The schedule key is stored with a "_week" suffix:
+//   CACHE_KEYS.schedule(uid) + "_week"  →  "cache_schedule_<uid>_week"
+// so the matcher must include that suffix to avoid returning null and leaving
+// the component in a hung loading state.
+function buildDefaultCacheMock() {
+  return async (key) => {
+    const k = String(key);
+    if (k.includes("cache_profile_")) {
+      return {
+        data: {
+          fullName: "Student One",
+          studentInfo: {
+            course: "BSIT",
+            year: "3",
+            section: "A",
+            semester: "2nd Semester",
+            academicYear: "2025-2026",
+          },
+        },
+      };
+    }
+    // FIX: match the "_week" suffix that loadFromOfflineCache appends.
+    if (k.includes("cache_schedule_")) {
+      return { data: {} };
+    }
+    if (k.includes("cache_assignments_")) {
+      return { data: { pending: [], done: [] } };
+    }
+    if (k.includes("cache_announcements_")) {
+      return { data: [] };
+    }
+    return null;
+  };
+}
+
+/**
+ * Flush the full async chain that fetchDashboardData goes through:
+ *   mount → useFocusEffect → loadFromOfflineCache (N cache reads) →
+ *   getDoc (rejects) → catch → loadFromOfflineCache again → setState
+ *
+ * A single Promise.resolve() tick is not enough for this depth.
+ * We loop until the microtask queue is truly empty (up to maxTicks).
+ */
+async function flushAllMicrotasks(maxTicks = 20) {
+  for (let i = 0; i < maxTicks; i++) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 describe("Home dashboard", () => {
   const Sentry = require("@sentry/react-native");
+
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
-    // Setup tomorrow's date for exam
+
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
+
     mockGetDoc.mockResolvedValue({
       exists: () => true,
       data: () => ({
@@ -107,10 +177,9 @@ describe("Home dashboard", () => {
         },
       }),
     });
-    // Setup getDocs to return assignments, exams, and announcements
+
     mockGetDocs
       .mockResolvedValueOnce({
-        // assignments query result
         docs: [
           {
             id: "task-1",
@@ -126,22 +195,6 @@ describe("Home dashboard", () => {
         ],
       })
       .mockResolvedValueOnce({
-        // exams query result
-        docs: [
-          {
-            id: "exam-1",
-            data: () => ({
-              title: "Midterm Physics",
-              subject: "Physics",
-              type: "exam",
-              dueAt: tomorrow.toISOString(),
-              completed: false,
-            }),
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        // announcements query result
         docs: [
           {
             id: "ann-1",
@@ -155,26 +208,55 @@ describe("Home dashboard", () => {
         ],
       })
       .mockResolvedValue({ docs: [] });
-    mockLoadFromCache.mockResolvedValue(null);
+
+    mockLoadFromCache.mockImplementation(buildDefaultCacheMock());
   });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    jest.useRealTimers();
+  });
+
+  // ── 1. Urgent task render + mark done ───────────────────────────────────
   test("renders urgent tasks and marks a task done", async () => {
     const { getAllByText, getByText } = render(<HomeDashboard />);
+
     await waitFor(
       () => {
         expect(getAllByText("Write lab report").length).toBeGreaterThan(0);
       },
       { timeout: 4000 }
     );
+
     fireEvent.press(getByText(/^done$/i));
+
     await waitFor(() => {
       expect(mockCancelAssignmentNotifications).toHaveBeenCalled();
       expect(mockUpdateDoc).toHaveBeenCalled();
       expect(mockRescheduleAll).toHaveBeenCalled();
     });
   });
+
+  // ── 2. Cache fallback on remote failure ──────────────────────────────────
+  //
+  // fetchDashboardData flow on failure:
+  //   useFocusEffect (mount) → loadFromOfflineCache (pre-populate) →
+  //   getDoc (throws) → catch → loadFromOfflineCache (markCached: true) →
+  //   setUpcomingAssignments([cachedTask]) → render
+  //
+  // FIX: The previous version used jest.advanceTimersByTime(60_000) which
+  // triggered the unrelated nowTick setInterval outside act(), causing an
+  // "not wrapped in act" warning and consuming most of the timeout budget.
+  //
+  // The correct approach: let the component mount (useFocusEffect fires via
+  // the mock), then flush microtasks deeply enough for the full async chain
+  // to resolve before waitFor starts polling.
   test("falls back to cached dashboard data when remote loading fails", async () => {
     mockLoadFromCache.mockImplementation(async (key) => {
-      if (String(key).includes("cache_assignments_")) {
+      const k = String(key);
+      if (k.includes("cache_assignments_")) {
         return {
           data: {
             pending: [
@@ -192,7 +274,7 @@ describe("Home dashboard", () => {
           },
         };
       }
-      if (String(key).includes("cache_profile_")) {
+      if (k.includes("cache_profile_")) {
         return {
           data: {
             fullName: "Cached Student",
@@ -200,24 +282,38 @@ describe("Home dashboard", () => {
           },
         };
       }
-      if (String(key).includes("cache_announcements_")) {
+      if (k.includes("cache_announcements_")) {
         return { data: [] };
+      }
+      if (k.includes("cache_schedule_")) {
+        return { data: {} };
       }
       return null;
     });
-    mockGetDoc.mockRejectedValueOnce(new Error("dashboard fetch failed"));
+
+    // Reject ALL calls (not just the first) so both the initial getDoc inside
+    // fetchDashboardData AND any retry also fail, forcing the catch branch.
+    mockGetDoc.mockRejectedValue(new Error("dashboard fetch failed"));
+    mockGetDocs.mockRejectedValue(new Error("dashboard fetch failed"));
+
     const { getAllByText } = render(<HomeDashboard />);
+
+    // FIX: flush deeply enough for the full async chain to complete.
+    // The chain is: mount → loadFromOfflineCache (4 cache reads in parallel) →
+    // getDoc (rejects) → catch handler → loadFromOfflineCache again (4 more
+    // reads) → setState. That's at minimum 3 async "hops" so we need more
+    // than 3 Promise.resolve() ticks.
+    await flushAllMicrotasks(20);
+
     await waitFor(
       () => {
         expect(getAllByText("Cached planner task").length).toBeGreaterThan(0);
       },
-      { timeout: 4000 }
+      { timeout: 8000 }
     );
+
     await waitFor(() => {
-      // reportError/reportWarning wrap Sentry internally;
-      // this asserts that the error was captured via the logger on fetch failure.
       expect(Sentry.captureException).toHaveBeenCalled();
     });
-  });
+  }, 20000);
 });
-

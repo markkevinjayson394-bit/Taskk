@@ -150,7 +150,7 @@ export default function ScheduleDaySection({
           classValidation.invalidRange ||
           classValidation.overlap;
         const isRepeatOpen =
-          repeatEditor?.day === day && repeatEditor?.index === index;
+          repeatEditor?.day === day && repeatEditor?.stableId === cls.id;
 
         return (
           <View

@@ -2,6 +2,8 @@
  * profile.jsx
  *
  * Photo upload uses base64 in Firestore (Spark/free friendly).
+ * Offline support: profile, stats, and schedule meta are cached in AsyncStorage.
+ * On network error, the screen loads from cache instead of showing an error.
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -50,7 +52,12 @@ import { APP_VERSION } from "../../utils/version";
 const AVATAR_PLACEHOLDER =
   "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 const PRIORITY_COLORS = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
-const MAX_BASE64_KB = 80; // safety limit before saving to Firestore
+const MAX_BASE64_KB = 80;
+
+// ── Offline cache keys ────────────────────────────────────────────────────────
+const profileCacheKey = (uid) => `offline_profile_${uid}`;
+const statsCacheKey = (uid) => `offline_stats_${uid}`;
+const tasksCacheKey = (uid) => `offline_tasks_${uid}`;
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -87,29 +94,42 @@ export default function ProfileScreen() {
   const [editName, setEditName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const hasLoaded = useRef(false);
 
-  // Fix 2: fetchProfile with user-facing Alert on error
+  // ── fetchProfile: try Firestore → cache on success, fallback to cache offline ─
   const fetchProfile = useCallback(async () => {
     if (!user) return;
+    const cacheKey = profileCacheKey(user.uid);
     try {
       const snap = await getDoc(doc(db, "users", user.uid));
       if (snap.exists()) {
         const data = snap.data();
         setProfile(data);
         setEditName(data.fullName || "");
+        // Persist for offline use
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(data));
+        setIsOffline(false);
       }
     } catch (_err) {
-      Alert.alert(
-        "Error",
-        "Failed to load profile data. Please check your connection."
-      );
+      // Network error – try cached data
+      try {
+        const raw = await AsyncStorage.getItem(cacheKey);
+        if (raw) {
+          const data = JSON.parse(raw);
+          setProfile(data);
+          setEditName(data.fullName || "");
+          setIsOffline(true);
+        }
+      } catch {
+        // Cache also unavailable – silently keep defaults
+      }
     }
   }, [user]);
 
-  // Fix 2: fetchScheduleMeta with user-facing Alert on error
+  // ── fetchScheduleMeta: already uses loadFromCache, keep as-is ────────────────
   const fetchScheduleMeta = useCallback(async () => {
     if (!user) return;
     try {
@@ -122,14 +142,16 @@ export default function ProfileScreen() {
           academicYear: String(cached.data.academicYear || "").trim(),
         });
       }
-    } catch (_err) {
-      Alert.alert("Error", "Failed to load data. Check your connection.");
+    } catch {
+      // Silently ignore – schedule meta is non-critical
     }
   }, [user]);
 
-  // Fix 2: fetchStats with user-facing Alert on error
+  // ── fetchStats: try Firestore → cache on success, fallback to cache offline ──
   const fetchStats = useCallback(async () => {
     if (!user) return;
+    const sCacheKey = statsCacheKey(user.uid);
+    const tCacheKey = tasksCacheKey(user.uid);
     try {
       const q = query(
         collection(db, "assignments"),
@@ -154,13 +176,23 @@ export default function ProfileScreen() {
             pending_tasks.push({ id: d.id, ...data });
         }
       });
-      setStats({ completed, pending, overdue });
+      const newStats = { completed, pending, overdue };
+      setStats(newStats);
       setRecentTasks(pending_tasks);
+      // Persist for offline use
+      await AsyncStorage.setItem(sCacheKey, JSON.stringify(newStats));
+      await AsyncStorage.setItem(tCacheKey, JSON.stringify(pending_tasks));
     } catch (_err) {
-      Alert.alert(
-        "Error",
-        "Failed to load profile data. Please check your connection."
-      );
+      // Network error – try cached data
+      try {
+        const rawStats = await AsyncStorage.getItem(sCacheKey);
+        const rawTasks = await AsyncStorage.getItem(tCacheKey);
+        if (rawStats) setStats(JSON.parse(rawStats));
+        if (rawTasks) setRecentTasks(JSON.parse(rawTasks));
+        setIsOffline(true);
+      } catch {
+        // Cache also unavailable – keep defaults
+      }
     }
   }, [user]);
 
@@ -186,7 +218,7 @@ export default function ProfileScreen() {
     [fadeAnim, fetchProfile, fetchScheduleMeta, fetchStats, slideAnim]
   );
 
-  //  Auto-refresh on tab focus
+  // Auto-refresh on tab focus
   useFocusEffect(
     useCallback(() => {
       if (!user) return;
@@ -201,7 +233,7 @@ export default function ProfileScreen() {
     }, [user, loadAll, fetchProfile, fetchStats, fetchScheduleMeta])
   );
 
-  //  Photo picker  saves base64 to Firestore
+  // Photo picker – saves base64 to Firestore
   const pickFromGallery = async () => {
     if (!user) {
       Alert.alert("Session Expired", "Please log in again.");
@@ -222,7 +254,7 @@ export default function ProfileScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.4, // compress heavily so it fits in Firestore
+      quality: 0.4,
       exif: false,
     });
 
@@ -230,12 +262,10 @@ export default function ProfileScreen() {
 
     try {
       setUploading(true);
-      // Read the picked image as base64
       const base64 = await FileSystem.readAsStringAsync(result.assets[0].uri, {
         encoding: EncodingType.Base64,
       });
 
-      // Reject if too large for Firestore
       const sizeKB = (base64.length * 0.75) / 1024;
       if (sizeKB > MAX_BASE64_KB) {
         Alert.alert(
@@ -247,7 +277,16 @@ export default function ProfileScreen() {
 
       const dataUri = `data:image/jpeg;base64,${base64}`;
       await updateDoc(doc(db, "users", user.uid), { photoBase64: dataUri });
-      setProfile((p) => ({ ...p, photoBase64: dataUri }));
+
+      // Update local state and cache
+      setProfile((p) => {
+        const updated = { ...p, photoBase64: dataUri };
+        AsyncStorage.setItem(
+          profileCacheKey(user.uid),
+          JSON.stringify(updated)
+        );
+        return updated;
+      });
       Alert.alert("Photo Updated", "Your profile picture has been saved.");
     } catch (_err) {
       Alert.alert("Failed", "Could not save photo. Please try again.");
@@ -256,29 +295,34 @@ export default function ProfileScreen() {
     }
   };
 
-  //  Save name
+  // Save name
   const saveProfile = async () => {
     if (!user) {
       Alert.alert("Session Expired", "Please log in again.");
       router.replace("/(auth)/login");
       return;
     }
-
     if (!editName.trim()) {
       Alert.alert("Error", "Full name cannot be empty");
       return;
     }
-
     try {
       await updateDoc(doc(db, "users", user.uid), {
         fullName: editName.trim(),
       });
-      setProfile((p) => ({ ...p, fullName: editName.trim() }));
+      setProfile((p) => {
+        const updated = { ...p, fullName: editName.trim() };
+        AsyncStorage.setItem(
+          profileCacheKey(user.uid),
+          JSON.stringify(updated)
+        );
+        return updated;
+      });
       setEditVisible(false);
       Alert.alert("Saved", "Profile updated successfully");
     } catch (err) {
       console.warn("Failed to update profile:", err);
-      Alert.alert("Error", "Failed to update profile");
+      Alert.alert("Error", "Failed to update profile. Check your connection.");
     }
   };
 
@@ -310,7 +354,6 @@ export default function ProfileScreen() {
   const semesterValue = si?.semester || scheduleMeta.semester || "";
   const academicYearValue = si?.academicYear || scheduleMeta.academicYear || "";
 
-  // Use base64 data URI if saved, otherwise show placeholder
   const avatarSource = profile.photoBase64
     ? { uri: profile.photoBase64 }
     : { uri: AVATAR_PLACEHOLDER };
@@ -333,7 +376,23 @@ export default function ProfileScreen() {
       showsVerticalScrollIndicator={false}
     >
       <StatusBar barStyle="light-content" backgroundColor={colors.primary} />
-      {/*  HEADER BANNER  */}
+
+      {/* Offline banner */}
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Ionicons
+            name="cloud-offline-outline"
+            size={14}
+            color="#fff"
+            style={{ marginRight: 6 }}
+          />
+          <Text style={styles.offlineBannerText}>
+            You&apos;re offline &ndash; showing cached data
+          </Text>
+        </View>
+      )}
+
+      {/* HEADER BANNER */}
       <View style={[styles.banner, { backgroundColor: colors.primary }]}>
         <View style={styles.bannerCircle} />
         <View style={styles.bannerCircle2} />
@@ -360,7 +419,7 @@ export default function ProfileScreen() {
             />
           </View>
         </View>
-        {/* Fix 1: avatarSection with uploading text directly below avatarWrapper */}
+
         <View style={styles.avatarSection}>
           <TouchableOpacity
             onPress={pickFromGallery}
@@ -415,7 +474,7 @@ export default function ProfileScreen() {
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
-        {/*  STUDENT INFO  */}
+        {/* STUDENT INFO */}
         {si && (
           <View style={[styles.card, { backgroundColor: colors.card }]}>
             <Text style={[styles.cardTitle, { color: colors.text }]}>
@@ -458,8 +517,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/*  PROGRESS  */}
-        {/* Fix 3: progressTrack uses flex:1, progressFill uses flexGrow */}
+        {/* PROGRESS */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
           <Text style={[styles.cardTitle, { color: colors.text }]}>
             Task Progress
@@ -515,7 +573,7 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/*  RECENT TASKS  */}
+        {/* RECENT TASKS */}
         {recentTasks.length > 0 && (
           <View style={[styles.card, { backgroundColor: colors.card }]}>
             <View style={styles.cardTitleRow}>
@@ -574,7 +632,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/*  ACTIONS  */}
+        {/* ACTIONS */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
           <Text style={[styles.cardTitle, { color: colors.text }]}>
             Account
@@ -636,7 +694,7 @@ export default function ProfileScreen() {
           />
         </View>
 
-        {/*  VERSION CARD  */}
+        {/* VERSION CARD */}
         <View
           style={[
             styles.versionCard,
@@ -672,8 +730,7 @@ export default function ProfileScreen() {
         </Text>
       </Animated.View>
 
-      {/*  EDIT NAME MODAL  */}
-      {/* Fix 5: Wrap modalCard in KeyboardAvoidingView */}
+      {/* EDIT NAME MODAL */}
       <Modal visible={editVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
@@ -730,8 +787,7 @@ export default function ProfileScreen() {
   );
 }
 
-//  Sub-components
-
+// Sub-components
 function StatBox({ value, label, color, bg }) {
   return (
     <View style={[styles.statBox, { backgroundColor: bg }]}>
@@ -812,10 +868,22 @@ function ActionRow({ icon, label, onPress, colors, danger, highlight }) {
   );
 }
 
-//  Styles
-// Fix 4: Removed unused StyleSheet entries
+// Styles
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  offlineBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f59e0b",
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+  },
+  offlineBannerText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   banner: {
     paddingTop: 50,
     paddingBottom: 30,
@@ -912,7 +980,6 @@ const styles = StyleSheet.create({
   },
   progressPercent: { fontSize: 36, fontWeight: "800" },
   progressSub: { fontSize: 14, marginLeft: 6 },
-  // Fix 3: progressTrack uses flex:1, progressFill uses flexGrow
   progressTrack: {
     height: 10,
     borderRadius: 5,
@@ -1004,4 +1071,3 @@ const styles = StyleSheet.create({
   },
   footer: { textAlign: "center", fontSize: 12, marginTop: 24, marginBottom: 8 },
 });
-

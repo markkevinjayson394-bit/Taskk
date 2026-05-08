@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import React from "react";
 import {
   Modal,
   Platform,
@@ -20,6 +21,7 @@ function getSubjectSourceLabel(source) {
 }
 
 // Reminder presets: minutes before due date
+// "custom" is now a manual-offset mode, not a datetime picker
 const REMINDER_PRESETS = [
   {
     key: "at_creation",
@@ -60,7 +62,7 @@ const REMINDER_PRESETS = [
   },
   {
     key: "custom",
-    label: "Custom time",
+    label: "Custom offset",
     minutesBefore: "custom",
     icon: "create-outline",
   },
@@ -79,15 +81,44 @@ function formatTime(date) {
 function computeReminderFromPreset(preset, dueAt, createdAt) {
   if (!preset || preset.minutesBefore === "custom") return null;
   if (preset.minutesBefore === null) {
-    // "At creation" — use now/createdAt
     return createdAt instanceof Date && !isNaN(createdAt.getTime())
       ? createdAt
       : new Date();
   }
   if (!(dueAt instanceof Date) || isNaN(dueAt.getTime())) return null;
-  const reminder = new Date(dueAt.getTime() - preset.minutesBefore * 60 * 1000);
-  return reminder;
+  return new Date(dueAt.getTime() - preset.minutesBefore * 60 * 1000);
 }
+
+// --- NEW: Format a ms duration into a human-readable countdown ---
+function formatTimeLeft(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const totalMins = Math.ceil(ms / 60000);
+  if (totalMins < 60) return `${totalMins}m`;
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h < 24) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  const remH = h % 24;
+  return remH > 0 ? `${d}d ${remH}h` : `${d}d`;
+}
+
+// --- NEW: Urgency level from ms remaining ---
+function getUrgencyLevel(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "overdue";
+  const h = ms / (60 * 60 * 1000);
+  if (h < 2) return "critical";
+  if (h < 24) return "urgent";
+  if (h < 72) return "soon";
+  return "comfortable";
+}
+
+const URGENCY_META = {
+  overdue: { label: "Already past due", color: "#ef4444", bg: "#fee2e2" },
+  critical: { label: "Due very soon", color: "#dc2626", bg: "#fee2e2" },
+  urgent: { label: "Due today", color: "#d97706", bg: "#fef3c7" },
+  soon: { label: "Due in a few days", color: "#2563eb", bg: "#dbeafe" },
+  comfortable: { label: "Plenty of time", color: "#16a34a", bg: "#dcfce7" },
+};
 
 export default function TaskEditorModal({
   visible,
@@ -111,6 +142,7 @@ export default function TaskEditorModal({
   dueAt,
   dueDateLabel,
   dueTimeLabel,
+  dueDateWarning,
   dueQuickOptions,
   showDueDatePicker,
   showDueTimePicker,
@@ -136,54 +168,113 @@ export default function TaskEditorModal({
   typeValue,
   onChangeType,
   onSubmit,
-  // optional: pass createdAt for "at creation" preset display
   createdAt,
+  activeReminderPresetKey = null,
 }) {
-  // Determine which preset is currently active
+  // --- NEW: Custom offset state (hours + minutes typed by user) ---
+  const [customOffsetHours, setCustomOffsetHours] = React.useState("0");
+  const [customOffsetMins, setCustomOffsetMins] = React.useState("30");
+  const [showCustomOffsetInput, setShowCustomOffsetInput] =
+    React.useState(false);
+  const [customOffsetError, setCustomOffsetError] = React.useState("");
+
   const activePresetKey = (() => {
+    if (
+      typeof activeReminderPresetKey === "string" &&
+      activeReminderPresetKey
+    ) {
+      return activeReminderPresetKey;
+    }
     if (!customReminderAt) return null;
     if (
       !(customReminderAt instanceof Date) ||
       isNaN(customReminderAt.getTime())
-    )
+    ) {
       return null;
-
+    }
     for (const preset of REMINDER_PRESETS) {
       if (preset.minutesBefore === "custom") continue;
       const computed = computeReminderFromPreset(preset, dueAt, createdAt);
       if (!computed) continue;
       const diff = Math.abs(computed.getTime() - customReminderAt.getTime());
-      if (diff < 60 * 1000) return preset.key; // within 1 minute tolerance
+      if (diff < 60 * 1000) return preset.key;
     }
     return "custom";
   })();
 
+  // --- CHANGED: "custom" preset now shows inline offset inputs instead of opening a datetime picker ---
   function handlePresetSelect(preset) {
     if (preset.minutesBefore === "custom") {
-      onOpenReminderPicker?.();
+      setShowCustomOffsetInput(true);
+      setCustomOffsetError("");
       return;
     }
+    setShowCustomOffsetInput(false);
     const computed = computeReminderFromPreset(preset, dueAt, createdAt);
     if (computed) {
-      onReminderChange?.(computed);
+      onReminderChange?.(computed, { presetKey: preset.key });
     }
   }
 
-  // Build a summary line for the selected reminder
+  // --- NEW: Apply manual offset ---
+  function applyCustomOffset() {
+    const h = parseInt(customOffsetHours, 10) || 0;
+    const m = parseInt(customOffsetMins, 10) || 0;
+    const totalMins = h * 60 + m;
+    if (totalMins <= 0) {
+      setCustomOffsetError("Enter at least 1 minute.");
+      return;
+    }
+    if (!(dueAt instanceof Date) || isNaN(dueAt.getTime())) {
+      setCustomOffsetError("Set a due date first.");
+      return;
+    }
+    const reminder = new Date(dueAt.getTime() - totalMins * 60 * 1000);
+    if (reminder <= new Date()) {
+      setCustomOffsetError(
+        "That time is already in the past. Try a smaller offset."
+      );
+      return;
+    }
+    setCustomOffsetError("");
+    setShowCustomOffsetInput(false);
+    onReminderChange?.(reminder, { presetKey: "custom" });
+  }
+
   const reminderSummary = (() => {
+    if (activePresetKey === "at_creation") {
+      return createdAt
+        ? `Reminded at creation (${formatTime(createdAt)})`
+        : "Reminded at creation";
+    }
     if (!customReminderAt) return null;
     const reminderTime = formatTime(customReminderAt);
     if (!dueAt) return `Remind at ${reminderTime}`;
     const diffMs = dueAt.getTime() - customReminderAt.getTime();
     if (diffMs < 0) return `Remind at ${reminderTime}`;
     const diffMins = Math.round(diffMs / 60000);
-    if (diffMins < 60)
+    if (diffMins < 60) {
       return `${diffMins} min before deadline (${reminderTime})`;
-    const h = Math.floor(diffMins / 60),
-      m = diffMins % 60;
+    }
+    const h = Math.floor(diffMins / 60);
+    const m = diffMins % 60;
     const lead = m > 0 ? `${h}h ${m}m` : `${h}h`;
-    return `${lead} before deadline · remind at ${reminderTime}`;
+    return `${lead} before deadline — remind at ${reminderTime}`;
   })();
+
+  // --- NEW: Time left banner calculation ---
+  const timeLeftMs =
+    dueAt instanceof Date && !isNaN(dueAt.getTime())
+      ? dueAt.getTime() - Date.now()
+      : null;
+  const timeLeftLabel = timeLeftMs !== null ? formatTimeLeft(timeLeftMs) : null;
+  const urgency = timeLeftMs !== null ? getUrgencyLevel(timeLeftMs) : null;
+  const urgencyMeta = urgency ? URGENCY_META[urgency] : null;
+  const dueIsPast =
+    dueAt instanceof Date &&
+    !isNaN(dueAt.getTime()) &&
+    dueAt.getTime() <= Date.now();
+  const showReminderSection = !dueIsPast;
 
   return (
     <>
@@ -320,6 +411,37 @@ export default function TaskEditorModal({
                 </TouchableOpacity>
               </View>
 
+              {dueDateWarning && (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    backgroundColor: dueDateWarning.type === "error" ? "#fee2e2" : "#fef3c7",
+                  }}
+                >
+                  <Ionicons
+                    name={dueDateWarning.type === "error" ? "alert-circle-outline" : "warning-outline"}
+                    size={14}
+                    color={dueDateWarning.type === "error" ? "#ef4444" : "#f59e0b"}
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "600",
+                      color: dueDateWarning.type === "error" ? "#b91c1c" : "#b45309",
+                      flex: 1,
+                    }}
+                  >
+                    {dueDateWarning.text}
+                  </Text>
+                </View>
+              )}
+
               {/* Quick due presets */}
               {Array.isArray(dueQuickOptions) && dueQuickOptions.length > 0 && (
                 <View style={styles.duePresetRow}>
@@ -365,8 +487,50 @@ export default function TaskEditorModal({
                 />
               )}
 
-              {/* ── Flexible Reminder Section ── */}
-              <View style={styles.reminderSection}>
+              {/* --- NEW: Time Left Banner --- */}
+              {timeLeftLabel && urgencyMeta && (
+                <View
+                  style={[
+                    styles.timeLeftBanner,
+                    { backgroundColor: urgencyMeta.bg },
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      urgency === "overdue"
+                        ? "alert-circle-outline"
+                        : urgency === "critical"
+                          ? "alarm-outline"
+                          : urgency === "urgent"
+                            ? "warning-outline"
+                            : "time-outline"
+                    }
+                    size={14}
+                    color={urgencyMeta.color}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.timeLeftLabel,
+                        { color: urgencyMeta.color },
+                      ]}
+                    >
+                      {timeLeftMs <= 0
+                        ? "Task is already overdue"
+                        : `${timeLeftLabel} until deadline`}
+                    </Text>
+                    <Text
+                      style={[styles.timeLeftSub, { color: urgencyMeta.color }]}
+                    >
+                      {urgencyMeta.label}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Flexible Reminder Section */}
+              {showReminderSection && (
+                <View style={styles.reminderSection}>
                 <View style={styles.reminderSectionHeader}>
                   <Ionicons
                     name="notifications-outline"
@@ -379,7 +543,11 @@ export default function TaskEditorModal({
                   {customReminderAt && (
                     <TouchableOpacity
                       style={styles.clearReminderBtn}
-                      onPress={onClearCustomReminder}
+                      onPress={() => {
+                        onClearCustomReminder?.();
+                        setShowCustomOffsetInput(false);
+                        setCustomOffsetError("");
+                      }}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       disabled={isSubmitting}
                     >
@@ -392,7 +560,8 @@ export default function TaskEditorModal({
                   )}
                 </View>
 
-                {showClearedReminderHint ? (
+                {/* Only show the "cleared" hint in edit mode with a previously set reminder */}
+                {isEditMode && showClearedReminderHint ? (
                   <Text
                     style={[
                       styles.clearedReminderText,
@@ -463,9 +632,27 @@ export default function TaskEditorModal({
                 <View style={styles.reminderPresets}>
                   {REMINDER_PRESETS.map((preset) => {
                     const isActive = activePresetKey === preset.key;
-                    // Compute what time this preset would fire
+
+                    if (
+                      preset.minutesBefore !== "custom" &&
+                      preset.minutesBefore !== null
+                    ) {
+                      const computed = computeReminderFromPreset(
+                        preset,
+                        dueAt,
+                        createdAt
+                      );
+                      if (computed && computed.getTime() <= Date.now()) {
+                        return null;
+                      }
+                    }
+
                     let previewTime = null;
-                    if (preset.minutesBefore !== "custom" && dueAt) {
+                    if (
+                      preset.minutesBefore !== "custom" &&
+                      preset.minutesBefore !== null &&
+                      dueAt
+                    ) {
                       const computed = computeReminderFromPreset(
                         preset,
                         dueAt,
@@ -478,6 +665,7 @@ export default function TaskEditorModal({
                         });
                       }
                     }
+
                     return (
                       <TouchableOpacity
                         key={preset.key}
@@ -543,6 +731,122 @@ export default function TaskEditorModal({
                   })}
                 </View>
 
+                {/* --- NEW: Inline custom offset input (shown when "Custom offset" is tapped) --- */}
+                {showCustomOffsetInput && (
+                  <View
+                    style={[
+                      styles.customOffsetBox,
+                      {
+                        backgroundColor: isDark ? "#0f172a" : "#f8fafc",
+                        borderColor: colors.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[styles.customOffsetTitle, { color: colors.text }]}
+                    >
+                      Remind me before due date
+                    </Text>
+                    <View style={styles.customOffsetRow}>
+                      <View style={styles.customOffsetField}>
+                        <TextInput
+                          style={[
+                            styles.customOffsetInput,
+                            {
+                              color: colors.text,
+                              borderColor: customOffsetError
+                                ? "#ef4444"
+                                : colors.border,
+                              backgroundColor: colors.card,
+                            },
+                          ]}
+                          keyboardType="number-pad"
+                          value={customOffsetHours}
+                          onChangeText={(v) => {
+                            setCustomOffsetHours(v.replace(/[^0-9]/g, ""));
+                            setCustomOffsetError("");
+                          }}
+                          maxLength={3}
+                          editable={!isSubmitting}
+                          selectTextOnFocus
+                        />
+                        <Text
+                          style={[
+                            styles.customOffsetUnit,
+                            { color: colors.muted },
+                          ]}
+                        >
+                          hours
+                        </Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.customOffsetSep,
+                          { color: colors.muted },
+                        ]}
+                      >
+                        +
+                      </Text>
+                      <View style={styles.customOffsetField}>
+                        <TextInput
+                          style={[
+                            styles.customOffsetInput,
+                            {
+                              color: colors.text,
+                              borderColor: customOffsetError
+                                ? "#ef4444"
+                                : colors.border,
+                              backgroundColor: colors.card,
+                            },
+                          ]}
+                          keyboardType="number-pad"
+                          value={customOffsetMins}
+                          onChangeText={(v) => {
+                            setCustomOffsetMins(v.replace(/[^0-9]/g, ""));
+                            setCustomOffsetError("");
+                          }}
+                          maxLength={3}
+                          editable={!isSubmitting}
+                          selectTextOnFocus
+                        />
+                        <Text
+                          style={[
+                            styles.customOffsetUnit,
+                            { color: colors.muted },
+                          ]}
+                        >
+                          min
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.customOffsetApplyBtn,
+                          { backgroundColor: colors.primary },
+                        ]}
+                        onPress={applyCustomOffset}
+                        disabled={isSubmitting}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.customOffsetApplyText}>Set</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {customOffsetError ? (
+                      <Text style={styles.customOffsetError}>
+                        {customOffsetError}
+                      </Text>
+                    ) : (
+                      <Text
+                        style={[
+                          styles.customOffsetHint,
+                          { color: colors.muted },
+                        ]}
+                      >
+                        Enter how long before the deadline to be reminded.
+                      </Text>
+                    )}
+                  </View>
+                )}
+
                 {/* Active reminder summary */}
                 {reminderSummary && (
                   <View
@@ -569,7 +873,8 @@ export default function TaskEditorModal({
                     </Text>
                   </View>
                 )}
-              </View>
+                </View>
+              )}
 
               {/* Priority */}
               <View style={styles.priorityRow}>
@@ -661,7 +966,6 @@ export default function TaskEditorModal({
                     Cancel
                   </Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity
                   style={[
                     styles.submitButton,
@@ -689,7 +993,9 @@ export default function TaskEditorModal({
         </View>
       </Modal>
 
-      {/* iOS custom datetime picker */}
+      {/* iOS custom datetime picker — kept for at_creation / fallback edge cases,
+          but "Custom offset" preset no longer uses this. Only reached via
+          onOpenReminderPicker called externally if needed. */}
       {Platform.OS === "ios" && showReminderPicker ? (
         <Modal
           transparent
@@ -713,10 +1019,22 @@ export default function TaskEditorModal({
                 Pick any time before your deadline
               </Text>
               <DateTimePicker
-                value={customReminderAt || new Date()}
+                // FIXED: guard against invalid dueAt before passing maximumDate
+                value={
+                  customReminderAt instanceof Date &&
+                  !isNaN(customReminderAt.getTime())
+                    ? customReminderAt
+                    : new Date()
+                }
                 mode="datetime"
                 minimumDate={new Date()}
-                maximumDate={dueAt}
+                maximumDate={
+                  dueAt instanceof Date &&
+                  !isNaN(dueAt.getTime()) &&
+                  dueAt > new Date()
+                    ? dueAt
+                    : undefined
+                }
                 display="spinner"
                 onChange={(_event, selected) => {
                   if (!selected) return;
@@ -950,10 +1268,31 @@ const styles = StyleSheet.create({
   },
   duePresetText: { fontSize: 11, fontWeight: "700" },
 
-  // ── Reminder Section ──
-  reminderSection: {
+  // --- NEW: Time left banner ---
+  timeLeftBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     marginBottom: 12,
   },
+  timeLeftLabel: { fontSize: 13, fontWeight: "800", lineHeight: 16 },
+  timeLeftSub: { fontSize: 10, fontWeight: "600", marginTop: 1, opacity: 0.8 },
+  dueWarningBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  dueWarningText: { fontSize: 12, fontWeight: "700", flex: 1 },
+
+  // Reminder Section
+  reminderSection: { marginBottom: 12 },
   reminderSectionHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -963,7 +1302,6 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: 11, fontWeight: "700", flex: 1 },
   clearReminderBtn: { padding: 2 },
   clearedReminderText: { fontSize: 11, fontWeight: "600", marginBottom: 6 },
-
   deadlineContext: {
     flexDirection: "row",
     alignItems: "center",
@@ -977,7 +1315,6 @@ const styles = StyleSheet.create({
   },
   deadlineContextText: { fontSize: 11, fontWeight: "500" },
   deadlineContextDot: { fontSize: 11, marginHorizontal: 2 },
-
   reminderPresets: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -999,6 +1336,49 @@ const styles = StyleSheet.create({
   reminderPresetLabel: { fontSize: 11, fontWeight: "700", lineHeight: 14 },
   reminderPresetTime: { fontSize: 10, fontWeight: "600", marginTop: 1 },
 
+  // --- NEW: Custom offset inline input ---
+  customOffsetBox: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
+  customOffsetTitle: { fontSize: 12, fontWeight: "700", marginBottom: 10 },
+  customOffsetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  customOffsetField: { alignItems: "center", gap: 4 },
+  customOffsetInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 16,
+    fontWeight: "700",
+    textAlign: "center",
+    width: 64,
+  },
+  customOffsetUnit: { fontSize: 11, fontWeight: "600" },
+  customOffsetSep: { fontSize: 18, fontWeight: "700", marginTop: -10 },
+  customOffsetApplyBtn: {
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginLeft: 4,
+    alignSelf: "flex-start",
+    marginTop: -2,
+  },
+  customOffsetApplyText: { color: "#fff", fontSize: 13, fontWeight: "800" },
+  customOffsetError: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#ef4444",
+  },
+  customOffsetHint: { fontSize: 11, fontWeight: "500" },
+
   reminderSummaryBox: {
     flexDirection: "row",
     alignItems: "center",
@@ -1011,7 +1391,6 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   reminderSummaryText: { fontSize: 12, fontWeight: "700", flex: 1 },
-
   priorityRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
   priorityButton: {
     flex: 1,
@@ -1052,7 +1431,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   submitButtonText: { color: "#fff", fontSize: 13, fontWeight: "800" },
-
   reminderModalCard: {
     borderWidth: 1,
     borderRadius: 18,
@@ -1087,7 +1465,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   reminderCancelText: { fontSize: 13, fontWeight: "700" },
-
   subjectCard: {
     borderWidth: 1,
     borderRadius: 18,

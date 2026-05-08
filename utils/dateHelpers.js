@@ -46,9 +46,9 @@ export function isSameLocalDay(a, b) {
  * Returns the number of whole days between two dates in local time.
  * Positive if b is after a.
  */
-export function localDaysBetween(a, b) {
-  const msPerDay = 86400000;
-  return Math.floor((startOfLocalDay(b) - startOfLocalDay(a)) / msPerDay);
+export function localDaysBetween(from, to) {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  return Math.round((to - from) / msPerDay);
 }
 
 /**
@@ -105,12 +105,7 @@ export function parseMonthKey(key) {
   if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
-  if (
-    Number.isNaN(year) ||
-    Number.isNaN(month) ||
-    month < 1 ||
-    month > 12
-  ) {
+  if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
     return null;
   }
   return { year, month };
@@ -189,7 +184,9 @@ export function weekMonthLabel(date) {
 export function daysUntil(dateStr) {
   const due = toValidDate(dateStr);
   if (!due) return Number.NaN;
-  return Math.ceil((startOfLocalDay(due) - startOfLocalDay(new Date())) / 86400000);
+  return Math.ceil(
+    (startOfLocalDay(due) - startOfLocalDay(new Date())) / 86400000
+  );
 }
 
 export function getTodayString(date = new Date()) {

@@ -13,6 +13,13 @@ const NativeAlarmModule =
 const hasNativeAlarmModule =
   Platform.OS === "android" && Boolean(NativeAlarmModule);
 
+/**
+ * The raw NativeAlarmModule reference, exported so callers can construct a
+ * NativeEventEmitter with it (e.g. for the `onAlarmNotificationTap` event).
+ * Will be `null` on iOS or when the native module is unavailable.
+ */
+export { NativeAlarmModule as rawNativeAlarmModule };
+
 export const NATIVE_ALARM_ID_PREFIX = "native-alarm:";
 
 export const isNativeAlarmSupported =
@@ -122,15 +129,20 @@ export async function scheduleNativeAlarm({
 }) {
   if (!isNativeAlarmSupported) return null;
   if (!alarmId) return null;
+  const now = Date.now();
   const triggerMs = Number(triggerAt);
-  if (!Number.isFinite(triggerMs) || triggerMs <= 0) return null;
+  if (!Number.isFinite(triggerMs)) return null;
+  const isPastDue = triggerMs <= now;
+  const resolvedTriggerMs = isPastDue
+    ? now + 1500
+    : Math.max(triggerMs, now + 1500);
 
   try {
     const payloadJson =
       payload && typeof payload === "object" ? JSON.stringify(payload) : null;
     const resolvedId = await NativeAlarmModule.scheduleExactAlarm(
       String(alarmId),
-      triggerMs,
+      resolvedTriggerMs,
       String(title || "Task Reminder"),
       String(body || ""),
       payloadJson
@@ -264,5 +276,54 @@ export async function checkAlarmPopupPermission() {
         { text: "Later", style: "cancel" },
       ]
     );
+  }
+}
+
+export async function getPendingAlarmAction() {
+  if (!isNativeAlarmSupported) return null;
+  if (typeof NativeAlarmModule.getPendingAlarmAction !== "function")
+    return null;
+  try {
+    const result = await NativeAlarmModule.getPendingAlarmAction();
+    if (!result || typeof result !== "object") return null;
+    return {
+      action: typeof result.action === "string" ? result.action : null,
+      alarmId: typeof result.alarmId === "string" ? result.alarmId : null,
+      payloadJson:
+        typeof result.payloadJson === "string" ? result.payloadJson : null,
+      timestamp: typeof result.timestamp === "number" ? result.timestamp : null,
+    };
+  } catch (err) {
+    warnIfDev("NativeAlarm: getPendingAlarmAction failed:", err);
+    return null;
+  }
+}
+
+export async function clearPendingAlarmAction() {
+  if (!isNativeAlarmSupported) return false;
+  if (typeof NativeAlarmModule.clearPendingAlarmAction !== "function")
+    return false;
+  try {
+    return Boolean(await NativeAlarmModule.clearPendingAlarmAction());
+  } catch (err) {
+    warnIfDev("NativeAlarm: clearPendingAlarmAction failed:", err);
+    return false;
+  }
+}
+
+export async function writeAlarmAction(action, alarmId, payloadJson) {
+  if (!isNativeAlarmSupported) return false;
+  if (typeof NativeAlarmModule.writeAlarmAction !== "function") return false;
+  try {
+    return Boolean(
+      await NativeAlarmModule.writeAlarmAction(
+        String(action),
+        String(alarmId),
+        String(payloadJson || "{}")
+      )
+    );
+  } catch (err) {
+    warnIfDev("NativeAlarm: writeAlarmAction failed:", err);
+    return false;
   }
 }

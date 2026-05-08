@@ -16,9 +16,6 @@ try {
   // Best effort only; config continues with existing process.env values.
 }
 
-// NOTE: This function is intentionally duplicated in config/firebase.js.
-// Since this file is CommonJS and firebase.js is ESM, they cannot share
-// a module. Keep both in sync if logic changes.
 const normalizeFirebaseValue = (value) => {
   if (typeof value !== "string") {
     return value;
@@ -27,7 +24,6 @@ const normalizeFirebaseValue = (value) => {
   if (!trimmed) {
     return "";
   }
-  // Remove surrounding quotes if present
   const unquoted = trimmed.replace(/^["']|["']$/g, "");
   if (unquoted.startsWith("${") && unquoted.endsWith("}")) {
     return "";
@@ -54,7 +50,10 @@ const FIREBASE_ENV_MAP = {
   apiKey: ["FIREBASE_API_KEY", "EXPO_PUBLIC_FIREBASE_API_KEY"],
   authDomain: ["FIREBASE_AUTH_DOMAIN", "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN"],
   projectId: ["FIREBASE_PROJECT_ID", "EXPO_PUBLIC_FIREBASE_PROJECT_ID"],
-  storageBucket: ["FIREBASE_STORAGE_BUCKET", "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET"],
+  storageBucket: [
+    "FIREBASE_STORAGE_BUCKET",
+    "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
+  ],
   messagingSenderId: [
     "FIREBASE_MESSAGING_SENDER_ID",
     "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
@@ -65,15 +64,26 @@ const FIREBASE_ENV_MAP = {
 module.exports = ({ config }) => {
   const base = config || {};
   const baseExtra = base.extra || {};
-  const sentryDsn = getEnv("SENTRY_DSN") || normalizeFirebaseValue(baseExtra?.sentryDsn);
+  const sentryDsn =
+    getEnv("SENTRY_DSN") || normalizeFirebaseValue(baseExtra?.sentryDsn);
   const easProjectId =
     normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
     normalizeFirebaseValue(baseExtra?.eas?.projectId) ||
-    "";
+    "e044163a-3db8-4577-9ca5-a70fb2634898";
+
   const firebase = {
-    apiKey: getFirstEnv(...FIREBASE_ENV_MAP.apiKey) || getExtra(baseExtra, "apiKey") || "",
-    authDomain: getFirstEnv(...FIREBASE_ENV_MAP.authDomain) || getExtra(baseExtra, "authDomain") || "",
-    projectId: getFirstEnv(...FIREBASE_ENV_MAP.projectId) || getExtra(baseExtra, "projectId") || "",
+    apiKey:
+      getFirstEnv(...FIREBASE_ENV_MAP.apiKey) ||
+      getExtra(baseExtra, "apiKey") ||
+      "",
+    authDomain:
+      getFirstEnv(...FIREBASE_ENV_MAP.authDomain) ||
+      getExtra(baseExtra, "authDomain") ||
+      "",
+    projectId:
+      getFirstEnv(...FIREBASE_ENV_MAP.projectId) ||
+      getExtra(baseExtra, "projectId") ||
+      "",
     storageBucket:
       getFirstEnv(...FIREBASE_ENV_MAP.storageBucket) ||
       getExtra(baseExtra, "storageBucket") ||
@@ -82,7 +92,10 @@ module.exports = ({ config }) => {
       getFirstEnv(...FIREBASE_ENV_MAP.messagingSenderId) ||
       getExtra(baseExtra, "messagingSenderId") ||
       "",
-    appId: getFirstEnv(...FIREBASE_ENV_MAP.appId) || getExtra(baseExtra, "appId") || "",
+    appId:
+      getFirstEnv(...FIREBASE_ENV_MAP.appId) ||
+      getExtra(baseExtra, "appId") ||
+      "",
   };
 
   return {
@@ -118,11 +131,16 @@ module.exports = ({ config }) => {
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.RECORD_AUDIO",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
         "android.permission.SCHEDULE_EXACT_ALARM",
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.WAKE_LOCK",
       ],
+    },
+    notification: {
+      icon: "./assets/images/android-icon-monochrome.png",
+      color: "#0057D9",
     },
     web: {
       output: "static",
@@ -146,7 +164,10 @@ module.exports = ({ config }) => {
       [
         "expo-notifications",
         {
-          sounds: ["./assets/sounds/ctu_alarm.wav"],
+          sounds: [
+            "./assets/sounds/ctu_alarm.wav",
+            "./assets/sounds/ctu_reminder.wav",
+          ],
         },
       ],
       [
@@ -173,19 +194,10 @@ module.exports = ({ config }) => {
       },
       firebase,
     },
-    runtimeVersion: {
-      policy: "appVersion",
-    },
+    runtimeVersion: "1.0.3",
     updates: {
-      url: easProjectId ? `https://u.expo.dev/${easProjectId}` : "",
-      // Runtime OTA checks are handled in app/_layout.js (startup + periodic + foreground resume).
+      url: `https://u.expo.dev/${easProjectId}`,
       checkAutomatically: "NEVER",
     },
   };
 };
-
-
-
-
-
-

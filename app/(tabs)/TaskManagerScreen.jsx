@@ -1063,6 +1063,69 @@ export default function TaskManagerScreen() {
     setShowSubjectPicker(false);
   }
 
+  function dismissTaskEditor({ resetTaskView = false } = {}) {
+    setShowCreateModal(false);
+    setShowSubjectPicker(false);
+    setEditingTaskId("");
+    setEditingTask(null);
+    setActiveReminderPresetKey(null);
+    if (resetTaskView) {
+      setFilter("All");
+      setSearchQuery("");
+    }
+  }
+
+  function buildOptimisticTaskSnapshot({
+    id,
+    title,
+    subjectFields,
+    dueDate,
+    type,
+    priority,
+    source = "manual",
+    createdAt,
+  }) {
+    return {
+      id,
+      title,
+      subject: subjectFields.subjectName,
+      subjectName: subjectFields.subjectName,
+      subjectId: subjectFields.subjectId,
+      dueAt: dueDate.toISOString(),
+      completed: false,
+      status: "todo",
+      type,
+      priority,
+      priorityLevel: getTaskPriorityLevel(priority),
+      source,
+      createdAt: createdAt?.toISOString?.() || new Date().toISOString(),
+    };
+  }
+
+  function upsertPendingTaskLocally(task) {
+    if (!task?.id) return;
+    setTasks((prev) => {
+      const next = prev.filter((item) => item.id !== task.id);
+      next.push(task);
+      return sortPendingTasks(next);
+    });
+  }
+
+  function queuePostSaveRefresh(taskId) {
+    void load().catch((err) => {
+      warnIfDev("TaskManagerScreen: background reload after save failed:", err);
+    });
+
+    if (typeof rescheduleDeadlineAlarmsForTask === "function" && taskId) {
+      void rescheduleDeadlineAlarmsForTask(taskId).catch((err) => {
+        warnIfDev(
+          "TaskManagerScreen: background reminder refresh after save failed:",
+          err
+        );
+      });
+    }
+  }
+
   function openCreateTaskModal() {
     const preferredSubject = getPreferredCreateSubject({
       subjectFilterId,
@@ -1095,10 +1158,6 @@ export default function TaskManagerScreen() {
       task.subjectName || task.subject,
       task.subjectId
     );
-    const parsedCustomReminder = parseCustomReminderDate(task.customReminderAt);
-    const atCreationSelected =
-      task?.reminderPolicy?.type === "at_creation" ||
-      isAtCreationReminder(parsedCustomReminder, task?.createdAt);
     setEditingTaskId(task.id);
     setEditingTask(task);
     setNewTaskTitle(String(task.title || ""));
@@ -1108,14 +1167,8 @@ export default function TaskManagerScreen() {
     setNewTaskType(normalizeTaskType(task.type));
     setNewTaskPriority(normalizeTaskPriority(task.priority));
     setNewTaskDueAt(resolvedDue);
-    setCustomReminderAt(
-      (isValidCustomReminder(parsedCustomReminder, resolvedDue) ||
-        atCreationSelected) &&
-        parsedCustomReminder
-        ? parsedCustomReminder
-        : null
-    );
-    setActiveReminderPresetKey(atCreationSelected ? "at_creation" : null);
+    setCustomReminderAt(null);
+    setActiveReminderPresetKey(null);
     setShowDueDatePicker(false);
     setShowDueTimePicker(false);
     setShowReminderPicker(false);
@@ -1131,10 +1184,7 @@ export default function TaskManagerScreen() {
     setShowReminderPicker(false);
     setShowSubjectPicker(false);
     setTitleError("");
-    setEditingTaskId("");
-    setEditingTask(null);
-    setActiveReminderPresetKey(null);
-    setShowCreateModal(false);
+    dismissTaskEditor();
   }
 
   function handleTaskTitleChange(value) {
@@ -1393,10 +1443,6 @@ export default function TaskManagerScreen() {
     }
     // ──────────────────────────────────────────────────────────────────
 
-    const atCreationSelected = activeReminderPresetKey === "at_creation";
-    const manualReminderPolicy = atCreationSelected
-      ? buildAtCreationReminderPolicy()
-      : DEFAULT_MANUAL_TASK_REMINDER_POLICY;
     if (!isOnline) {
       if (isEditMode) {
         Alert.alert(
@@ -1411,11 +1457,6 @@ export default function TaskManagerScreen() {
             ? newTaskDueAt
             : getDefaultDueAt();
         const localCreatedAt = new Date();
-        const localCustomReminder = atCreationSelected
-          ? localCreatedAt
-          : isValidCustomReminder(customReminderAt, localDueDate)
-            ? new Date(customReminderAt)
-            : null;
         const localPayload = buildTaskCreateData(
           {
             userId: user.uid,
@@ -1427,8 +1468,6 @@ export default function TaskManagerScreen() {
             type,
             priority,
             source: "manual",
-            customReminderAt: localCustomReminder,
-            reminderPolicy: manualReminderPolicy,
           },
           { createdAt: localCreatedAt }
         );
@@ -1506,15 +1545,6 @@ export default function TaskManagerScreen() {
         throw new Error("Invalid due date - cannot create task");
       }
       const dueAtTimestamp = Timestamp.fromDate(dueDate);
-      const atCreationReminderDate = atCreationSelected
-        ? editingTaskCreatedAt || new Date()
-        : null;
-      const customReminderTimestamp = atCreationSelected
-        ? Timestamp.fromDate(atCreationReminderDate)
-        : isValidCustomReminder(customReminderAt, dueDate)
-          ? Timestamp.fromDate(customReminderAt)
-          : null;
-
       if (isEditMode) {
         if (!editingTaskId) throw new Error("Missing task id for update.");
         const updatePayload = {
@@ -1526,10 +1556,8 @@ export default function TaskManagerScreen() {
           type,
           priority,
           priorityLevel: getTaskPriorityLevel(priority),
-          customReminderAt: customReminderTimestamp,
-          ...(editingTask?.source === "planner"
-            ? {}
-            : { reminderPolicy: manualReminderPolicy }),
+          customReminderAt: null,
+          reminderPolicy: null,
           updatedAt: serverTimestamp(),
         };
         if (editingTask && typeof cancelDeadlineAlarms === "function") {
@@ -1548,8 +1576,6 @@ export default function TaskManagerScreen() {
             type,
             priority,
             source: "manual",
-            customReminderAt: customReminderTimestamp,
-            reminderPolicy: manualReminderPolicy,
           },
           { createdAt: serverTimestamp() }
         );
@@ -1559,19 +1585,23 @@ export default function TaskManagerScreen() {
         );
         newTaskId = docRef.id;
       }
-      await load();
 
-      if (typeof rescheduleDeadlineAlarmsForTask === "function") {
-        await rescheduleDeadlineAlarmsForTask(editingTaskId || newTaskId);
-      }
+      const savedTaskId = editingTaskId || newTaskId;
+      const optimisticTask = buildOptimisticTaskSnapshot({
+        id: savedTaskId,
+        title,
+        subjectFields,
+        dueDate,
+        type,
+        priority,
+        source: editingTask?.source || "manual",
+        createdAt: editingTaskCreatedAt || new Date(),
+      });
 
-      setShowCreateModal(false);
-      setShowSubjectPicker(false);
-      setEditingTaskId("");
-      setEditingTask(null);
-      setActiveReminderPresetKey(null);
-      setFilter("All");
-      setSearchQuery("");
+      upsertPendingTaskLocally(optimisticTask);
+      void loadSubjectOptions(user.uid, [...tasks, ...history, optimisticTask]);
+      dismissTaskEditor({ resetTaskView: true });
+      queuePostSaveRefresh(savedTaskId);
     } catch (error) {
       console.error(
         isEditMode ? "Failed to update task:" : "Failed to create task:",
@@ -3086,6 +3116,7 @@ export default function TaskManagerScreen() {
         onChangeType={setNewTaskType}
         createdAt={editingTaskCreatedAt}
         activeReminderPresetKey={activeReminderPresetKey}
+        showReminderControls={false}
         onSubmit={handleSaveTask}
       />
 

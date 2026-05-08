@@ -170,6 +170,7 @@ export default function TaskEditorModal({
   onSubmit,
   createdAt,
   activeReminderPresetKey = null,
+  showReminderControls = true,
 }) {
   // --- NEW: Custom offset state (hours + minutes typed by user) ---
   const [customOffsetHours, setCustomOffsetHours] = React.useState("0");
@@ -274,7 +275,7 @@ export default function TaskEditorModal({
     dueAt instanceof Date &&
     !isNaN(dueAt.getTime()) &&
     dueAt.getTime() <= Date.now();
-  const showReminderSection = !dueIsPast;
+  const showReminderSection = showReminderControls && !dueIsPast;
 
   return (
     <>
@@ -298,7 +299,9 @@ export default function TaskEditorModal({
               <Text style={[styles.subtitle, { color: colors.muted }]}>
                 {isEditMode
                   ? "Update title, subject, due date, priority, and type."
-                  : "Quick add from Task Manager. Choose a preset or set the exact due date and time."}
+                  : showReminderControls
+                    ? "Quick add from Task Manager. Choose a preset or set the exact due date and time."
+                    : "Quick add from Task Manager. Lead-time reminders are automatic before the due time."}
               </Text>
 
               <TextInput
@@ -523,6 +526,36 @@ export default function TaskEditorModal({
                       style={[styles.timeLeftSub, { color: urgencyMeta.color }]}
                     >
                       {urgencyMeta.label}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {!showReminderControls && !dueIsPast && (
+                <View
+                  style={[
+                    styles.timeLeftBanner,
+                    {
+                      backgroundColor: isDark ? "#0f172a" : "#eff6ff",
+                      marginBottom: 12,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="notifications-outline"
+                    size={14}
+                    color={colors.primary}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.timeLeftLabel, { color: colors.primary }]}
+                    >
+                      Fixed reminders only
+                    </Text>
+                    <Text
+                      style={[styles.timeLeftSub, { color: colors.primary }]}
+                    >
+                      This task will use the standard lead-time alerts before it becomes due.
                     </Text>
                   </View>
                 </View>
@@ -996,7 +1029,7 @@ export default function TaskEditorModal({
       {/* iOS custom datetime picker — kept for at_creation / fallback edge cases,
           but "Custom offset" preset no longer uses this. Only reached via
           onOpenReminderPicker called externally if needed. */}
-      {Platform.OS === "ios" && showReminderPicker ? (
+      {Platform.OS === "ios" && showReminderControls && showReminderPicker ? (
         <Modal
           transparent
           animationType="slide"

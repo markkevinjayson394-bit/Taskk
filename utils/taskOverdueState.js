@@ -22,7 +22,11 @@ export async function getCheckpoint(taskId) {
   }
 }
 
-export async function advanceCheckpoint(taskId, currentKey) {
+export async function advanceCheckpoint(taskId, currentKey, dueAtMs = null) {
+  const resolvedDueAtMs = Number.isFinite(Number(dueAtMs))
+    ? Number(dueAtMs)
+    : null;
+
   // If daily, always schedule next 8AM
   if (currentKey === "daily") {
     const nextTrigger = getNext8AM().getTime();
@@ -46,7 +50,9 @@ export async function advanceCheckpoint(taskId, currentKey) {
 
   const next = OVERDUE_CHAIN[idx + 1];
   const estimatedTriggerMs = Number.isFinite(next.delayMs)
-    ? Date.now() + next.delayMs
+    ? resolvedDueAtMs && resolvedDueAtMs > 0
+      ? resolvedDueAtMs + next.delayMs
+      : Date.now() + next.delayMs
     : null;
   await setCheckpoint(taskId, next.key, estimatedTriggerMs);
   return next;

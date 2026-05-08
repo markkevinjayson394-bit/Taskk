@@ -4,7 +4,7 @@
  * CHANGES IN THIS VERSION:
  * - [NEW] Overdue alarms are now `ongoing: true` + `autoCancel: false` on Android
  *   so they cannot be swiped away from the shade — only Done / Not Done clears them.
- * - [NEW] Lead-time and custom-reminder notifications now include:
+ * - [NEW] Lead-time notifications now include:
  *      sound: "ctu_alarm" on the notifee channel
  *      smallIcon / largeIcon via notifee for Android
  *      vibration pattern
@@ -33,7 +33,6 @@ import notifee, {
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import {
-  normalizeTaskDateInput,
   resolveTaskDueDate,
 } from "./academicTaskModel";
 import { getNext8AM } from "./alarmTimeHelpers.js";
@@ -382,23 +381,7 @@ async function scheduleOverdueCheckpointAlarm({
           body,
           payload: data,
         });
-        if (result) {
-          if (resolvedTriggerAt <= Date.now() + 10_000) {
-            await displayAlarmNotification({
-              id: `${id}-display`,
-              title,
-              body,
-              data,
-              isOngoing: true,
-            }).catch((err) =>
-              warnIfDev(
-                "scheduleOverdueCheckpointAlarm: immediate display failed:",
-                err
-              )
-            );
-          }
-          return result;
-        }
+        if (result) return result;
       }
     } catch (err) {
       warnIfDev("scheduleOverdueCheckpointAlarm native failed:", err);
@@ -462,7 +445,7 @@ async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
     return Notifications.scheduleNotificationAsync({
       identifier: id,
-      content: { title, body, data, categoryIdentifier: DEADLINE_CATEGORY_ID },
+      content: { title, body, data },
       trigger: { date: new Date(triggerAt) },
     });
   }
@@ -476,7 +459,6 @@ async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
         title,
         body,
         data,
-        categoryIdentifier: DEADLINE_CATEGORY_ID,
         // REMOVED: channelId from content — it doesn't belong here on Android
         sound: "ctu_reminder.wav",
         vibrationPattern: [0, 250, 150, 250],
@@ -589,7 +571,7 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
     const data = buildDeadlineAlarmData(id, task, dueAtMs, soundSettings, {
       leadKey: lead.key,
       isLeadTime: true,
-      acknowledgeRequired: true,
+      acknowledgeRequired: false,
     });
 
     const scheduledId = await scheduleLeadNotification({
@@ -598,41 +580,6 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
       body: leadBody,
       data,
       triggerAt: triggerTime,
-    });
-    if (scheduledId) ids.push(scheduledId);
-  }
-
-  // Custom user-set reminder
-  const customReminderDate = normalizeTaskDateInput(task.customReminderAt);
-  const customReminderMs = customReminderDate
-    ? customReminderDate.getTime()
-    : task.reminderPolicy?.offsetMs
-      ? dueAtMs - task.reminderPolicy.offsetMs
-      : null;
-
-  if (customReminderMs && customReminderMs > now + 5000) {
-    const customId = buildNotificationId(
-      "deadline-custom-reminder",
-      task.id,
-      "user"
-    );
-    const data = buildDeadlineAlarmData(
-      customId,
-      task,
-      dueAtMs,
-      soundSettings,
-      {
-        isCustomReminder: true,
-        acknowledgeRequired: true,
-      }
-    );
-
-    const scheduledId = await scheduleLeadNotification({
-      id: customId,
-      title: `\u23F0 Reminder: "${taskTitle}"`,
-      body: buildLeadBody(taskTitle, subjectLabel, due),
-      data,
-      triggerAt: customReminderMs,
     });
     if (scheduledId) ids.push(scheduledId);
   }
@@ -834,7 +781,27 @@ export async function rescheduleAllDeadlineAlarms(
         const dueMs = resolveTaskDueDate(task)?.getTime();
         if (dueMs && dueMs <= now) {
           const checkpoint = await getCheckpoint(task.id);
-          if (checkpoint?.key) return [];
+          if (checkpoint?.key) {
+            const currentCheckpoint = OVERDUE_CHAIN.find(
+              (entry) => entry.key === checkpoint.key
+            );
+            if (currentCheckpoint) {
+              const repairTriggerAt =
+                currentCheckpoint.key === "daily"
+                  ? getNext8AM().getTime()
+                  : Number.isFinite(checkpoint.triggerAtMs) &&
+                      checkpoint.triggerAtMs > now + 30_000
+                    ? checkpoint.triggerAtMs
+                    : now + 30_000;
+              const repairedId = await scheduleNextOverdueAlarm({
+                task,
+                checkpoint: currentCheckpoint,
+                soundSettings,
+                triggerAt: repairTriggerAt,
+              });
+              return repairedId ? [repairedId] : [];
+            }
+          }
         }
         return scheduleDeadlineAlarms(task, soundSettings);
       })

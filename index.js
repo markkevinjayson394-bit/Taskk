@@ -1,6 +1,7 @@
 // index.js
 import "expo-router/entry";
 import { AppRegistry } from "react-native";
+import "./tasks/AlarmMissedTask";
 import {
   bootstrapDeadlineAlarmChannel,
   DEADLINE_NOTIF_TYPE,

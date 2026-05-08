@@ -31,6 +31,7 @@ const VISIBLE_TAB_ROUTES = new Set([
   "home",
   "schedule",
   "CalendarPlannerScreen",
+  "AnnouncementsScreen",
   "profile",
 ]);
 
@@ -153,6 +154,19 @@ export default function TabsLayout() {
             <Tabs.Screen name="ExamPrepPlanner" options={{ href: null }} />
             <Tabs.Screen name="home.recovered" options={{ href: null }} />
             <Tabs.Screen
+              name="AnnouncementsScreen"
+              options={{
+                title: "Notices",
+                tabBarIcon: ({ color, size, focused }) => (
+                  <Ionicons
+                    name={focused ? "megaphone" : "megaphone-outline"}
+                    size={size}
+                    color={color}
+                  />
+                ),
+              }}
+            />
+            <Tabs.Screen
               name="profile"
               options={{
                 title: "Profile",
@@ -167,7 +181,6 @@ export default function TabsLayout() {
             />
             <Tabs.Screen name="assignments" options={{ href: null }} />
             <Tabs.Screen name="NotificationSettings" options={{ href: null }} />
-            <Tabs.Screen name="AnnouncementsScreen" options={{ href: null }} />
             <Tabs.Screen name="subjects" options={{ href: null }} />
             <Tabs.Screen name="review" options={{ href: null }} />
           </Tabs>

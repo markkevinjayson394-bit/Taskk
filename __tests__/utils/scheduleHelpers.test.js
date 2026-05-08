@@ -5,6 +5,11 @@ import {
 } from "../../utils/scheduleHelpers";
 
 describe("parseTimeToMinutes", () => {
+  const localMinutesFromIso = (iso) => {
+    const parsed = new Date(iso);
+    return parsed.getHours() * 60 + parsed.getMinutes();
+  };
+
   it("parses normal time", () => expect(parseTimeToMinutes("09:30")).toBe(570));
   it("parses midnight", () => expect(parseTimeToMinutes("00:00")).toBe(0));
   it("parses noon", () => expect(parseTimeToMinutes("12:00")).toBe(720));
@@ -13,10 +18,14 @@ describe("parseTimeToMinutes", () => {
   it("returns null for null", () =>
     expect(parseTimeToMinutes(null)).toBeNull());
 
-  it("parses ISO date string", () =>
-    expect(parseTimeToMinutes("2026-03-31T08:30:00.000Z")).toBe(510));
-  it("parses ISO date string at midnight", () =>
-    expect(parseTimeToMinutes("2026-03-31T00:00:00.000Z")).toBe(0));
+  it("parses ISO date string using local time", () => {
+    const iso = new Date(2026, 2, 31, 8, 30, 0, 0).toISOString();
+    expect(parseTimeToMinutes(iso)).toBe(localMinutesFromIso(iso));
+  });
+  it("parses ISO date string at midnight using local time", () => {
+    const iso = new Date(2026, 2, 31, 0, 0, 0, 0).toISOString();
+    expect(parseTimeToMinutes(iso)).toBe(localMinutesFromIso(iso));
+  });
   it("returns null for invalid ISO string", () =>
     expect(parseTimeToMinutes("2026-03-31Txx:yy:00.000Z")).toBeNull());
 });
@@ -28,11 +37,17 @@ describe("getClassRangeMinutes", () => {
   });
 
   it("parses ISO date string start/end fields", () => {
+    const startIso = new Date(2026, 2, 31, 8, 0, 0, 0).toISOString();
+    const endIso = new Date(2026, 2, 31, 9, 30, 0, 0).toISOString();
     const result = getClassRangeMinutes({
-      start: "2026-03-31T08:00:00.000Z",
-      end: "2026-03-31T09:30:00.000Z",
+      start: startIso,
+      end: endIso,
     });
-    expect(result).toEqual({ start: 480, end: 570, duration: 90 });
+    expect(result).toEqual({
+      start: new Date(startIso).getHours() * 60 + new Date(startIso).getMinutes(),
+      end: new Date(endIso).getHours() * 60 + new Date(endIso).getMinutes(),
+      duration: 90,
+    });
   });
 
   it("prefers startTime over start", () => {

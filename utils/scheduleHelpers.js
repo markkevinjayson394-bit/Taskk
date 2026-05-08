@@ -8,28 +8,35 @@
  */
 export function parseTimeToMinutes(str) {
   if (!str) return null;
+  const value = String(str).trim();
 
   // HH:MM (24-hour, strict)
-  const simple = str.match(/^(\d{1,2}):(\d{2})$/);
+  const simple = value.match(/^(\d{1,2}):(\d{2})$/);
   if (simple) return parseInt(simple[1]) * 60 + parseInt(simple[2]);
 
-  // ISO string — e.g. "2024-01-01T08:00:00"
-  const iso = str.match(/T(\d{2}):(\d{2}):/);
-  if (iso) return parseInt(iso[1]) * 60 + parseInt(iso[2]);
+  // Admin schedule picks are currently stored as ISO timestamps.
+  // Recover the local clock time from that stored instant.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.getHours() * 60 + parsed.getMinutes();
+    }
+    return null;
+  }
 
-  // 12-hour AM/PM — e.g. "8:00 AM", "1:30 PM", "12:00pm", "8:30am"
-  const ampm = str.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+  // 12-hour AM/PM e.g. "8:00 AM", "1:30 PM", "12:00pm", "8:30am"
+  const ampm = value.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
   if (ampm) {
     let h = parseInt(ampm[1]);
     const m = parseInt(ampm[2]);
     const period = ampm[3].toLowerCase();
-    if (period === "am" && h === 12) h = 0; // 12:xx AM → 0:xx
-    if (period === "pm" && h !== 12) h += 12; // 1–11 PM → 13–23
+    if (period === "am" && h === 12) h = 0;
+    if (period === "pm" && h !== 12) h += 12;
     return h * 60 + m;
   }
 
-  // Bare hour — e.g. "8" or "13"
-  const bare = str.match(/^(\d{1,2})$/);
+  // Bare hour e.g. "8" or "13"
+  const bare = value.match(/^(\d{1,2})$/);
   if (bare) {
     const h = parseInt(bare[1]);
     return h * 60;

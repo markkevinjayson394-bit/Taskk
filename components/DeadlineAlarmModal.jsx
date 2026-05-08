@@ -26,7 +26,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   cancelDeadlineAlarms,
-  clearCheckpoint,
   DEADLINE_CATEGORY_ID,
   DEADLINE_CHANNEL_ID,
   DEADLINE_NOTIF_TYPE,
@@ -45,7 +44,7 @@ import {
   buildManagedNotificationData,
   buildNotificationId,
 } from "../utils/notificationIds";
-import { advanceCheckpoint } from "../utils/taskOverdueState";
+import { advanceCheckpoint, clearCheckpoint } from "../utils/taskOverdueState";
 import {
   formatDeadlineCountdown,
   playAlarmSound,
@@ -100,6 +99,8 @@ const ANDROID_ALARM_CONTENT = {
   sound: "ctu_alarm.wav",
   vibrationPattern: [0, 400, 200, 400, 200, 800],
 };
+const AUTO_MISS_TIMEOUT_MS = 5 * 60 * 1000;
+const AUTO_MISS_STAGE_KEYS = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
 
 function formatDeadlineDueMoment(date) {
   return date.toLocaleString("en-US", {
@@ -320,6 +321,7 @@ function DeadlineAlarmModal({
   const doneSelected = pendingAction === "markdone";
 
   const isOverdue = due && due.getTime() < now.getTime();
+  const effectiveThresholdKey = thresholdKey || (isOverdue ? "due" : null);
 
   const getOverdueDuration = () => {
     if (!due || !isOverdue) return null;
@@ -412,7 +414,7 @@ function DeadlineAlarmModal({
 
   // "Not Done" — stop sound/vibration immediately, advance checkpoint chain,
   // schedule next alarm, close modal. Task remains incomplete.
-  const handleNotDone = useCallback(async () => {
+  const handleNotDone = useCallback(async ({ skipHaptic = false } = {}) => {
     if (notDonePressed || markingDone) return;
     setNotDonePressed(true);
     userDismissedRef.current = true;
@@ -441,11 +443,13 @@ function DeadlineAlarmModal({
 
     // [FIX 5] Cancel ALL candidate notification IDs so the ongoing shade
     // notification is reliably dismissed regardless of which ID builder was used.
-    await cancelAllNotifeeIdsForTask(task?.id, thresholdKey);
+    await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey);
 
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
-      () => {}
-    );
+    if (!skipHaptic) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
+        () => {}
+      );
+    }
 
     // Advance the overdue checkpoint chain and schedule the next alarm.
     // Skip checkpoint scheduling for lead-time warnings (task not yet due) —
@@ -458,7 +462,8 @@ function DeadlineAlarmModal({
         try {
           const nextCheckpoint = await advanceCheckpoint(
             task.id,
-            thresholdKey || "due"
+            effectiveThresholdKey || "due",
+            dueDate.getTime()
           );
           if (nextCheckpoint?.key) {
             const nextTriggerAt =
@@ -485,7 +490,13 @@ function DeadlineAlarmModal({
     }
     // Mark modal as self-closing after callbacks complete so state updates commit first
     setSelfClosed(true);
-  }, [markingDone, notDonePressed, onNotDone, task, thresholdKey]);
+  }, [
+    effectiveThresholdKey,
+    markingDone,
+    notDonePressed,
+    onNotDone,
+    task,
+  ]);
 
   // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
   const handleDone = useCallback(async () => {
@@ -517,7 +528,7 @@ function DeadlineAlarmModal({
 
     // [FIX 5] Cancel ALL candidate notification IDs so the ongoing shade
     // notification is reliably dismissed regardless of which ID builder was used.
-    await cancelAllNotifeeIdsForTask(task?.id, thresholdKey);
+    await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey);
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
@@ -541,7 +552,13 @@ function DeadlineAlarmModal({
     }
     // Mark modal as self-closing after callbacks complete so state updates commit first
     setSelfClosed(true);
-  }, [markingDone, notDonePressed, onMarkDone, task, thresholdKey]);
+  }, [
+    effectiveThresholdKey,
+    markingDone,
+    notDonePressed,
+    onMarkDone,
+    task,
+  ]);
 
   const handleRequestClose = () => {
     if (notDonePressed || markingDone) return;
@@ -599,6 +616,31 @@ function DeadlineAlarmModal({
     thresholdKey,
     handleDone,
     handleNotDone,
+  ]);
+
+  useEffect(() => {
+    if (
+      !visible ||
+      selfClosed ||
+      notDonePressed ||
+      markingDone ||
+      !AUTO_MISS_STAGE_KEYS.has(effectiveThresholdKey)
+    ) {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => {
+      void handleNotDone({ skipHaptic: true });
+    }, AUTO_MISS_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [
+    effectiveThresholdKey,
+    handleNotDone,
+    markingDone,
+    notDonePressed,
+    selfClosed,
+    visible,
   ]);
 
   if (!task || selfClosed) {

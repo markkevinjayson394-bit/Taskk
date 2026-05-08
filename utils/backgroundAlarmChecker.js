@@ -15,10 +15,10 @@ import { auth, db } from "../config/firebase";
 import {
   bootstrapDeadlineAlarmChannel,
   cancelDeadlineAlarms,
-  getNext8AM,
   rescheduleAllDeadlineAlarms,
   scheduleNextOverdueAlarm,
 } from "./deadlineAlarmBackground";
+import { getNext8AM } from "./alarmTimeHelpers.js";
 import { reportError, warnIfDev } from "./logger";
 import { buildNotificationId } from "./notificationIds";
 import {

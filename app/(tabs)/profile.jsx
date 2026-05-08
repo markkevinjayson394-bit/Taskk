@@ -1,7 +1,7 @@
 /**
  * profile.jsx
  *
- * Photo upload uses base64 in Firestore (Spark/free friendly).
+ * Photo upload stores a compressed base64 avatar in Firestore (Spark/free friendly).
  * Offline support: profile, stats, and schedule meta are cached in AsyncStorage.
  * On network error, the screen loads from cache instead of showing an error.
  */
@@ -46,6 +46,7 @@ import { getCollegeLabel } from "../../constants/academics";
 import { CACHE_KEYS, loadFromCache } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
+import { compressImageToBase64DataUri } from "../../utils/nativeImageCompression";
 import { getTutorialRoute } from "../../utils/onboarding";
 import { APP_VERSION } from "../../utils/version";
 
@@ -71,6 +72,44 @@ function shouldIncludeInProfileTaskStats(task) {
   if (task.source === "planner") return false;
   if (task.plannerArchived) return false;
   return true;
+}
+
+async function prepareProfilePhotoData(uri) {
+  const maxBytes = MAX_BASE64_KB * 1024;
+  const compressed = await compressImageToBase64DataUri(uri, maxBytes);
+  if (compressed?.dataUri) {
+    return compressed;
+  }
+
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: EncodingType.Base64,
+  });
+  const sizeBytes = Math.round(base64.length * 0.75);
+  if (sizeBytes > maxBytes) {
+    throw new Error(
+      "Photo is still too large. Try a tighter crop before uploading."
+    );
+  }
+
+  return {
+    dataUri: `data:image/jpeg;base64,${base64}`,
+    sizeBytes,
+  };
+}
+
+function resolvePhotoUploadError(err) {
+  const message =
+    typeof err?.message === "string" ? err.message.trim().toLowerCase() : "";
+  if (message.includes("too large")) {
+    return {
+      title: "Photo Too Large",
+      body: "Try a tighter crop or choose a simpler photo.",
+    };
+  }
+  return {
+    title: "Failed",
+    body: "Could not save photo. Please try again.",
+  };
 }
 
 export default function ProfileScreen() {
@@ -262,20 +301,7 @@ export default function ProfileScreen() {
 
     try {
       setUploading(true);
-      const base64 = await FileSystem.readAsStringAsync(result.assets[0].uri, {
-        encoding: EncodingType.Base64,
-      });
-
-      const sizeKB = (base64.length * 0.75) / 1024;
-      if (sizeKB > MAX_BASE64_KB) {
-        Alert.alert(
-          "Photo Too Large",
-          `Image is ${Math.round(sizeKB)} KB. Please crop more tightly or choose a smaller photo.`
-        );
-        return;
-      }
-
-      const dataUri = `data:image/jpeg;base64,${base64}`;
+      const { dataUri } = await prepareProfilePhotoData(result.assets[0].uri);
       await updateDoc(doc(db, "users", user.uid), { photoBase64: dataUri });
 
       // Update local state and cache
@@ -288,8 +314,9 @@ export default function ProfileScreen() {
         return updated;
       });
       Alert.alert("Photo Updated", "Your profile picture has been saved.");
-    } catch (_err) {
-      Alert.alert("Failed", "Could not save photo. Please try again.");
+    } catch (err) {
+      const errorInfo = resolvePhotoUploadError(err);
+      Alert.alert(errorInfo.title, errorInfo.body);
     } finally {
       setUploading(false);
     }
@@ -664,12 +691,6 @@ export default function ProfileScreen() {
                 getTutorialRoute(profile.role === "admin" ? "admin" : "student")
               )
             }
-            colors={colors}
-          />
-          <ActionRow
-            icon="megaphone-outline"
-            label="Announcements"
-            onPress={() => router.push("/(tabs)/AnnouncementsScreen")}
             colors={colors}
           />
           <ActionRow

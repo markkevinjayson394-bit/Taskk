@@ -85,7 +85,7 @@ async function saveAcks(acks) {
   }
 }
 
-function ackKey(taskId, thresholdKey) {
+function buildAckKey(taskId, thresholdKey) {
   return `${taskId}:${thresholdKey}`;
 }
 
@@ -150,7 +150,9 @@ function findTriggeredThreshold(
       !crossedDue;
     if (crossedDue || justBecameOverdue) {
       const ackKey = "due";
-      if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+      if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
+        return null;
+      }
       return { thresholdKey: "due", ackKey };
     }
 
@@ -161,7 +163,9 @@ function findTriggeredThreshold(
         nowMs >= triggerAt && nowMs <= triggerAt + threshold.window;
       if (crossedSinceLast || withinWindow) {
         const ackKey = threshold.key;
-        if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+        if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
+          return null;
+        }
         return { thresholdKey: threshold.key, ackKey };
       }
     }
@@ -174,7 +178,9 @@ function findTriggeredThreshold(
         nowMs >= triggerAt && nowMs <= triggerAt + DAILY_OVERDUE_WINDOW_MS;
       if (crossedSinceLast || withinWindow) {
         const ackKey = `daily_${dailyBucket}`;
-        if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+        if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
+          return null;
+        }
         return {
           thresholdKey: "daily",
           ackKey,
@@ -195,7 +201,9 @@ function findTriggeredThreshold(
 
     if (crossedSinceLast || withinWindow) {
       const ackKey = threshold.key;
-      if (pendingAcksRef?.current?.has(ackKey(task.id, ackKey))) return null;
+      if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
+        return null;
+      }
       return { thresholdKey: threshold.key, ackKey };
     }
   }
@@ -209,13 +217,13 @@ function saveOverdueAckEntries(acks, taskId, dueAt, nowMs) {
 
   OVERDUE_THRESHOLDS.forEach((threshold) => {
     if (nowMs >= dueMs + threshold.ms) {
-      acks[ackKey(taskId, threshold.key)] = true;
+      acks[buildAckKey(taskId, threshold.key)] = true;
     }
   });
 
   const dailyBucket = getDailyAckBucket(dueMs, nowMs);
   for (let bucket = 1; bucket <= dailyBucket; bucket += 1) {
-    acks[ackKey(taskId, `daily_${bucket}`)] = true;
+    acks[buildAckKey(taskId, `daily_${bucket}`)] = true;
   }
 }
 
@@ -274,6 +282,12 @@ export function useDeadlineAlarmScheduler(
   const prevTaskIdsRef = useRef(new Set());
   const pendingAcksRef = useRef(new Set());
 
+  const activateNextAlarm = useCallback(() => {
+    const next = alarmQueueRef.current.shift() || null;
+    setActiveAlarm(next);
+    setAlarmVisible(Boolean(next));
+  }, []);
+
   const dismissAlarm = useCallback(() => {
     setAlarmVisible(false);
     setActiveAlarm(null);
@@ -321,7 +335,7 @@ export function useDeadlineAlarmScheduler(
       });
       if (!triggered) continue;
 
-      const key = ackKey(task.id, triggered.ackKey);
+      const key = buildAckKey(task.id, triggered.ackKey);
       if (acksRef.current[key]) continue;
 
       if (alarmQueueRef.current.find(
@@ -338,21 +352,15 @@ export function useDeadlineAlarmScheduler(
     }
 
     if (!activeAlarm && alarmQueueRef.current.length > 0) {
-      const [next, ...rest] = alarmQueueRef.current;
-      alarmQueueRef.current = rest;
-      setActiveAlarm(next);
-      setAlarmVisible(true);
+      activateNextAlarm();
     }
-  }, [activeAlarm, deadlineWarningEnabled, pendingTasks]);
+  }, [activeAlarm, activateNextAlarm, deadlineWarningEnabled, pendingTasks]);
 
   useEffect(() => {
     if (activeAlarm) return;
     if (alarmQueueRef.current.length === 0) return;
-    const [next, ...rest] = alarmQueueRef.current;
-    alarmQueueRef.current = rest;
-    setActiveAlarm(next);
-    setAlarmVisible(true);
-  }, [activeAlarm]);
+    activateNextAlarm();
+  }, [activeAlarm, activateNextAlarm]);
 
   useEffect(() => {
     checkAlarmsRef.current = checkAlarms;
@@ -421,7 +429,9 @@ export function useDeadlineAlarmScheduler(
     }
 
     if (resolvedThreshold?.ackKey) {
-      acksRef.current[ackKey(activeAlarm.task.id, resolvedThreshold.ackKey)] =
+      acksRef.current[
+        buildAckKey(activeAlarm.task.id, resolvedThreshold.ackKey)
+      ] =
         true;
     }
     saveOverdueAckEntries(
@@ -432,7 +442,9 @@ export function useDeadlineAlarmScheduler(
     );
     await saveAcks(acksRef.current);
     if (resolvedThreshold?.ackKey) {
-      pendingAcksRef.current.delete(ackKey(activeAlarm.task.id, resolvedThreshold.ackKey));
+      pendingAcksRef.current.delete(
+        buildAckKey(activeAlarm.task.id, resolvedThreshold.ackKey)
+      );
     }
   }, [activeAlarm]);
 
@@ -440,21 +452,15 @@ export function useDeadlineAlarmScheduler(
     if (!activeAlarm) return;
     await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
-    alarmQueueRef.current.shift();
-    const next = alarmQueueRef.current[0] || null;
-    setActiveAlarm(next);
-    setAlarmVisible(!!next);
-  }, [activeAlarm, persistCurrentAlarmAck]);
+    activateNextAlarm();
+  }, [activeAlarm, activateNextAlarm, persistCurrentAlarmAck]);
 
   const markDoneAlarm = useCallback(async () => {
     if (!activeAlarm) return;
     await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
-    alarmQueueRef.current.shift();
-    const next = alarmQueueRef.current[0] || null;
-    setActiveAlarm(next);
-    setAlarmVisible(!!next);
-  }, [activeAlarm, persistCurrentAlarmAck]);
+    activateNextAlarm();
+  }, [activeAlarm, activateNextAlarm, persistCurrentAlarmAck]);
 
   const showAlarmForTask = useCallback(
     (task, thresholdKey = null) => {
@@ -491,41 +497,31 @@ export function useDeadlineAlarmScheduler(
           };
         }
         if (!activeAlarm && existingIdx === 0) {
-          const [next, ...rest] = alarmQueueRef.current;
-          alarmQueueRef.current = rest;
-          setActiveAlarm(next);
-          setAlarmVisible(true);
+          activateNextAlarm();
         }
         return;
       }
 
       alarmQueueRef.current.push(entry);
       if (!activeAlarm) {
-        setActiveAlarm(entry);
-        setAlarmVisible(true);
+        activateNextAlarm();
       }
     },
-    [activeAlarm]
+    [activeAlarm, activateNextAlarm]
   );
 
   const snoozeAlarm = useCallback(async () => {
     if (!activeAlarm) return;
     await cancelNotifeeAlarmNotifications(activeAlarm);
-    alarmQueueRef.current.shift();
-    const next = alarmQueueRef.current[0] || null;
-    setActiveAlarm(next);
-    setAlarmVisible(!!next);
-  }, [activeAlarm]);
+    activateNextAlarm();
+  }, [activeAlarm, activateNextAlarm]);
 
   const notDoneAlarm = useCallback(async () => {
     if (!activeAlarm) return;
     await cancelNotifeeAlarmNotifications(activeAlarm);
     await persistCurrentAlarmAck();
-    alarmQueueRef.current.shift();
-    const next = alarmQueueRef.current[0] || null;
-    setActiveAlarm(next);
-    setAlarmVisible(!!next);
-  }, [activeAlarm, persistCurrentAlarmAck]);
+    activateNextAlarm();
+  }, [activeAlarm, activateNextAlarm, persistCurrentAlarmAck]);
 
   return {
     alarmVisible,

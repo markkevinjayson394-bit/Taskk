@@ -55,6 +55,20 @@ jest.mock("../../utils/deadlineConstants", () => ({
     { key: "30m", ms: 30 * 60 * 1000 },
     { key: "due", ms: 0 },
   ],
+  FOREGROUND_THRESHOLDS: [
+    { key: "1d", ms: 24 * 60 * 60 * 1000, window: 5 * 60 * 1000 },
+    { key: "2h", ms: 2 * 60 * 60 * 1000, window: 3 * 60 * 1000 },
+    { key: "30m", ms: 30 * 60 * 1000, window: 2 * 60 * 1000 },
+    { key: "1m", ms: 60 * 1000, window: 90 * 1000 },
+    { key: "due", ms: 0, window: 10 * 60 * 1000 },
+  ],
+  OVERDUE_CHAIN: [
+    { key: "due", stage: "due", delayMs: 0 },
+    { key: "+15m", stage: "+15m", delayMs: 15 * 60 * 1000 },
+    { key: "+1h", stage: "+1h", delayMs: 60 * 60 * 1000 },
+    { key: "+3h", stage: "+3h", delayMs: 3 * 60 * 60 * 1000 },
+    { key: "daily", stage: "daily", delayMs: null },
+  ],
 }));
 
 jest.mock("../../utils/deadlineTime", () => ({
@@ -72,6 +86,7 @@ jest.mock("../../utils/taskOverdueState", () => ({
     key: "+15m",
     delayMs: 15 * 60 * 1000,
   })),
+  clearCheckpoint: jest.fn().mockResolvedValue(undefined),
 }));
 
 // â”€â”€â”€ Harness â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -226,6 +241,63 @@ describe("Deadline alarm flow", () => {
     await waitFor(() => {
       expect(getByText("Finish chemistry lab")).toBeTruthy();
       expect(getByText("+15m")).toBeTruthy();
+    });
+  });
+
+  test("scheduler handles the due threshold without throwing", async () => {
+    const task = {
+      id: "task-due-now",
+      title: "Join group meeting",
+      dueAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      completed: false,
+    };
+
+    const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(getByText("Join group meeting")).toBeTruthy();
+      expect(getByText("due")).toBeTruthy();
+    });
+  });
+
+  test("scheduler advances to the next queued alarm after Not Done", async () => {
+    const tasks = [
+      {
+        id: "task-queue-1",
+        title: "Draft reflection paper",
+        dueAt: new Date(Date.now() + 29 * 60 * 1000).toISOString(),
+        completed: false,
+      },
+      {
+        id: "task-queue-2",
+        title: "Review biology notes",
+        dueAt: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+        completed: false,
+      },
+    ];
+
+    const { getByText, queryByText } = render(<SchedulerHarness tasks={tasks} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(getByText("Draft reflection paper")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.press(getByText("Not Done Hook"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(queryByText("Draft reflection paper")).toBeNull();
+      expect(getByText("Review biology notes")).toBeTruthy();
     });
   });
 

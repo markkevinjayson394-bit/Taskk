@@ -17,10 +17,17 @@ export default function EmptyStateCard({
   const { colors, isDark } = useTheme();
   const borderColor = colors.border || (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
   const iconColor = tone === "warn"
-    ? "#f59e0b"
+    ? colors.warning || "#f59e0b"
     : tone === "danger"
-      ? "#ef4444"
-      : colors.muted;
+      ? colors.danger
+      : colors.primary;
+  const iconBg = tone === "warn"
+    ? colors.warningBg || "rgba(245,158,11,0.12)"
+    : tone === "danger"
+      ? colors.dangerBg || "rgba(239,68,68,0.12)"
+      : isDark
+        ? "rgba(59,130,246,0.18)"
+        : "#eaf2ff";
 
   useEffect(() => {
     if (__DEV__) {
@@ -40,10 +47,18 @@ export default function EmptyStateCard({
         styles.card,
         { backgroundColor: colors.card, borderColor },
         compact && styles.compact,
-        style,
+      style,
       ]}
     >
-      <Ionicons name={icon} size={compact ? 20 : 28} color={iconColor} style={compact ? null : styles.icon} />
+      <View
+        style={[
+          styles.iconWrap,
+          compact && styles.iconWrapCompact,
+          { backgroundColor: iconBg },
+        ]}
+      >
+        <Ionicons name={icon} size={compact ? 18 : 24} color={iconColor} />
+      </View>
       <Text style={[styles.title, { color: colors.text }, compact && styles.titleCompact]}>{title}</Text>
       {message ? (
         <Text style={[styles.message, { color: colors.muted }, compact && styles.messageCompact]}>{message}</Text>
@@ -63,17 +78,28 @@ export default function EmptyStateCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 22,
     alignItems: "center",
-    gap: 6,
+    gap: 8,
     borderWidth: 1,
   },
   compact: {
     padding: 14,
     borderRadius: 14,
   },
-  icon: { marginBottom: 2 },
+  iconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  iconWrapCompact: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+  },
   title: { fontSize: 15, fontWeight: "700", textAlign: "center" },
   titleCompact: { fontSize: 13 },
   message: { fontSize: 12, textAlign: "center", lineHeight: 18 },

@@ -2,7 +2,7 @@ export const THRESHOLDS = [
   { key: "1d", ms: 24 * 60 * 60 * 1000, label: "1 day before" },
   { key: "2h", ms: 2 * 60 * 60 * 1000, label: "2 hours before" },
   { key: "30m", ms: 30 * 60 * 1000, label: "30 min before" },
-  { key: "1m", ms: 60 * 1000, label: "1 minute before" },
+  { key: "5m", ms: 5 * 60 * 1000, label: "5 min before" },
   { key: "due", ms: 0, label: "Due NOW" },
 ];
 
@@ -16,7 +16,7 @@ export const FOREGROUND_THRESHOLDS = [
   { key: "1d", ms: 24 * 60 * 60 * 1000, window: 5 * 60 * 1000 },
   { key: "2h", ms: 2 * 60 * 60 * 1000, window: 3 * 60 * 1000 },
   { key: "30m", ms: 30 * 60 * 1000, window: 2 * 60 * 1000 },
-  { key: "1m", ms: 60 * 1000, window: 90 * 1000 },
+  { key: "5m", ms: 5 * 60 * 1000, window: 90 * 1000 },
   { key: "due", ms: 0, window: 10 * 60 * 1000 },
 ];
 
@@ -28,4 +28,3 @@ export const OVERDUE_CHAIN = [
   { key: "+3h",   stage: "+3h",   delayMs: 3 * 60 * 60 * 1000 },
   { key: "daily", stage: "daily", delayMs: null },
 ];
-

@@ -25,6 +25,7 @@ import {
 } from "../../context/NotificationContext";
 import { useTheme } from "../../context/ThemeContext";
 import { getDaysSinceLastSync } from "../../utils/classScheduleCache";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 // Notification items with editable time keys
 const NOTIFICATION_ITEMS = [
   {
@@ -51,7 +52,7 @@ const NOTIFICATION_ITEMS = [
     colorKey: "danger",
     title: "Deadline Warnings",
     description:
-      "Warns at 1d, 2h, 30m, and 1 minute before due time, plus due-time, follow-ups, and daily overdue reminders.",
+      "Warns at 1d, 2h, 30m, and 5 min before due time, plus due-time, follow-ups, and daily overdue reminders.",
     timeKey: null,
   },
   {
@@ -226,6 +227,8 @@ export default function NotificationSettings() {
     requestIgnoreBatteryOptimizations,
     canScheduleExactAlarms,
     openExactAlarmSettings,
+    canUseFullScreenIntent,
+    openFullScreenIntentSettings,
     sendTestNotification,
     scheduleManagedDateNotification,
     getAlarmStyleContentOptions,
@@ -239,6 +242,7 @@ export default function NotificationSettings() {
   const [batteryOptimizationStatus, setBatteryOptimizationStatus] =
     useState(null);
   const [exactAlarmStatus, setExactAlarmStatus] = useState(null);
+  const [fullScreenIntentStatus, setFullScreenIntentStatus] = useState(null);
   const [scheduleLastSynced, setScheduleLastSynced] = useState(null);
   const checkBatteryOptimizationStatus = useCallback(async () => {
     if (Platform.OS !== "android" || !nativeAlarmSupported) {
@@ -269,16 +273,44 @@ export default function NotificationSettings() {
     }
   }, [nativeAlarmSupported, canScheduleExactAlarms]);
 
+  const checkFullScreenIntentStatus = useCallback(async () => {
+    if (
+      Platform.OS !== "android" ||
+      !nativeAlarmSupported ||
+      Number(Platform.Version) < 34
+    ) {
+      setFullScreenIntentStatus(true);
+      return;
+    }
+    try {
+      const granted = await canUseFullScreenIntent();
+      setFullScreenIntentStatus(Boolean(granted));
+    } catch (err) {
+      console.warn("Full-screen intent permission check failed:", err);
+      setFullScreenIntentStatus(false);
+    }
+  }, [canUseFullScreenIntent, nativeAlarmSupported]);
+
   useEffect(() => {
     checkBatteryOptimizationStatus();
     checkExactAlarmStatus();
-  }, [checkBatteryOptimizationStatus, checkExactAlarmStatus]);
+    checkFullScreenIntentStatus();
+  }, [
+    checkBatteryOptimizationStatus,
+    checkExactAlarmStatus,
+    checkFullScreenIntentStatus,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
       checkBatteryOptimizationStatus();
       checkExactAlarmStatus();
-    }, [checkBatteryOptimizationStatus, checkExactAlarmStatus])
+      checkFullScreenIntentStatus();
+    }, [
+      checkBatteryOptimizationStatus,
+      checkExactAlarmStatus,
+      checkFullScreenIntentStatus,
+    ])
   );
   const refreshScheduleSyncState = useCallback(() => {
     let active = true;
@@ -323,6 +355,62 @@ export default function NotificationSettings() {
   const handleExactAlarmPermission = async () => {
     openExactAlarmSettings();
     setTimeout(() => checkExactAlarmStatus(), 1000);
+  };
+
+  const handleFullScreenIntentPermission = async () => {
+    openFullScreenIntentSettings();
+    setTimeout(() => checkFullScreenIntentStatus(), 1000);
+  };
+  const handleScheduleDeadlineDueTest = async () => {
+    const dueAtMs = Date.now() + 2 * 60 * 1000;
+    const triggerDate = new Date(dueAtMs);
+    const taskId = `deadline_test_task_${dueAtMs}`;
+    const result = await scheduleManagedDateNotification({
+      identifier: `deadline_due_test_${dueAtMs}`,
+      title: "Deadline Due Test",
+      body: "Test Task (General) is due now. Tap Done or Not Done.",
+      triggerDate,
+      contentExtra: {
+        data: {
+          type: "deadline_alarm",
+          notificationType: "deadline_alarm",
+          taskId,
+          taskTitle: "Test Task",
+          subject: "General",
+          subjectLabel: "General",
+          taskType: "custom",
+          taskPriority: "high",
+          dueAtMs,
+          dueAt: triggerDate.toISOString(),
+          dueDate: triggerDate.toISOString(),
+          stage: "due",
+          threshold: "due",
+          acknowledgeRequired: true,
+          isLeadTime: false,
+          intendedTriggerAtMs: dueAtMs,
+          scheduledAtMs: Date.now(),
+          deliveryPath: "notification_settings_test",
+        },
+        ...getAlarmStyleContentOptions({
+          includeActions: true,
+          dueNow: true,
+          sticky: true,
+        }),
+      },
+      preferExactAlarm: true,
+    });
+
+    if (result) {
+      Alert.alert(
+        "Due Alarm Test Scheduled",
+        "A deadline-style due alarm will fire in about 2 minutes. Leave the app or lock the phone to verify the popup, sound, and actions."
+      );
+    } else {
+      Alert.alert(
+        "Test Failed",
+        "Could not schedule the due alarm test on this device."
+      );
+    }
   };
   const { isSaving, startSaving, stopSaving } = useSavingSet();
   const [globalSaving, setGlobalSaving] = useState(false);
@@ -724,10 +812,30 @@ export default function NotificationSettings() {
                 <Text style={styles.statPillText}>Exact alarm off</Text>
               </View>
             )}
+          {Platform.OS === "android" &&
+            nativeAlarmSupported &&
+            fullScreenIntentStatus === false && (
+              <View
+                style={[
+                  styles.statPill,
+                  { backgroundColor: `${colors.danger}40` },
+                ]}
+              >
+                <Ionicons
+                  name="phone-portrait-outline"
+                  size={12}
+                  color="#fff"
+                />
+                <Text style={styles.statPillText}>Popup off</Text>
+              </View>
+            )}
         </View>
       </View>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: getTabBarContentBottomPadding(insets.bottom) },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Permission warning */}
@@ -1201,6 +1309,32 @@ export default function NotificationSettings() {
           <Ionicons name="chevron-forward" size={16} color={colors.danger} />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={[
+            styles.permissionBox,
+            {
+              backgroundColor: `${colors.warning}10`,
+              borderColor: colors.warning,
+            },
+          ]}
+          onPress={handleScheduleDeadlineDueTest}
+        >
+          <View style={styles.permissionLeft}>
+            <Ionicons name="alarm-outline" size={22} color={colors.warning} />
+            <View>
+              <Text style={[styles.permissionTitle, { color: colors.warning }]}>
+                Test Due Alarm (2 min)
+              </Text>
+              <Text
+                style={[styles.permissionSub, { color: `${colors.warning}cc` }]}
+              >
+                Schedules a real deadline-style due alarm about 2 minutes ahead
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.warning} />
+        </TouchableOpacity>
+
         {/* Test Notification */}
         <TouchableOpacity
           style={[
@@ -1339,6 +1473,42 @@ export default function NotificationSettings() {
                 <TouchableOpacity
                   style={styles.settingsBtn}
                   onPress={handleExactAlarmPermission}
+                >
+                  <Text style={styles.settingsBtnText}>Fix</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+          {Platform.OS === "android" && nativeAlarmSupported && (
+            <View
+              style={[
+                styles.settingsRow,
+                { borderTopWidth: 1, borderTopColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="phone-portrait-outline"
+                size={18}
+                color={
+                  fullScreenIntentStatus === false
+                    ? colors.danger
+                    : colors.success
+                }
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  Full-Screen Popups
+                </Text>
+                <Text style={[styles.cardDesc, { color: colors.muted }]}>
+                  {fullScreenIntentStatus === true
+                    ? "Full-screen alarm popups are enabled for lock screen alerts."
+                    : "Required for alarm to appear on lock screen (Android 14+). Tap to enable."}
+                </Text>
+              </View>
+              {fullScreenIntentStatus !== true && (
+                <TouchableOpacity
+                  style={styles.settingsBtn}
+                  onPress={handleFullScreenIntentPermission}
                 >
                   <Text style={styles.settingsBtnText}>Fix</Text>
                 </TouchableOpacity>
@@ -1620,7 +1790,6 @@ export default function NotificationSettings() {
             </View>
           ))
         )}
-        <View style={{ height: 32 }} />
       </ScrollView>
       {/* Add Custom Notification Modal */}
       <Modal visible={showCustom} transparent animationType="slide">

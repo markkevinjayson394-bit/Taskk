@@ -43,6 +43,7 @@ import {
   useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import {
   buildTaskCompletionUpdate,
   getTaskPriorityLevel,
@@ -722,7 +723,9 @@ export default function Assignments() {
       <OfflineBanner />
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.container}
+        contentContainerStyle={{
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+        }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1261,7 +1264,6 @@ export default function Assignments() {
               )}
             </>
           )}
-          <View style={{ height: 32 }} />
         </Animated.View>
       </ScrollView>
     </View>
@@ -1269,7 +1271,6 @@ export default function Assignments() {
 }
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { paddingBottom: 32 },
   hero: {
     paddingTop: 56,
     paddingBottom: 24,

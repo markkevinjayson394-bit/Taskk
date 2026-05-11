@@ -33,6 +33,12 @@ export const canPickNativeAlarmAudioFile =
   hasNativeAlarmModule &&
   typeof NativeAlarmModule.pickAlarmAudioFile === "function";
 
+const PERMISSION_PROMPT_COOLDOWN_MS = 60 * 1000;
+const permissionPromptState = {
+  exactAlarm: { open: false, lastAt: 0 },
+  fullScreen: { open: false, lastAt: 0 },
+};
+
 export function isNativeAlarmScheduledId(value) {
   return typeof value === "string" && value.startsWith(NATIVE_ALARM_ID_PREFIX);
 }
@@ -120,6 +126,107 @@ export function requestIgnoreBatteryOptimizations() {
   }
 }
 
+function maybeShowPermissionPrompt(kind, title, message, openSettings) {
+  const state = permissionPromptState[kind];
+  if (!state || state.open) return false;
+
+  const now = Date.now();
+  if (now - state.lastAt < PERMISSION_PROMPT_COOLDOWN_MS) return false;
+
+  state.open = true;
+  state.lastAt = now;
+
+  Alert.alert(
+    title,
+    message,
+    [
+      {
+        text: "Open Settings",
+        onPress: () => {
+          state.open = false;
+          openSettings?.();
+        },
+      },
+      {
+        text: "Later",
+        style: "cancel",
+        onPress: () => {
+          state.open = false;
+        },
+      },
+    ],
+    {
+      cancelable: true,
+      onDismiss: () => {
+        state.open = false;
+      },
+    }
+  );
+
+  return true;
+}
+
+export async function ensureNativeAlarmPermissions({
+  requireExactAlarm = false,
+  requireFullScreen = false,
+  prompt = false,
+  source = "unknown",
+} = {}) {
+  const result = {
+    exactAlarm: { status: "unsupported", value: true },
+    fullScreenIntent: { status: "unsupported", value: true },
+  };
+
+  if (Platform.OS !== "android" || !isNativeAlarmSupported) {
+    return result;
+  }
+
+  if (requireExactAlarm) {
+    const exactResult = await canScheduleExactAlarms();
+    const exactGranted =
+      exactResult?.status === "success"
+        ? Boolean(exactResult.value)
+        : exactResult?.status === "unsupported";
+    result.exactAlarm = {
+      status: exactResult?.status || "error",
+      value: exactGranted !== false,
+    };
+
+    if (prompt && exactResult?.status === "success" && !exactResult.value) {
+      maybeShowPermissionPrompt(
+        "exactAlarm",
+        "Enable Exact Alarms",
+        "Due and overdue task alarms need Exact alarms to ring on time outside the app.",
+        openExactAlarmSettings
+      );
+      warnIfDev(`NativeAlarm: exact alarm permission missing (${source})`);
+    }
+  }
+
+  if (requireFullScreen) {
+    if (Number(Platform.Version) < 34) {
+      result.fullScreenIntent = { status: "not_required", value: true };
+    } else {
+      const granted = await canUseFullScreenIntent();
+      result.fullScreenIntent = { status: "success", value: Boolean(granted) };
+
+      if (prompt && !granted) {
+        maybeShowPermissionPrompt(
+          "fullScreen",
+          "Enable Full-Screen Popups",
+          "Due and overdue task alarms need Full-screen popups to open over the lock screen on Android 14+.",
+          openFullScreenIntentSettings
+        );
+        warnIfDev(
+          `NativeAlarm: full-screen popup permission missing (${source})`
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
 export async function scheduleNativeAlarm({
   alarmId,
   triggerAt,
@@ -166,6 +273,11 @@ export async function cancelNativeAlarmByScheduledId(scheduledId) {
     warnIfDev("NativeAlarm: cancelExactAlarm failed:", err);
     return false;
   }
+}
+
+export async function cancelNativeAlarmByAlarmId(alarmId) {
+  if (!alarmId) return false;
+  return cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(String(alarmId)));
 }
 
 export async function cancelAllNativeAlarms() {

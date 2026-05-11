@@ -87,9 +87,7 @@ export function normalizeScheduleTypeValue(value) {
     .toLowerCase();
   if (lowered === "night") return "Night";
   if (lowered === "day") return "Day";
-  if (__DEV__) {
-    warnIfDev("normalizeScheduleTypeValue: unrecognized schedule type:", value);
-  }
+  warnIfDev("normalizeScheduleTypeValue: unrecognized schedule type:", value);
   return "Day";
 }
 

@@ -32,52 +32,230 @@ import notifee, {
 } from "@notifee/react-native";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
-import {
-  resolveTaskDueDate,
-} from "./academicTaskModel";
+import { resolveTaskDueDate } from "./academicTaskModel";
 import { getNext8AM } from "./alarmTimeHelpers.js";
 import { warnIfDev } from "./logger";
 import {
   cancelNativeAlarmByScheduledId,
+  ensureNativeAlarmPermissions,
+  forceStopNativeAlarm,
   isNativeAlarmScheduledId,
   isNativeAlarmSupported,
   scheduleNativeAlarm,
   stopActiveNativeAlarm,
   toNativeAlarmScheduledId,
-  writeAlarmAction,
-  canScheduleExactAlarms,
-  openExactAlarmSettings,
 } from "./nativeAlarm";
 import {
   buildManagedNotificationData,
   buildNotificationId,
 } from "./notificationIds";
 import { isPlannerTask } from "./taskFilters";
-import { getCheckpoint, setCheckpoint } from "./taskOverdueState";
+import {
+  advanceCheckpoint,
+  getCheckpoint,
+  resolveCurrentOverdueStageInfo,
+  resolveIntendedTriggerAt,
+  setCheckpoint,
+} from "./taskOverdueState";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
 
 export const DEADLINE_NOTIF_TYPE = "deadline_alarm";
-export const DEADLINE_CHANNEL_ID = "ctu-deadline-alarms-v1"; // due-moment / overdue — max importance
-export const LEAD_CHANNEL_ID = "ctu-deadline-lead-v1"; // lead-time warnings — high importance
+export const DEADLINE_CHANNEL_ID = "ctu-deadline-alarms-v2";
+export const LEAD_CHANNEL_ID = "ctu-deadline-lead-v2";
 export const DEADLINE_CATEGORY_ID = "deadline_alarm_actions";
 export const ACTION_NOT_DONE = "not_done_deadline_alarm";
 export const ACTION_MARK_DONE = "mark_done_deadline_alarm";
+export const ALARM_KIND_LEAD_NOTICE = "lead_notice";
+export const ALARM_KIND_DUE_ALARM = "due_alarm";
+export const ALARM_KIND_OVERDUE_ALARM = "overdue_alarm";
+export const ALARM_KIND_OVERDUE_SEED = "overdue_seed";
 
 const ALARM_RING_ACTIVITY = "com.ctudanao.timemanager.AlarmRingActivity";
 
-// — small / large icon names (must match drawable resources in android/app/src/main/res) —
-const SMALL_ICON = "ic_notification"; // 24×24 monochrome silhouette (white on transparent)
-const LARGE_ICON = "ic_launcher_round"; // 96×96 colour app icon
+const SMALL_ICON = "notification_icon";
+const LARGE_ICON = "ic_launcher_round";
+const IMMEDIATE_CATCHUP_DELAY_MS = 1500;
+const OVERDUE_SEED_TARGET_STAGE = "+15m";
 
-// Lead-time thresholds — 3 standard dismissable warnings
 const LEAD_TIMES = [
   { key: "1d", ms: 24 * 60 * 60 * 1000, label: "1 day" },
   { key: "2h", ms: 2 * 60 * 60 * 1000, label: "2 hours" },
   { key: "30m", ms: 30 * 60 * 1000, label: "30 min" },
-  { key: "1m", ms: 60 * 1000, label: "1 minute" },
+  { key: "5m", ms: 5 * 60 * 1000, label: "5 min" },
 ];
 
-// ─────────────────────── Internal helpers ───────────────────────
+function resolveNativeAlarmPath(permissionState) {
+  const exactGranted = permissionState?.exactAlarm?.value !== false;
+  const fullScreenGranted =
+    permissionState?.fullScreenIntent?.value !== false;
+
+  if (exactGranted && fullScreenGranted) return "native_popup";
+  if (exactGranted) return "native_no_fullscreen_popup";
+  if (fullScreenGranted) return "native_inexact_popup";
+  return "native_inexact_no_fullscreen_popup";
+}
+
+function logAlarmSchedulingPath(kind, alarmId, path, meta = {}) {
+  const details = {
+    ...meta,
+    intendedTriggerAt:
+      Number.isFinite(meta.intendedTriggerAt) && meta.intendedTriggerAt > 0
+        ? new Date(meta.intendedTriggerAt).toISOString()
+        : meta.intendedTriggerAt,
+    triggerAt:
+      Number.isFinite(meta.triggerAt) && meta.triggerAt > 0
+        ? new Date(meta.triggerAt).toISOString()
+        : meta.triggerAt,
+  };
+  warnIfDev(`[deadlineAlarm] ${kind} ${alarmId} -> ${path}`, details);
+}
+
+function getChainEntry(stageKey) {
+  return OVERDUE_CHAIN.find((entry) => entry.key === stageKey) || null;
+}
+
+function getStageIndex(stageKey) {
+  return OVERDUE_CHAIN.findIndex((entry) => entry.key === stageKey);
+}
+
+function buildDeliveryPath(path, hint = null) {
+  return hint ? `${hint}_${path}` : path;
+}
+
+function getOverdueSeedId(taskId) {
+  return buildNotificationId(
+    "deadline-followup",
+    taskId,
+    OVERDUE_SEED_TARGET_STAGE
+  );
+}
+
+async function cancelManagedNotificationId(id) {
+  if (!id) return;
+  try {
+    await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(id));
+  } catch (_e) {}
+  try {
+    await Notifications.cancelScheduledNotificationAsync(id);
+  } catch (_e) {}
+  try {
+    await notifee.cancelNotification(id);
+  } catch (_e) {}
+}
+
+async function cancelOverdueSeedAlarm(taskId) {
+  if (!taskId) return;
+  await cancelManagedNotificationId(getOverdueSeedId(taskId));
+}
+
+function buildAlarmTimingMeta({
+  stageKey,
+  intendedTriggerAtMs,
+  scheduledAtMs = Date.now(),
+  deliveryPath,
+} = {}) {
+  return {
+    ...(stageKey ? { stage: stageKey } : {}),
+    ...(Number.isFinite(intendedTriggerAtMs)
+      ? { intendedTriggerAtMs }
+      : {}),
+    ...(Number.isFinite(scheduledAtMs) ? { scheduledAtMs } : {}),
+    ...(typeof deliveryPath === "string" && deliveryPath
+      ? { deliveryPath }
+      : {}),
+  };
+}
+
+function computeActualDelayMs(intendedTriggerAtMs, nowMs = Date.now()) {
+  const resolvedIntendedTriggerAtMs = Number(intendedTriggerAtMs);
+  const resolvedNowMs = Number(nowMs);
+  if (
+    !Number.isFinite(resolvedIntendedTriggerAtMs) ||
+    !Number.isFinite(resolvedNowMs)
+  ) {
+    return null;
+  }
+  return Math.max(0, resolvedNowMs - resolvedIntendedTriggerAtMs);
+}
+
+function resolveNotificationIntendedTriggerAtMs(data = {}) {
+  const raw = Number(data?.intendedTriggerAtMs);
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+function resolveRequestedOverdueCheckpoint({
+  checkpoint,
+  dueAtMs,
+  triggerAt = null,
+  nowMs = Date.now(),
+}) {
+  const requestedKey =
+    typeof checkpoint?.key === "string" && checkpoint.key ? checkpoint.key : "due";
+  const requestedEntry = getChainEntry(requestedKey) || checkpoint || null;
+  const requestedIndex = getStageIndex(requestedKey);
+  const currentStageInfo = resolveCurrentOverdueStageInfo(dueAtMs, nowMs);
+  const currentIndex = getStageIndex(currentStageInfo?.key);
+  const requestedTriggerAt = Number(triggerAt);
+  const requestedIntendedTriggerAt =
+    Number.isFinite(requestedTriggerAt) && requestedTriggerAt > nowMs
+      ? requestedTriggerAt
+      : resolveIntendedTriggerAt(requestedKey, dueAtMs, nowMs);
+
+  if (
+    currentStageInfo?.key &&
+    currentIndex > requestedIndex
+  ) {
+    const upgradedEntry = getChainEntry(currentStageInfo.key);
+    return {
+      checkpoint: {
+        key: upgradedEntry?.key ?? currentStageInfo.key,
+        delayMs: upgradedEntry?.delayMs ?? null,
+      },
+      triggerAtMs: nowMs + IMMEDIATE_CATCHUP_DELAY_MS,
+      intendedTriggerAtMs: currentStageInfo.triggerAtMs,
+    };
+  }
+
+  if (Number.isFinite(requestedTriggerAt) && requestedTriggerAt > nowMs) {
+    return {
+      checkpoint: {
+        key: requestedEntry?.key ?? requestedKey,
+        delayMs: requestedEntry?.delayMs ?? null,
+      },
+      triggerAtMs: requestedTriggerAt,
+      intendedTriggerAtMs: requestedIntendedTriggerAt,
+    };
+  }
+
+  if (
+    Number.isFinite(requestedIntendedTriggerAt) &&
+    requestedIntendedTriggerAt > nowMs
+  ) {
+    return {
+      checkpoint: {
+        key: requestedEntry?.key ?? requestedKey,
+        delayMs: requestedEntry?.delayMs ?? null,
+      },
+      triggerAtMs: requestedIntendedTriggerAt,
+      intendedTriggerAtMs: requestedIntendedTriggerAt,
+    };
+  }
+
+  const fallbackStage = currentStageInfo?.key ?? requestedKey;
+  const fallbackEntry = getChainEntry(fallbackStage) || requestedEntry;
+  return {
+    checkpoint: {
+      key: fallbackEntry?.key ?? fallbackStage,
+      delayMs: fallbackEntry?.delayMs ?? null,
+    },
+    triggerAtMs: nowMs + IMMEDIATE_CATCHUP_DELAY_MS,
+    intendedTriggerAtMs:
+      currentStageInfo?.triggerAtMs ??
+      requestedIntendedTriggerAt ??
+      resolveIntendedTriggerAt(fallbackStage, dueAtMs, nowMs),
+  };
+}
+
 async function bootstrapDeadlineActionCategory() {
   if (typeof Notifications.setNotificationCategoryAsync !== "function") return;
   try {
@@ -102,7 +280,6 @@ export async function bootstrapDeadlineAlarmChannel() {
   await bootstrapDeadlineActionCategory();
   if (Platform.OS !== "android") return;
   try {
-    // Due-moment / overdue channel — alarm-grade, bypasses DnD
     await notifee.createChannel({
       id: DEADLINE_CHANNEL_ID,
       name: "Deadline Alarms",
@@ -117,15 +294,13 @@ export async function bootstrapDeadlineAlarmChannel() {
       bypassDnd: true,
     });
 
-    // Lead-time channel — important but not alarm-grade, respects DnD
     await notifee.createChannel({
       id: LEAD_CHANNEL_ID,
       name: "Deadline Reminders",
       description: "Advance warnings before task deadlines",
       importance: AndroidImportance.DEFAULT,
-      sound: "ctu_reminder",
-      vibration: true,
-      vibrationPattern: [0, 250, 150, 250],
+      vibration: false,
+      lights: false,
       visibility: AndroidVisibility.PUBLIC,
       bypassDnd: false,
     });
@@ -188,10 +363,19 @@ function buildDeadlineAlarmData(
   extra = {}
 ) {
   const meta = getTaskAlarmMeta(task, soundSettings);
+  const alarmKind =
+    typeof extra?.alarmKind === "string" && extra.alarmKind
+      ? extra.alarmKind
+      : extra?.isLeadTime === true
+        ? ALARM_KIND_LEAD_NOTICE
+        : extra?.isOverdueAlarm === true
+          ? ALARM_KIND_OVERDUE_ALARM
+          : ALARM_KIND_DUE_ALARM;
   return buildManagedNotificationData(identifier, {
     alarmId: identifier,
     type: DEADLINE_NOTIF_TYPE,
     notificationType: DEADLINE_NOTIF_TYPE,
+    alarmKind,
     taskId: task?.id || "",
     taskTitle: meta.taskTitle,
     subject: meta.subjectLabel,
@@ -248,6 +432,53 @@ function resolveNotificationDueAtMs(data = {}) {
   return Number.isFinite(parsedDueAtMs) ? parsedDueAtMs : null;
 }
 
+export function resolveNotificationAlarmKind(data = {}) {
+  if (typeof data?.alarmKind === "string" && data.alarmKind.trim()) {
+    return data.alarmKind.trim();
+  }
+  if (data?.isLeadTime === true) return ALARM_KIND_LEAD_NOTICE;
+  if (data?.isOverdueAlarm === true) return ALARM_KIND_OVERDUE_ALARM;
+  return ALARM_KIND_DUE_ALARM;
+}
+
+function resolveNotificationStageKey(data = {}) {
+  if (typeof data?.stage === "string" && data.stage.trim()) {
+    return data.stage.trim();
+  }
+  if (typeof data?.threshold === "string" && data.threshold.trim()) {
+    return data.threshold.trim();
+  }
+  return "due";
+}
+
+function buildTaskFromNotificationData(data = {}, dueAtMs) {
+  const subjectLabel =
+    typeof data?.subjectLabel === "string" && data.subjectLabel.trim()
+      ? data.subjectLabel.trim()
+      : typeof data?.subject === "string" && data.subject.trim()
+        ? data.subject.trim()
+        : "General";
+
+  return {
+    id: data.taskId,
+    title:
+      typeof data?.taskTitle === "string" && data.taskTitle.trim()
+        ? data.taskTitle.trim()
+        : "Task",
+    subject: subjectLabel,
+    subjectName: subjectLabel,
+    type:
+      typeof data?.taskType === "string" && data.taskType.trim()
+        ? data.taskType.trim()
+        : "custom",
+    priority:
+      typeof data?.taskPriority === "string" && data.taskPriority.trim()
+        ? data.taskPriority.trim()
+        : "medium",
+    dueAt: new Date(dueAtMs).toISOString(),
+  };
+}
+
 function buildOverdueNotifeeAndroid(isOngoing = true) {
   return {
     channelId: DEADLINE_CHANNEL_ID,
@@ -281,6 +512,20 @@ function buildOverdueNotifeeAndroid(isOngoing = true) {
   };
 }
 
+function buildLeadNotifeeAndroid() {
+  return {
+    channelId: LEAD_CHANNEL_ID,
+    importance: AndroidImportance.DEFAULT,
+    smallIcon: SMALL_ICON,
+    largeIcon: LARGE_ICON,
+    visibility: AndroidVisibility.PUBLIC,
+    ongoing: false,
+    autoCancel: true,
+    localOnly: false,
+    pressAction: { id: "default", launchActivity: "default" },
+  };
+}
+
 export async function displayAlarmNotification({
   id,
   title,
@@ -288,10 +533,13 @@ export async function displayAlarmNotification({
   data,
   isOngoing = true,
 }) {
+  const nowMs = Date.now();
   const dueAtMs = resolveNotificationDueAtMs(data);
+  const intendedTriggerAtMs = resolveNotificationIntendedTriggerAtMs(data);
+  const actualDelayMs = computeActualDelayMs(intendedTriggerAtMs, nowMs);
   const overdueMs =
     Number.isFinite(dueAtMs) && dueAtMs > 0
-      ? Math.max(0, Date.now() - dueAtMs)
+      ? Math.max(0, nowMs - dueAtMs)
       : 0;
   const resolvedDueDate =
     typeof data?.dueDate === "string" && data.dueDate
@@ -316,7 +564,17 @@ export async function displayAlarmNotification({
       ? { dueAt: resolvedDueDate, dueDate: resolvedDueDate }
       : {}),
     overdueMs: String(overdueMs),
+    ...(actualDelayMs !== null ? { actualDelayMs } : {}),
   };
+
+  warnIfDev(`[deadlineAlarm] display ${id}`, {
+    stage:
+      typeof resolvedData?.stage === "string" && resolvedData.stage
+        ? resolvedData.stage
+        : "due",
+    deliveryPath: resolvedData?.deliveryPath ?? "unknown",
+    actualDelayMs,
+  });
 
   await notifee.displayNotification({
     id,
@@ -327,74 +585,153 @@ export async function displayAlarmNotification({
   });
 }
 
+export async function displayLeadNotification({ id, title, body, data }) {
+  await notifee.displayNotification({
+    id,
+    title,
+    body,
+    data: {
+      ...data,
+      type: DEADLINE_NOTIF_TYPE,
+      notificationType: DEADLINE_NOTIF_TYPE,
+      alarmKind: ALARM_KIND_LEAD_NOTICE,
+      isLeadTime: true,
+      acknowledgeRequired: false,
+    },
+    android: buildLeadNotifeeAndroid(),
+  });
+}
+
 async function scheduleOverdueCheckpointAlarm({
   task,
   dueAtMs,
   checkpoint,
   soundSettings = {},
   triggerAt = null,
+  intendedTriggerAtMs = null,
+  deliveryPathHint = null,
 }) {
   if (!task?.id || !Number.isFinite(dueAtMs) || !checkpoint?.key) return null;
 
-  let resolvedTriggerAt = Number(triggerAt);
-  if (!Number.isFinite(resolvedTriggerAt) || resolvedTriggerAt <= 0) {
-    if (checkpoint.key === "daily") {
-      const daily = new Date();
-      daily.setHours(8, 0, 0, 0);
-      if (daily.getTime() <= Date.now()) daily.setDate(daily.getDate() + 1);
-      resolvedTriggerAt = daily.getTime();
-    } else if (Number.isFinite(checkpoint.delayMs)) {
-      resolvedTriggerAt = dueAtMs + checkpoint.delayMs;
-    } else {
-      return null;
-    }
-  }
+  const nowMs = Date.now();
+  const normalizedCheckpoint = resolveRequestedOverdueCheckpoint({
+    checkpoint,
+    dueAtMs,
+    triggerAt,
+    nowMs,
+  });
+  if (!normalizedCheckpoint?.checkpoint?.key) return null;
+
+  const resolvedCheckpoint = normalizedCheckpoint.checkpoint;
+  const resolvedTriggerAt = normalizedCheckpoint.triggerAtMs;
+  const resolvedIntendedTriggerAtMs =
+    Number.isFinite(Number(intendedTriggerAtMs)) &&
+    Number(intendedTriggerAtMs) > 0
+      ? Number(intendedTriggerAtMs)
+      : normalizedCheckpoint.intendedTriggerAtMs;
 
   const { taskTitle, subjectLabel } = getTaskAlarmMeta(task, soundSettings);
-  const id = buildNotificationId("deadline-overdue", task.id, checkpoint.key);
+  const id = buildNotificationId(
+    "deadline-overdue",
+    task.id,
+    resolvedCheckpoint.key
+  );
   const title = checkpoint.key === "daily" ? "⏰ Still Overdue" : "⏰ Overdue";
   const body = buildOverdueAlarmBody(
     taskTitle,
     subjectLabel,
     dueAtMs,
-    checkpoint.key
+    resolvedCheckpoint.key
   );
+  const resolvedTitle =
+    checkpoint.key === resolvedCheckpoint.key
+      ? title
+      : resolvedCheckpoint.key === "daily"
+        ? "Still Overdue"
+        : "Overdue";
 
   const data = buildDeadlineAlarmData(id, task, dueAtMs, soundSettings, {
-    stage: checkpoint.key,
+    alarmKind: ALARM_KIND_OVERDUE_ALARM,
+    stage: resolvedCheckpoint.key,
     acknowledgeRequired: true,
+    isLeadTime: false,
     isOverdueAlarm: true,
+    ...buildAlarmTimingMeta({
+      stageKey: resolvedCheckpoint.key,
+      intendedTriggerAtMs: resolvedIntendedTriggerAtMs,
+      scheduledAtMs: Date.now(),
+    }),
   });
 
-  await setCheckpoint(task.id, checkpoint.key, resolvedTriggerAt);
+  await cancelOverdueSeedAlarm(task.id);
+  await setCheckpoint(task.id, resolvedCheckpoint.key, resolvedTriggerAt);
 
   if (Platform.OS === "android" && isNativeAlarmSupported) {
+    let permissionState = null;
     try {
-      const canSchedule = await canScheduleExactAlarms();
-      if (canSchedule.status === "success" && !canSchedule.value) {
-        openExactAlarmSettings();
-      } else if (canSchedule.status === "success" && canSchedule.value) {
-        const result = await scheduleNativeAlarm({
-          alarmId: id,
-          triggerAt: resolvedTriggerAt,
-          title,
-          body,
-          payload: data,
-        });
-        if (result) return result;
+      permissionState =
+        typeof ensureNativeAlarmPermissions === "function"
+          ? await ensureNativeAlarmPermissions({
+              requireExactAlarm: true,
+              requireFullScreen: true,
+              prompt: true,
+              source: `overdue:${resolvedCheckpoint.key}:${id}`,
+            })
+          : null;
+      const nativePath = buildDeliveryPath(
+        resolveNativeAlarmPath(permissionState),
+        deliveryPathHint
+      );
+      data.deliveryPath = nativePath;
+      data.scheduledAtMs = Date.now();
+      const result = await scheduleNativeAlarm({
+        alarmId: id,
+        triggerAt: resolvedTriggerAt,
+        title: resolvedTitle,
+        body,
+        payload: data,
+      });
+      if (result) {
+        logAlarmSchedulingPath(
+          "overdue",
+          id,
+          nativePath,
+          {
+            stage: resolvedCheckpoint.key,
+            intendedTriggerAt: resolvedIntendedTriggerAtMs,
+            triggerAt: resolvedTriggerAt,
+          }
+        );
+        return result;
       }
+      logAlarmSchedulingPath(
+        "overdue",
+        id,
+        buildDeliveryPath("native_schedule_failed", deliveryPathHint),
+        {
+          stage: resolvedCheckpoint.key,
+          intendedTriggerAt: resolvedIntendedTriggerAtMs,
+          triggerAt: resolvedTriggerAt,
+        }
+      );
     } catch (err) {
       warnIfDev("scheduleOverdueCheckpointAlarm native failed:", err);
     }
+    warnIfDev(
+      "scheduleOverdueCheckpointAlarm: falling back to expo-notifications for " +
+        resolvedCheckpoint.key
+    );
   }
 
   try {
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+    data.deliveryPath = buildDeliveryPath("expo_fallback", deliveryPathHint);
+    data.scheduledAtMs = Date.now();
 
     const scheduledId = await Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
-        title,
+        title: resolvedTitle,
         body,
         data,
         categoryIdentifier: DEADLINE_CATEGORY_ID,
@@ -418,19 +755,12 @@ async function scheduleOverdueCheckpointAlarm({
           : { date: new Date(resolvedTriggerAt) },
     });
 
-    if (Platform.OS === "android" && resolvedTriggerAt <= Date.now() + 15_000) {
-      await displayAlarmNotification({
-        id: `${id}-display`,
-        title,
-        body,
-        data,
-        isOngoing: true,
-      }).catch((err) =>
-        warnIfDev(
-          "scheduleOverdueCheckpointAlarm: notifee immediate display failed:",
-          err
-        )
-      );
+    if (scheduledId) {
+      logAlarmSchedulingPath("overdue", id, data.deliveryPath, {
+        stage: resolvedCheckpoint.key,
+        intendedTriggerAt: resolvedIntendedTriggerAtMs,
+        triggerAt: resolvedTriggerAt,
+      });
     }
 
     return scheduledId;
@@ -445,23 +775,58 @@ async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
     return Notifications.scheduleNotificationAsync({
       identifier: id,
-      content: { title, body, data },
+      content: { title, body, data, sound: false },
       trigger: { date: new Date(triggerAt) },
     });
+  }
+
+  if (isNativeAlarmSupported) {
+    try {
+      const permissionState =
+        typeof ensureNativeAlarmPermissions === "function"
+          ? await ensureNativeAlarmPermissions({
+              requireExactAlarm: true,
+              requireFullScreen: false,
+              prompt: false,
+              source: `lead:${id}`,
+            })
+          : null;
+      const exactGranted = permissionState?.exactAlarm?.value !== false;
+      data.deliveryPath = exactGranted
+        ? "native_exact_lead"
+        : "native_inexact_lead";
+      data.scheduledAtMs = Date.now();
+      const scheduledId = await scheduleNativeAlarm({
+        alarmId: id,
+        triggerAt,
+        title,
+        body,
+        payload: data,
+      });
+      if (scheduledId) {
+        logAlarmSchedulingPath("lead", id, data.deliveryPath, {
+          stage: data?.stage ?? null,
+          intendedTriggerAt: triggerAt,
+          triggerAt,
+        });
+        return scheduledId;
+      }
+    } catch (err) {
+      warnIfDev(`scheduleLeadNotification native [${id}] failed:`, err);
+    }
   }
 
   try {
     await notifee.cancelNotification(id).catch(() => {});
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+    data.deliveryPath = "expo_fallback";
+    data.scheduledAtMs = Date.now();
     return Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
         body,
         data,
-        // REMOVED: channelId from content — it doesn't belong here on Android
-        sound: "ctu_reminder.wav",
-        vibrationPattern: [0, 250, 150, 250],
       },
       trigger: {
         type: "date",
@@ -517,25 +882,110 @@ async function scheduleDueMomentNotification({
   }
 }
 
+async function scheduleOverdueSeedAlarm({
+  task,
+  dueAtMs,
+  soundSettings = {},
+  triggerAt,
+}) {
+  if (
+    Platform.OS !== "android" ||
+    !task?.id ||
+    !Number.isFinite(dueAtMs) ||
+    !Number.isFinite(triggerAt) ||
+    !isNativeAlarmSupported
+  ) {
+    return null;
+  }
+
+  const seedId = getOverdueSeedId(task.id);
+  const data = buildDeadlineAlarmData(seedId, task, dueAtMs, soundSettings, {
+    alarmKind: ALARM_KIND_OVERDUE_SEED,
+    stage: "due",
+    seedTargetStage: OVERDUE_SEED_TARGET_STAGE,
+    acknowledgeRequired: false,
+    isLeadTime: false,
+    ...buildAlarmTimingMeta({
+      stageKey: "due",
+      intendedTriggerAtMs: triggerAt,
+      scheduledAtMs: Date.now(),
+    }),
+  });
+
+  await cancelOverdueSeedAlarm(task.id);
+
+  try {
+    const permissionState =
+      typeof ensureNativeAlarmPermissions === "function"
+        ? await ensureNativeAlarmPermissions({
+            requireExactAlarm: true,
+            requireFullScreen: false,
+            prompt: false,
+            source: `overdue_seed:${seedId}`,
+          })
+        : null;
+    const exactGranted = permissionState?.exactAlarm?.value !== false;
+    data.deliveryPath = exactGranted
+      ? "native_exact_overdue_seed"
+      : "native_inexact_overdue_seed";
+    data.scheduledAtMs = Date.now();
+    const scheduledId = await scheduleNativeAlarm({
+      alarmId: seedId,
+      triggerAt,
+      title: "Overdue follow-up",
+      body: "Scheduling next overdue reminder.",
+      payload: data,
+    });
+    if (scheduledId) {
+      logAlarmSchedulingPath("overdue_seed", seedId, data.deliveryPath, {
+        stage: OVERDUE_SEED_TARGET_STAGE,
+        intendedTriggerAt: triggerAt,
+        triggerAt,
+      });
+    }
+    return scheduledId;
+  } catch (err) {
+    warnIfDev(`scheduleOverdueSeedAlarm [${seedId}] failed:`, err);
+    return null;
+  }
+}
+
 /**
  * Schedule daily overdue alarm for specified trigger time (typically 8AM)
  */
-async function scheduleDailyOverdueAlarm(task, triggerAt, soundSettings = {}) {
+async function scheduleDailyOverdueAlarm(
+  task,
+  triggerAt,
+  soundSettings = {},
+  deliveryPathHint = null
+) {
   const dueAtMs = resolveTaskDueDate(task)?.getTime?.();
   if (!Number.isFinite(dueAtMs)) return null;
 
   const dailyCheckpoint = { stage: "daily", key: "daily", delayMs: null };
+  const resolvedTriggerAtMs =
+    triggerAt instanceof Date
+      ? triggerAt.getTime()
+      : Number.isFinite(Number(triggerAt))
+        ? Number(triggerAt)
+        : resolveIntendedTriggerAt("daily", dueAtMs, Date.now());
   return scheduleOverdueCheckpointAlarm({
     task,
     dueAtMs,
     checkpoint: dailyCheckpoint,
     soundSettings,
-    triggerAt: triggerAt.getTime(),
+    triggerAt: resolvedTriggerAtMs,
+    intendedTriggerAtMs: resolvedTriggerAtMs,
+    deliveryPathHint,
   });
 }
 
 // ─────────────────────── Main API ───────────────────────
-export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
+export async function scheduleDeadlineAlarms(
+  task,
+  soundSettings = {},
+  { force = false } = {}
+) {
   if (!task?.id) return [];
   if (task.completed || task.status === "done" || isPlannerTask(task)) {
     await cancelDeadlineAlarms(task);
@@ -555,21 +1005,33 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
   const ids = [];
   const dueAtMs = due.getTime();
 
+  const skipReschedule = false;
+  if (skipReschedule) {
+    warnIfDev(
+      "scheduleDeadlineAlarms: due date unchanged for",
+      task.id,
+      "— skipping reschedule"
+    );
+    return [];
+  }
+
   await cancelDeadlineAlarms(task);
 
   const { taskTitle, subjectLabel } = getTaskAlarmMeta(task, soundSettings);
 
   // Layer 1: lead-time warnings
   for (const lead of LEAD_TIMES) {
-  const triggerTime = dueAtMs - lead.ms;
-  // Skip if trigger is in the past (with a 5s grace for scheduling latency)
-  if (triggerTime <= now + 5_000) continue;
+    const triggerTime = dueAtMs - lead.ms;
+    // Skip if trigger is in the past (with a 5s grace for scheduling latency)
+    if (triggerTime <= now + 2_500) continue;
 
     const id = buildNotificationId("deadline-lead", task.id, lead.key);
     const leadTitle = buildLeadTitle(lead.label);
     const leadBody = buildLeadBody(taskTitle, subjectLabel, due);
     const data = buildDeadlineAlarmData(id, task, dueAtMs, soundSettings, {
+      alarmKind: ALARM_KIND_LEAD_NOTICE,
       leadKey: lead.key,
+      stage: lead.key,
       isLeadTime: true,
       acknowledgeRequired: false,
     });
@@ -586,32 +1048,66 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
 
   // Layer 2: due-moment alarm
   let scheduledDueId = null;
-  if (dueAtMs > now + 5000) {
+  if (dueAtMs > now) {
     const dueId = buildNotificationId("deadline-due", task.id, "due");
     const dueTitle = `🔔 ${taskTitle} is due NOW`;
     const dueBody = `"${taskTitle}" (${subjectLabel}) — tap Done or Not Done. Alarm loops until you respond.`;
+    const dueContent = { title: dueTitle, body: dueBody };
     const dueData = buildDeadlineAlarmData(
       dueId,
       task,
       dueAtMs,
       soundSettings,
       {
+        alarmKind: ALARM_KIND_DUE_ALARM,
         stage: "due",
         acknowledgeRequired: true,
+        isLeadTime: false,
+        ...buildAlarmTimingMeta({
+          stageKey: "due",
+          intendedTriggerAtMs: dueAtMs,
+          scheduledAtMs: Date.now(),
+        }),
       }
     );
+    await setCheckpoint(task.id, "due", dueAtMs);
     if (Platform.OS === "android" && isNativeAlarmSupported) {
+      let permissionState = null;
       try {
-        const canSchedule = await canScheduleExactAlarms();
-        if (canSchedule.status === "success" && !canSchedule.value) {
-          openExactAlarmSettings();
-        } else if (canSchedule.status === "success" && canSchedule.value) {
-          scheduledDueId = await scheduleNativeAlarm({
-            alarmId: dueId,
+        permissionState =
+          typeof ensureNativeAlarmPermissions === "function"
+            ? await ensureNativeAlarmPermissions({
+                requireExactAlarm: true,
+                requireFullScreen: true,
+                prompt: true,
+                source: `due:${dueId}`,
+              })
+            : null;
+        dueData.deliveryPath = resolveNativeAlarmPath(permissionState);
+        dueData.scheduledAtMs = Date.now();
+        scheduledDueId = await scheduleNativeAlarm({
+          alarmId: dueId,
+          triggerAt: dueAtMs,
+          title: dueContent.title,
+          body: dueContent.body,
+          payload: dueData,
+        });
+        if (scheduledDueId) {
+          logAlarmSchedulingPath(
+            "due",
+            dueId,
+            dueData.deliveryPath,
+            {
+              stage: "due",
+              intendedTriggerAt: dueAtMs,
+              triggerAt: dueAtMs,
+            }
+          );
+        } else {
+          logAlarmSchedulingPath("due", dueId, "native_schedule_failed", {
+            stage: "due",
+            intendedTriggerAt: dueAtMs,
             triggerAt: dueAtMs,
-            title: dueTitle,
-            body: dueBody,
-            payload: dueData,
           });
         }
       } catch (err) {
@@ -621,68 +1117,75 @@ export async function scheduleDeadlineAlarms(task, soundSettings = {}) {
       warnIfDev(
         "scheduleDeadlineAlarms: due-moment native alarm unsupported; falling back to expo-notifications."
       );
-    }
-
-    if (!scheduledDueId) {
-      scheduledDueId = await scheduleDueMomentNotification({
-        id: dueId,
-        title: dueTitle,
-        body: dueBody,
-        data: dueData,
+      logAlarmSchedulingPath("due", dueId, "native_unsupported", {
+        stage: "due",
+        intendedTriggerAt: dueAtMs,
         triggerAt: dueAtMs,
       });
     }
+
+    if (!scheduledDueId) {
+      dueData.deliveryPath = "expo_fallback";
+      dueData.scheduledAtMs = Date.now();
+      scheduledDueId = await scheduleDueMomentNotification({
+        id: dueId,
+        title: dueContent.title,
+        body: dueContent.body,
+        data: dueData,
+        triggerAt: dueAtMs,
+      });
+      if (scheduledDueId) {
+        logAlarmSchedulingPath("due", dueId, "expo_fallback", {
+          stage: "due",
+          intendedTriggerAt: dueAtMs,
+          triggerAt: dueAtMs,
+        });
+      }
+    }
     if (scheduledDueId) ids.push(scheduledDueId);
+    if (!scheduledDueId || !isNativeAlarmScheduledId(scheduledDueId)) {
+      const seedTriggerAt = resolveIntendedTriggerAt(
+        OVERDUE_SEED_TARGET_STAGE,
+        dueAtMs
+      );
+      if (Number.isFinite(seedTriggerAt) && seedTriggerAt > now) {
+        const seedId = await scheduleOverdueSeedAlarm({
+          task,
+          dueAtMs,
+          soundSettings,
+          triggerAt: seedTriggerAt,
+        });
+        if (seedId) ids.push(seedId);
+      }
+    }
+    return ids;
   }
 
   // AFTER — schedule each checkpoint in the chain that is still relevant
   // Track whether the due-moment alarm was scheduled natively, so we can
   // avoid double-firing an immediate "overdue" at the due moment.
-  const dueMomentScheduled = Boolean(
-    scheduledDueId && isNativeAlarmScheduledId(scheduledDueId)
-  );
-
-  for (const checkpoint of OVERDUE_CHAIN) {
-    if (checkpoint.key === "daily") {
-      const nextMorning = getNext8AM();
-      const scheduledId = await scheduleDailyOverdueAlarm(
-        task,
-        nextMorning,
-        soundSettings
-      );
-      if (scheduledId) ids.push(scheduledId);
-      continue;
-    }
-    if (!Number.isFinite(checkpoint.delayMs)) continue;
-
-    const checkpointTriggerAt = dueAtMs + checkpoint.delayMs;
-
-    if (checkpoint.key === "due") {
-      if (!dueMomentScheduled && dueAtMs <= now) {
-        const scheduledId = await scheduleOverdueCheckpointAlarm({
-          task,
-          dueAtMs,
-          checkpoint: { key: checkpoint.key, delayMs: checkpoint.delayMs },
-          soundSettings,
-          triggerAt: Date.now() + 1000,
-        });
-        if (scheduledId) ids.push(scheduledId);
-      }
-      continue;
-    }
-
-    if (checkpointTriggerAt <= now + 5000) continue;
-
-    const scheduledId = await scheduleOverdueCheckpointAlarm({
-      task,
-      dueAtMs,
-      checkpoint: { key: checkpoint.key, delayMs: checkpoint.delayMs },
-      soundSettings,
-      triggerAt: checkpointTriggerAt,
-    });
-    if (scheduledId) ids.push(scheduledId);
-  }
-
+  const currentStageInfo =
+    resolveCurrentOverdueStageInfo(dueAtMs, now) ?? {
+      key: "due",
+      triggerAtMs: dueAtMs,
+    };
+  const currentCheckpoint = getChainEntry(currentStageInfo.key) || {
+    key: currentStageInfo.key,
+    delayMs: null,
+  };
+  const scheduledOverdueId = await scheduleOverdueCheckpointAlarm({
+    task,
+    dueAtMs,
+    checkpoint: {
+      key: currentCheckpoint.key,
+      delayMs: currentCheckpoint.delayMs,
+    },
+    soundSettings,
+    triggerAt: now + IMMEDIATE_CATCHUP_DELAY_MS,
+    intendedTriggerAtMs: currentStageInfo.triggerAtMs,
+    deliveryPathHint: "reschedule_catchup",
+  });
+  if (scheduledOverdueId) ids.push(scheduledOverdueId);
   return ids;
 }
 
@@ -692,15 +1195,7 @@ export async function cancelDeadlineAlarms(task) {
   const thresholdKeys = [...LEAD_TIMES.map((l) => l.key), "due"];
   for (const key of thresholdKeys) {
     for (const id of getDeadlineNotificationIds(task.id, key)) {
-      try {
-        await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(id));
-      } catch (_e) {}
-      try {
-        await Notifications.cancelScheduledNotificationAsync(id);
-      } catch (_e) {}
-      try {
-        await notifee.cancelNotification(id);
-      } catch (_e) {}
+      await cancelManagedNotificationId(id);
     }
   }
 
@@ -709,9 +1204,7 @@ export async function cancelDeadlineAlarms(task) {
     const overdueDisplayId = `${overdueId}-display`;   // ← FIXED: cancel display variant too
 
     for (const id of [overdueId, overdueDisplayId]) {
-      try { await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(id)); } catch (_e) {}
-      try { await Notifications.cancelScheduledNotificationAsync(id); } catch (_e) {}
-      try { await notifee.cancelNotification(id); } catch (_e) {}
+      await cancelManagedNotificationId(id);
     }
   }
 
@@ -730,23 +1223,13 @@ export async function cancelDeadlineAlarms(task) {
     warnIfDev("Failed to cancel custom reminder alarm:", err);
   }
 
-  for (const suffix of ["60m"]) {
+  for (const suffix of ["60m", OVERDUE_SEED_TARGET_STAGE]) {
     const followupId = buildNotificationId(
       "deadline-followup",
       task.id,
       suffix
     );
-    try {
-      await cancelNativeAlarmByScheduledId(
-        toNativeAlarmScheduledId(followupId)
-      );
-    } catch (_e) {}
-    try {
-      await Notifications.cancelScheduledNotificationAsync(followupId);
-    } catch (_e) {}
-    try {
-      await notifee.cancelNotification(followupId);
-    } catch (_e) {}
+    await cancelManagedNotificationId(followupId);
   }
 
   // Cancel auto-overdue alarms scheduled by overdueAutoLaunch.js
@@ -778,6 +1261,9 @@ export async function rescheduleAllDeadlineAlarms(
       .map(async (task) => {
         // If task is already overdue and has an active checkpoint,
         // skip rescheduling — backgroundAlarmChecker handles repair
+        if (task?.id) {
+          return scheduleDeadlineAlarms(task, soundSettings, { force: true });
+        }
         const dueMs = resolveTaskDueDate(task)?.getTime();
         if (dueMs && dueMs <= now) {
           const checkpoint = await getCheckpoint(task.id);
@@ -803,10 +1289,14 @@ export async function rescheduleAllDeadlineAlarms(
             }
           }
         }
-        return scheduleDeadlineAlarms(task, soundSettings);
+        return scheduleDeadlineAlarms(task, soundSettings, { force: true });
       })
   );
   return results.flat().filter(Boolean);
+}
+
+export async function forceScheduleDeadlineAlarms(task, soundSettings = {}) {
+  return scheduleDeadlineAlarms(task, soundSettings, { force: true });
 }
 
 export async function scheduleNextOverdueAlarm({
@@ -814,16 +1304,29 @@ export async function scheduleNextOverdueAlarm({
   checkpoint,
   soundSettings = {},
   triggerAt = null,
+  intendedTriggerAtMs = null,
+  deliveryPathHint = null,
 }) {
   const dueAtMs = resolveTaskDueDate(task)?.getTime?.();
   if (!task?.id || !Number.isFinite(dueAtMs) || !checkpoint?.key) return null;
+  await cancelOverdueSeedAlarm(task.id);
+  if (checkpoint.key === "daily") {
+    return scheduleDailyOverdueAlarm(
+      task,
+      triggerAt,
+      soundSettings,
+      deliveryPathHint
+    );
+  }
   return scheduleOverdueCheckpointAlarm({
-          task,
-          dueAtMs,
-          checkpoint: { key: checkpoint.key, delayMs: checkpoint.delayMs },
-          soundSettings,
-          triggerAt: triggerAt ?? Date.now() + 3000,
-        });
+    task,
+    dueAtMs,
+    checkpoint: { key: checkpoint.key, delayMs: checkpoint.delayMs },
+    soundSettings,
+    triggerAt: triggerAt ?? Date.now() + IMMEDIATE_CATCHUP_DELAY_MS,
+    intendedTriggerAtMs,
+    deliveryPathHint,
+  });
 }
 
 export async function handleDeadlineAlarmResponse(response) {
@@ -841,15 +1344,40 @@ export async function handleDeadlineAlarmResponse(response) {
   const notificationIdentifier =
     response.notification.request.identifier ?? null;
   const actionIdentifier = response.actionIdentifier ?? "default";
-  const pendingAction =
-    actionIdentifier === ACTION_MARK_DONE
-      ? "markdone"
-      : actionIdentifier === ACTION_NOT_DONE
-        ? "notdone"
-        : "default";
+  const isNotDoneAction = actionIdentifier === ACTION_NOT_DONE;
 
   try {
-    if (Platform.OS === "android") await stopActiveNativeAlarm();
+    if (Platform.OS === "android") {
+      const withNativeStopTimeout = (callback, timeoutMessage) =>
+        new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            warnIfDev(timeoutMessage);
+            resolve(false);
+          }, 3000);
+
+          Promise.resolve()
+            .then(() => callback())
+            .then((value) => {
+              clearTimeout(timeoutId);
+              resolve(value);
+            })
+            .catch((error) => {
+              clearTimeout(timeoutId);
+              reject(error);
+            });
+        });
+
+      const stopped = await withNativeStopTimeout(
+        () => stopActiveNativeAlarm(),
+        "handleDeadlineAlarmResponse: stopActiveNativeAlarm timed out — continuing"
+      );
+      if (!stopped && typeof forceStopNativeAlarm === "function") {
+        await withNativeStopTimeout(
+          () => forceStopNativeAlarm(),
+          "handleDeadlineAlarmResponse: forceStopNativeAlarm timed out — continuing"
+        );
+      }
+    }
     if (
       notificationIdentifier &&
       typeof Notifications.dismissNotificationAsync === "function"
@@ -868,9 +1396,49 @@ export async function handleDeadlineAlarmResponse(response) {
     );
   }
 
-  if (Platform.OS === "android") {
+  warnIfDev(
+    `[deadlineAlarm] response ${notificationIdentifier || taskId}`,
+    {
+      stage: resolveNotificationStageKey(data),
+      deliveryPath: data?.deliveryPath ?? "unknown",
+      actualDelayMs: computeActualDelayMs(
+        resolveNotificationIntendedTriggerAtMs(data),
+        Date.now()
+      ),
+      actionIdentifier,
+    }
+  );
+
+  if (isNotDoneAction) {
     try {
-      await writeAlarmAction(pendingAction, taskId, JSON.stringify(data));
-    } catch (_e) {}
+      await bootstrapDeadlineAlarmChannel().catch(() => {});
+
+      const stageKey = resolveNotificationStageKey(data);
+      const dueAtMs = resolveNotificationDueAtMs(data);
+      if (!Number.isFinite(dueAtMs) || dueAtMs <= 0) return;
+
+      const nextCheckpoint = await advanceCheckpoint(taskId, stageKey, dueAtMs);
+      if (!nextCheckpoint?.key) return;
+
+      const chainEntry =
+        OVERDUE_CHAIN.find((entry) => entry.key === nextCheckpoint.key) ||
+        nextCheckpoint;
+
+      await scheduleNextOverdueAlarm({
+        task: buildTaskFromNotificationData(data, dueAtMs),
+        checkpoint: {
+          key: chainEntry.key,
+          delayMs: chainEntry.delayMs,
+        },
+        triggerAt: nextCheckpoint.triggerAtMs ?? null,
+        intendedTriggerAtMs: nextCheckpoint.triggerAtMs ?? null,
+        deliveryPathHint: "not_done",
+      });
+    } catch (err) {
+      warnIfDev(
+        "handleDeadlineAlarmResponse: failed to advance not-done checkpoint:",
+        err
+      );
+    }
   }
 }

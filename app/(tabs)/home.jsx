@@ -48,6 +48,7 @@ import {
   saveToCache,
   useOffline,
 } from "../../context/OfflineContext";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { useTheme } from "../../context/ThemeContext";
 import {
   PRIORITY_COLOR,
@@ -301,7 +302,9 @@ export default function HomeDashboard() {
     alarmThresholdKey,
     acknowledgeAlarm,
     notDoneAlarm,
-  } = useDeadlineAlarmScheduler(upcomingAssignments);
+  } = useDeadlineAlarmScheduler(upcomingAssignments, {
+    foregroundModalEnabled: false,
+  });
 
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
@@ -1073,7 +1076,9 @@ export default function HomeDashboard() {
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar barStyle="light-content" backgroundColor={colors.primary} />
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={{
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+        }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -1727,7 +1732,6 @@ export default function HomeDashboard() {
             </TouchableOpacity>
           )}
 
-          <View style={{ height: 24 }} />
         </Animated.View>
       </ScrollView>
 
@@ -1754,7 +1758,6 @@ export default function HomeDashboard() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { paddingBottom: 32 },
   // Hero
   hero: {
     paddingTop: 56,

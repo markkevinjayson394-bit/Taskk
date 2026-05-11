@@ -51,6 +51,7 @@ import {
   toDateKey,
 } from "@/utils/dateHelpers";
 import { formatDeadlineCountdown } from "../../utils/deadlineTime";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import {
   cancelNativeAlarmByScheduledId,
   isNativeAlarmSupported,
@@ -1045,7 +1046,10 @@ export default function CalendarPlannerScreen() {
 
       <Animated.ScrollView
         style={{ opacity: fadeAnim }}
-        contentContainerStyle={s.scroll}
+        contentContainerStyle={[
+          s.scroll,
+          { paddingBottom: getTabBarContentBottomPadding(insets.bottom) },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -1538,7 +1542,6 @@ export default function CalendarPlannerScreen() {
           )}
         </View>
 
-        <View style={{ height: 32 }} />
       </Animated.ScrollView>
 
       {/* Add / Edit Modal */}

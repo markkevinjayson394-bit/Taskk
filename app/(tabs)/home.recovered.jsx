@@ -53,6 +53,7 @@ import {
   saveToCache,
   useOffline,
 } from "../../context/OfflineContext";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { useTheme } from "../../context/ThemeContext";
 import {
   PRIORITY_COLOR,
@@ -313,7 +314,9 @@ export default function HomeDashboard() {
     notDoneAlarm,
     markDoneAlarm,
     showAlarmForTask,
-  } = useDeadlineAlarmScheduler(stableUpcomingAssignments);
+  } = useDeadlineAlarmScheduler(stableUpcomingAssignments, {
+    foregroundModalEnabled: false,
+  });
 
   const { focusTaskId, showAlarm } = useLocalSearchParams();
 
@@ -954,7 +957,9 @@ export default function HomeDashboard() {
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar barStyle="light-content" backgroundColor={colors.primary} />
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={{
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+        }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -1585,7 +1590,6 @@ export default function HomeDashboard() {
               </Text>
             </TouchableOpacity>
           )}
-          <View style={{ height: 24 }} />
         </Animated.View>
       </ScrollView>
       <DeadlineAlarmModal
@@ -1606,7 +1610,6 @@ export default function HomeDashboard() {
 }
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { paddingBottom: 32 },
   // Hero
   hero: {
     paddingTop: 56,

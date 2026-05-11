@@ -36,6 +36,7 @@ import {
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { reportWarning } from "../../utils/logger";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 const isFabric =
   typeof global !== "undefined" && Boolean(global.nativeFabricUIManager);
 if (
@@ -231,7 +232,10 @@ export default function AnnouncementsScreen() {
       </View>
       <Animated.ScrollView
         style={{ opacity: fadeAnim }}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[
+          styles.listContainer,
+          { paddingBottom: getTabBarContentBottomPadding(insets.bottom) },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -354,7 +358,6 @@ export default function AnnouncementsScreen() {
             </Text>
           </TouchableOpacity>
         )}
-        <View style={{ height: 32 }} />
       </Animated.ScrollView>
     </View>
   );

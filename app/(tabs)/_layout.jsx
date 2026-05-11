@@ -18,14 +18,22 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs, usePathname, useRouter } from "expo-router";
 import { useEffect } from "react";
-import { TouchableOpacity, View } from "react-native";
+import { Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NotificationProvider } from "../../context/NotificationContext";
 import { OfflineProvider } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useAndroidBackNavigation } from "../../hooks/useAndroidBackNavigation";
+import { useExactAlarmStartupCheck } from "../../hooks/useExactAlarmStartupCheck";
 import { bootstrapDeadlineAlarmChannel } from "../../utils/deadlineAlarmBackground";
 import { warnIfDev } from "../../utils/logger";
+import {
+  TAB_BAR_PADDING_TOP,
+  TAB_BAR_SIDE_MARGIN,
+  TAB_BAR_VISIBLE_HEIGHT,
+  getFloatingTabBarBottomOffset,
+  getFloatingTabBarHeight,
+} from "../../utils/tabBarLayout";
 
 const VISIBLE_TAB_ROUTES = new Set([
   "home",
@@ -35,18 +43,17 @@ const VISIBLE_TAB_ROUTES = new Set([
   "profile",
 ]);
 
-// Tab bar height constants — single source of truth used by both tabBarStyle
-// and the FAB positioning so they always stay in sync.
-const TAB_BAR_BASE_HEIGHT = 58;
-const TAB_BAR_PADDING_TOP = 8;
-// Total visible height of the tab bar above the safe area bottom inset:
-const TAB_BAR_VISIBLE_HEIGHT = TAB_BAR_BASE_HEIGHT + TAB_BAR_PADDING_TOP;
+function NotificationStartupEffects() {
+  useExactAlarmStartupCheck();
+  return null;
+}
 
 export default function TabsLayout() {
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
+  const tabBarBottomOffset = getFloatingTabBarBottomOffset(insets.bottom);
 
   const showQuickAdd = !String(pathname || "").includes("/TaskManagerScreen");
 
@@ -74,6 +81,7 @@ export default function TabsLayout() {
   return (
     <OfflineProvider>
       <NotificationProvider>
+        <NotificationStartupEffects />
         <View style={{ flex: 1 }}>
           <Tabs
             backBehavior="history"
@@ -82,31 +90,40 @@ export default function TabsLayout() {
 
               return {
                 headerShown: false,
-                // FIX: use only `href: null` to hide non-visible tabs —
+                // FIX: use only `href: null` to hide non-visible tabs -
                 // the old code also set tabBarButton and tabBarItemStyle
                 // which is redundant and harder to maintain.
                 href: isVisibleTab ? undefined : null,
                 tabBarActiveTintColor: colors.primary,
                 tabBarInactiveTintColor: isDark ? "#64748b" : "#94a3b8",
                 tabBarStyle: {
+                  position: "absolute",
+                  left: TAB_BAR_SIDE_MARGIN,
+                  right: TAB_BAR_SIDE_MARGIN,
+                  bottom: tabBarBottomOffset,
                   backgroundColor: colors.card,
                   borderTopColor: isDark
                     ? "rgba(255,255,255,0.08)"
                     : "rgba(0,0,0,0.08)",
                   borderTopWidth: 1,
-                  height: TAB_BAR_BASE_HEIGHT + insets.bottom,
+                  borderRadius: 24,
+                  height: getFloatingTabBarHeight(insets.bottom),
                   paddingBottom: insets.bottom + 6,
                   paddingTop: TAB_BAR_PADDING_TOP,
                   elevation: 16,
                   shadowColor: "#000",
-                  shadowOffset: { width: 0, height: -4 },
-                  shadowOpacity: isDark ? 0.45 : 0.09,
-                  shadowRadius: 12,
+                  shadowOffset: { width: 0, height: 8 },
+                  shadowOpacity: isDark ? 0.45 : 0.12,
+                  shadowRadius: 18,
                 },
                 tabBarLabelStyle: {
                   fontSize: 10,
                   fontWeight: "700",
                   letterSpacing: 0.2,
+                },
+                tabBarItemStyle: {
+                  paddingVertical: 2,
+                  borderRadius: 18,
                 },
               };
             }}
@@ -194,23 +211,60 @@ export default function TabsLayout() {
                 // FIX: was `insets.bottom + 72` which double-counted insets.
                 // The tab bar height above safe area is TAB_BAR_VISIBLE_HEIGHT,
                 // so FAB sits that many points above the bottom safe area edge.
-                bottom: insets.bottom + TAB_BAR_VISIBLE_HEIGHT + 8,
-                width: 54,
-                height: 54,
-                borderRadius: 27,
+                bottom:
+                  tabBarBottomOffset + TAB_BAR_VISIBLE_HEIGHT + 16,
+                width: 64,
+                height: 64,
+                borderRadius: 32,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: colors.primary,
+                borderWidth: 4,
+                borderColor: colors.background,
                 shadowColor: "#000",
-                shadowOffset: { width: 0, height: 4 },
-                shadowOpacity: 0.25,
-                shadowRadius: 8,
-                elevation: 8,
+                shadowOffset: { width: 0, height: 10 },
+                shadowOpacity: 0.28,
+                shadowRadius: 18,
+                elevation: 10,
               }}
               accessibilityLabel="Quick add task"
               accessibilityHint="Opens the task manager screen"
             >
-              <Ionicons name="add" size={24} color="#fff" />
+              <View
+                style={{
+                  width: 54,
+                  height: 54,
+                  borderRadius: 27,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: isDark
+                    ? "rgba(255,255,255,0.08)"
+                    : "rgba(255,255,255,0.14)",
+                }}
+              >
+                <Ionicons name="add" size={24} color="#fff" />
+              </View>
+              <View
+                style={{
+                  position: "absolute",
+                  top: -10,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderRadius: 999,
+                  backgroundColor: colors.accent || "#f59e0b",
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontSize: 10,
+                    fontWeight: "800",
+                    letterSpacing: 0.2,
+                  }}
+                >
+                  ADD
+                </Text>
+              </View>
             </TouchableOpacity>
           )}
         </View>

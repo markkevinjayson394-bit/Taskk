@@ -19,12 +19,12 @@ export default function ScheduleClonePanel({
     String(cloneSection) === String(sourceSection);
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.card }]}> 
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
       <View style={styles.cloneHeader}>
-        <Text style={[styles.cloneTitle, { color: colors.text }]}> 
+        <Text style={[styles.cloneTitle, { color: colors.text }]}>
           Clone Schedule
         </Text>
-        <Text style={[styles.cloneSub, { color: colors.muted }]}> 
+        <Text style={[styles.cloneSub, { color: colors.muted }]}>
           Copy this schedule to another year or section.
         </Text>
       </View>
@@ -65,7 +65,7 @@ export default function ScheduleClonePanel({
         </View>
       </View>
 
-<TouchableOpacity
+      <TouchableOpacity
         style={[
           styles.cloneBtn,
           {

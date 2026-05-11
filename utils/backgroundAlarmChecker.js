@@ -12,13 +12,13 @@
 import * as Notifications from "expo-notifications";
 import { enableNetwork } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
+import { resolveTaskDueDate } from "./academicTaskModel";
 import {
   bootstrapDeadlineAlarmChannel,
   cancelDeadlineAlarms,
   rescheduleAllDeadlineAlarms,
   scheduleNextOverdueAlarm,
 } from "./deadlineAlarmBackground";
-import { getNext8AM } from "./alarmTimeHelpers.js";
 import { reportError, warnIfDev } from "./logger";
 import { buildNotificationId } from "./notificationIds";
 import {
@@ -32,7 +32,11 @@ import {
   getOverdueTasks,
   readSchedulablePendingTasks,
 } from "./pendingTaskSources";
-import { getCheckpoint, OVERDUE_CHAIN } from "./taskOverdueState";
+import {
+  getCheckpoint,
+  resolveCurrentOverdueStageInfo,
+} from "./taskOverdueState";
+import { OVERDUE_CHAIN } from "./deadlineConstants";
 
 let TaskManager = null;
 try {
@@ -151,8 +155,17 @@ try {
             continue;
           }
 
-          const checkpoint = await getCheckpoint(task.id);
-          if (!checkpoint) continue;
+          const dueAtMs = resolveTaskDueDate(task)?.getTime?.();
+          const currentStageInfo = resolveCurrentOverdueStageInfo(dueAtMs, now);
+          let checkpoint = await getCheckpoint(task.id);
+          const resolvedStageKey = currentStageInfo?.key || checkpoint?.key;
+          if (!resolvedStageKey) continue;
+          if (!checkpoint?.key) {
+            checkpoint = {
+              key: resolvedStageKey,
+              triggerAtMs: currentStageInfo?.triggerAtMs ?? null,
+            };
+          }
 
           // Check if the current checkpoint alarm is already scheduled
           const expectedId = buildNotificationId(
@@ -161,17 +174,31 @@ try {
             checkpoint.key    // ← confirmed: uses .key (normalized in Step 2)
           );
           if (scheduledIds.has(expectedId)) continue;
+          const currentExpectedId = buildNotificationId(
+            "deadline-overdue",
+            task.id,
+            resolvedStageKey
+          );
+          if (scheduledIds.has(currentExpectedId)) continue;
 
-          const TRIGGER_GRACE_MS = 2 * 60 * 1000;
+          const pendingTriggerAt =
+            Number.isFinite(currentStageInfo?.triggerAtMs) &&
+            currentStageInfo.triggerAtMs > 0
+              ? currentStageInfo.triggerAtMs
+              : Number.isFinite(checkpoint?.triggerAtMs) &&
+                  checkpoint.triggerAtMs > 0
+                ? checkpoint.triggerAtMs
+                : null;
+          const TRIGGER_GRACE_MS = 30 * 1000;
           if (
-            Number.isFinite(checkpoint.triggerAtMs) &&
-            checkpoint.triggerAtMs > now + 30 * 1000
+            Number.isFinite(checkpoint?.triggerAtMs) &&
+            checkpoint.triggerAtMs > now + 5 * 1000
           ) {
             continue;
           }
           if (
-            Number.isFinite(checkpoint.triggerAtMs) &&
-            now - checkpoint.triggerAtMs < TRIGGER_GRACE_MS
+            Number.isFinite(checkpoint?.triggerAtMs) &&
+            Math.abs(now - checkpoint.triggerAtMs) < TRIGGER_GRACE_MS
           ) {
             continue;
           }
@@ -183,17 +210,25 @@ try {
             (c) => c.key === checkpoint.key   // ← confirmed: uses .key
           );
           if (!currentCheckpoint) continue;
+          const effectiveCheckpoint =
+            OVERDUE_CHAIN.find((c) => c.key === resolvedStageKey) ||
+            currentCheckpoint;
 
           // Fire repair alarm 30 seconds from now to avoid spamming immediately.
-          const isDaily = currentCheckpoint.key === "daily";
-          const repairTriggerAt = isDaily
-            ? getNext8AM().getTime()       // daily must fire at 8 AM, not in 30s
-            : now + 30 * 1000;
+          const repairTriggerAt =
+            Number.isFinite(pendingTriggerAt) && pendingTriggerAt > now
+              ? pendingTriggerAt
+              : now + 1500;
 
           const repairedId = await scheduleNextOverdueAlarm({
             task,
-            checkpoint: { key: currentCheckpoint.key, delayMs: currentCheckpoint.delayMs },
+            checkpoint: {
+              key: effectiveCheckpoint.key,
+              delayMs: effectiveCheckpoint.delayMs,
+            },
             triggerAt: repairTriggerAt,
+            intendedTriggerAtMs: pendingTriggerAt,
+            deliveryPathHint: "background_repair",
           });
           if (repairedId) repaired += 1;
         }

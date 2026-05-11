@@ -32,6 +32,7 @@ import {
   buildManagedNotificationData,
   buildNotificationId,
 } from "./notificationIds";
+import { resolveCurrentOverdueStageInfo } from "./taskOverdueState";
 import {
   buildOfflineTaskFromQueueItem,
   readOfflineCreateQueue,
@@ -158,6 +159,7 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
   if (!task) return;
 
   const dueAtMs = getTaskDueAtMs(task);
+  const currentStageInfo = resolveCurrentOverdueStageInfo(dueAtMs, Date.now());
   const taskTitle =
     typeof task.title === "string" && task.title.trim()
       ? task.title.trim()
@@ -182,6 +184,10 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
     subject,
     dueAtMs: Number.isFinite(dueAtMs) ? dueAtMs : null,
     acknowledgeRequired: true,
+    stage: currentStageInfo?.key ?? "due",
+    intendedTriggerAtMs: currentStageInfo?.triggerAtMs ?? dueAtMs,
+    scheduledAtMs: Date.now(),
+    deliveryPath: "app_open_catchup",
   });
 
   const result = await scheduleNativeAlarm({

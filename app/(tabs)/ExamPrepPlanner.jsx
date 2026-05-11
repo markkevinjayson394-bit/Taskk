@@ -42,6 +42,7 @@ import { useTheme } from "../../context/ThemeContext";
 import { getUrgencyMeta } from "../../utils/deadlineTime";
 import { daysUntil, formatDateShort, formatDateMedium } from "../../utils/dateHelpers";
 import { safeParseExamPlans } from "../../utils/parsing";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 
 //  Constants
 const PLANS_KEY = (uid) => `exam_prep_plans_${uid}`;
@@ -506,7 +507,10 @@ export default function ExamPrepPlanner() {
       {/* FIX: real RefreshControl instead of <View /> placeholder */}
       <Animated.ScrollView
         style={{ opacity: fadeAnim }}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: getTabBarContentBottomPadding(insets.bottom) },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -879,7 +883,6 @@ export default function ExamPrepPlanner() {
             );
           })
         )}
-        <View style={{ height: 32 }} />
       </Animated.ScrollView>
 
       <Modal

@@ -204,28 +204,40 @@ export default function CreateSchedule() {
   };
 
   const updateClass = (day, index, field, value) => {
-    const copy = { ...weekClasses };
-    copy[day][index][field] = value;
+    setWeekClasses((prev) => {
+      const copy = {
+        ...prev,
+        [day]: prev[day].map((cls, i) =>
+          i === index ? { ...cls, [field]: value } : cls
+        ),
+      };
 
-    if (field === "start" || field === "end") {
-      const cls = copy[day][index];
-      const startVal = field === "start" ? value : cls.start;
-      const endVal = field === "end" ? value : cls.end;
-      if (startVal && endVal) {
-        copy[day][index].timeDisplay =
-          `${formatTime(startVal)} - ${formatTime(endVal)}`;
-      } else if (startVal) {
-        copy[day][index].timeDisplay = formatTime(startVal);
+      if (field === "start" || field === "end") {
+        const cls = copy[day][index];
+        const startVal = field === "start" ? value : cls.start;
+        const endVal = field === "end" ? value : cls.end;
+        if (startVal && endVal) {
+          copy[day][index] = {
+            ...cls,
+            timeDisplay: `${formatTime(startVal)} - ${formatTime(endVal)}`,
+          };
+        } else if (startVal) {
+          copy[day][index] = {
+            ...cls,
+            timeDisplay: formatTime(startVal),
+          };
+        }
       }
-    }
 
-    setWeekClasses(copy);
+      return copy;
+    });
   };
 
   const deleteClass = (day, index) => {
-    const copy = { ...weekClasses };
-    copy[day].splice(index, 1);
-    setWeekClasses(copy);
+    setWeekClasses((prev) => ({
+      ...prev,
+      [day]: prev[day].filter((_, i) => i !== index),
+    }));
   };
 
   const copyDay = (day) => {

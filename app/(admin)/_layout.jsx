@@ -88,7 +88,7 @@ export default function AdminLayout() {
       unsub();
       clearTimeout(timeout);
     };
-  }, [router]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   //  Error screen
   if (error) {

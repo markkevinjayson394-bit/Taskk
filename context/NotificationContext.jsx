@@ -25,7 +25,6 @@
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
-import { useRouter } from "expo-router";
 import {
   collection,
   doc,
@@ -50,7 +49,6 @@ import {
 } from "../utils/classScheduleCache";
 import {
   cancelDeadlineAlarms,
-  handleDeadlineAlarmResponse,
   rescheduleAllDeadlineAlarms,
   scheduleDeadlineAlarms,
 } from "../utils/deadlineAlarmBackground";
@@ -58,6 +56,8 @@ import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { reportError, reportWarning, warnIfDev } from "../utils/logger";
 import {
   cancelNativeAlarmByScheduledId,
+  ensureNativeAlarmPermissions,
+  canUseFullScreenIntent,
   canPickNativeAlarmAudioFile,
   canPickNativeAlarmTone,
   canScheduleExactAlarms,
@@ -65,11 +65,11 @@ import {
   isNativeAlarmScheduledId,
   isNativeAlarmSupported,
   openExactAlarmSettings,
+  openFullScreenIntentSettings,
   pickNativeAlarmAudioFile,
   pickNativeAlarmTone,
   requestIgnoreBatteryOptimizations,
   scheduleNativeAlarm,
-  stopActiveNativeAlarm,
   toNativeAlarmScheduledId,
 } from "../utils/nativeAlarm";
 import {
@@ -151,6 +151,8 @@ const KEYS = {
   seenAnnouncements: (uid) => `notif_seen_announcements_${uid}`,
   batteryPromptDismiss: (uid) =>
     keyForUser("notif_battery_prompt_dismiss", uid),
+  deadlineAlarmChannelMigration: (uid) =>
+    keyForUser("notif_deadline_alarm_channel_migration_v2", uid),
 };
 const ANDROID_CHANNEL_ID = "study-reminders-v4";
 const ANDROID_NOTIFICATION_SOUND = "ctu_alarm.wav";
@@ -526,6 +528,12 @@ function extractAckPayloadFromNotification(notification) {
     taskId,
     ackKey,
     dueAtMs,
+    alarmStage:
+      typeof data?.stage === "string" && data.stage.trim()
+        ? data.stage.trim()
+        : typeof data?.threshold === "string" && data.threshold.trim()
+          ? data.threshold.trim()
+          : null,
     notificationType:
       typeof data?.notificationType === "string" && data.notificationType.trim()
         ? data.notificationType.trim()
@@ -594,7 +602,6 @@ const mergeLocalOnlyNotificationSettings = (
 });
 const NotificationContext = createContext(null);
 export function NotificationProvider({ children }) {
-  const router = useRouter();
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [times, setTimes] = useState(DEFAULT_TIMES);
   const [customNotifs, setCustomNotifs] = useState([]);
@@ -618,6 +625,7 @@ export function NotificationProvider({ children }) {
   const exactAlarmPermissionGrantedRef = useRef(null);
   const mountedRef = useRef(true);
   const batteryOptimizationCheckedRef = useRef(false);
+  const deadlineAlarmMigrationInFlightRef = useRef(new Set());
   const [showBatteryOptimizationPrompt, setShowBatteryOptimizationPrompt] =
     useState(false);
 
@@ -723,6 +731,12 @@ export function NotificationProvider({ children }) {
             await rescheduleAll();
           }
         }
+
+        if (granted) {
+          await maybePromptForNativeAlarmPermissions("foreground_refresh", {
+            notificationsGranted: granted,
+          });
+        }
       } catch (err) {
         warnIfDev(
           "NotificationContext: failed to refresh permission on foreground:",
@@ -747,6 +761,36 @@ export function NotificationProvider({ children }) {
     };
   }, []);
   /* eslint-enable react-hooks/exhaustive-deps */
+
+  const maybePromptForNativeAlarmPermissions = async (
+    source = "unknown",
+    { notificationsGranted = permissionRef.current } = {}
+  ) => {
+    if (!notificationsGranted) return null;
+    if (Platform.OS !== "android" || !isNativeAlarmSupported) return null;
+
+    try {
+      const result = await ensureNativeAlarmPermissions({
+        requireExactAlarm: true,
+        requireFullScreen: true,
+        prompt: true,
+        source,
+      });
+      const exactAlarmGranted =
+        result?.exactAlarm?.status === "success" ||
+        result?.exactAlarm?.status === "unsupported"
+          ? result.exactAlarm.value
+          : null;
+      exactAlarmPermissionGrantedRef.current = exactAlarmGranted;
+      return result;
+    } catch (err) {
+      warnIfDev(
+        "NotificationContext: native alarm permission prompt failed:",
+        err
+      );
+      return null;
+    }
+  };
 
   const scheduleNativeExactAlarm = async ({
     alarmId,
@@ -1106,6 +1150,41 @@ export function NotificationProvider({ children }) {
     }
   };
 
+  const maybeRunDeadlineAlarmChannelMigration = async (uid) => {
+    if (!uid || !permissionRef.current || !settingsLoadedRef.current) return;
+
+    const migrationKey = KEYS.deadlineAlarmChannelMigration(uid);
+    if (deadlineAlarmMigrationInFlightRef.current.has(migrationKey)) return;
+    deadlineAlarmMigrationInFlightRef.current.add(migrationKey);
+
+    try {
+      const alreadyMigrated = await AsyncStorage.getItem(migrationKey);
+      if (alreadyMigrated === "1") return;
+
+      if (settingsRef.current?.deadlineWarning === false) {
+        await AsyncStorage.setItem(migrationKey, "1");
+        return;
+      }
+
+      const pendingTasks = await readSchedulablePendingTasks(uid, {
+        warnContext: "deadline_alarm_channel_migration_v2",
+      });
+
+      if (pendingTasks.length > 0) {
+        await rescheduleAllDeadlineAlarms(pendingTasks, {
+          taskAlarmSoundUri: settingsRef.current.taskAlarmSoundUri,
+          taskAlarmSoundLabel: settingsRef.current.taskAlarmSoundLabel,
+        });
+      }
+
+      await AsyncStorage.setItem(migrationKey, "1");
+    } catch (err) {
+      warnIfDev("NotificationContext: deadline alarm channel migration failed:", err);
+    } finally {
+      deadlineAlarmMigrationInFlightRef.current.delete(migrationKey);
+    }
+  };
+
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     let retryTimeout = null;
@@ -1189,6 +1268,7 @@ export function NotificationProvider({ children }) {
         } catch (bgErr) {
           debugNotif("backgroundTask.enable_error", { error: bgErr.message });
         }
+        await maybeRunDeadlineAlarmChannelMigration(user.uid);
       } finally {
         scheduleGateRef.current.inFlight = false;
       }
@@ -1264,17 +1344,10 @@ export function NotificationProvider({ children }) {
       notificationResponsePendingRef.current = true;
 
       try {
-        await handleDeadlineAlarmResponse(response);
-      } catch (err) {
-        warnIfDev("handleDeadlineAlarmResponse failed:", err);
-      }
-
-      try {
         const payload = extractAckPayloadFromNotification(
           response?.notification
         );
         if (!payload) return;
-        const action = response?.actionIdentifier;
         const notificationId =
           payload.notificationId || response?.notification?.request?.identifier;
         const resolvedPayload =
@@ -1288,63 +1361,7 @@ export function NotificationProvider({ children }) {
         const isDeadlineAlarmPayload =
           typeof payloadType === "string" && payloadType.startsWith("deadline");
 
-        const openTaskAlarm = async (pendingActionValue) => {
-          if (!resolvedPayload.taskId) return false;
-          await dismissPresentedNotification(notificationId);
-          router.push({
-            pathname: "/(tabs)/TaskManagerScreen",
-            params: {
-              focusTaskId: resolvedPayload.taskId,
-              showAlarm: "1",
-              ...(resolvedPayload.dueAtMs !== null
-                ? { dueAtMs: String(resolvedPayload.dueAtMs) }
-                : {}),
-              ...(pendingActionValue
-                ? { pendingAction: pendingActionValue }
-                : {}),
-            },
-          });
-          return true;
-        };
-
-        if (action === ACTION_MARK_DONE) {
-          try {
-            if (Platform.OS === "android") {
-              await stopActiveNativeAlarm();
-            }
-            if (typeof Notifications.dismissNotificationAsync === "function") {
-              await Notifications.dismissNotificationAsync(notificationId);
-            }
-          } catch (err) {
-            warnIfDev(
-              "handleResponse ACTION_MARK_DONE: failed to stop/dismiss:",
-              err
-            );
-          }
-          await openTaskAlarm("markdone");
-          return;
-        }
-
-        if (action === ACTION_NOT_DONE) {
-          try {
-            if (Platform.OS === "android") {
-              await stopActiveNativeAlarm();
-            }
-            if (typeof Notifications.dismissNotificationAsync === "function") {
-              await Notifications.dismissNotificationAsync(notificationId);
-            }
-          } catch (err) {
-            warnIfDev(
-              "handleResponse ACTION_NOT_DONE: failed to stop/dismiss:",
-              err
-            );
-          }
-          await openTaskAlarm("notdone");
-          return;
-        }
-
         if (isDeadlineAlarmPayload) {
-          await openTaskAlarm(null);
           return;
         }
 
@@ -1375,6 +1392,17 @@ export function NotificationProvider({ children }) {
       Notifications.getLastNotificationResponseAsync()
         .then(async (lastResponse) => {
           if (!lastResponse) return;
+          const payload = extractAckPayloadFromNotification(
+            lastResponse?.notification
+          );
+          const payloadType =
+            typeof payload?.notificationType === "string"
+              ? payload.notificationType.toLowerCase()
+              : "";
+          const isDeadlineAlarmPayload =
+            typeof payloadType === "string" &&
+            payloadType.startsWith("deadline");
+          if (isDeadlineAlarmPayload) return;
           const responseId = lastResponse?.notification?.request?.identifier;
           if (!responseId) return;
           const lastHandled = await AsyncStorage.getItem(
@@ -1502,20 +1530,13 @@ export function NotificationProvider({ children }) {
             ? exactAlarmResult.value
             : null;
       }
-
-      // Android 14+ requires explicit USE_FULL_SCREEN_INTENT permission for full-screen alarms
-      if (Platform.OS === "android" && Platform.Version >= 34) {
-        try {
-          const { PermissionsAndroid } = require("react-native");
-          await PermissionsAndroid.request(
-            "android.permission.USE_FULL_SCREEN_INTENT"
-          );
-        } catch (err) {
-          warnIfDev("USE_FULL_SCREEN_INTENT permission request failed:", err);
-        }
-      }
     }
     setPermission(granted);
+    if (granted) {
+      await maybePromptForNativeAlarmPermissions("request_permission", {
+        notificationsGranted: granted,
+      });
+    }
     debugNotif("permission.result", { status, granted });
 
     // On first successful permission grant, check battery optimization status
@@ -2975,6 +2996,14 @@ export function NotificationProvider({ children }) {
       isNativeAlarmSupported && Platform.OS === "android"
         ? await canScheduleExactAlarms()
         : null;
+    diagnostics.fullScreenPermission =
+      isNativeAlarmSupported && Platform.OS === "android"
+        ? await canUseFullScreenIntent()
+        : null;
+    diagnostics.batteryOptimization =
+      isNativeAlarmSupported && Platform.OS === "android"
+        ? await isIgnoringBatteryOptimizations()
+        : null;
     if (user) {
       try {
         const userSnap = await getDoc(doc(db, "users", user.uid));
@@ -3019,6 +3048,8 @@ export function NotificationProvider({ children }) {
         taskAlarmAudioPickerAvailable: canPickNativeAlarmAudioFile,
         canScheduleExactAlarms,
         openExactAlarmSettings,
+        canUseFullScreenIntent,
+        openFullScreenIntentSettings,
         isIgnoringBatteryOptimizations,
         requestIgnoreBatteryOptimizations,
         showBatteryOptimizationPrompt,
@@ -3061,6 +3092,8 @@ export function useNotifications() {
       taskAlarmAudioPickerAvailable: false,
       canScheduleExactAlarms: async () => false,
       openExactAlarmSettings: () => {},
+      canUseFullScreenIntent: async () => true,
+      openFullScreenIntentSettings: () => {},
       isIgnoringBatteryOptimizations: async () => false,
       requestIgnoreBatteryOptimizations: () => false,
       showBatteryOptimizationPrompt: false,

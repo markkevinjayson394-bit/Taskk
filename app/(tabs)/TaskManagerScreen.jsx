@@ -2,7 +2,6 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
-import * as Notifications from "expo-notifications";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
@@ -117,11 +116,12 @@ import {
   normalizeTaskType,
 } from "../../utils/academicTaskModel";
 import { toLocalDayKey } from "../../utils/dateHelpers";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import {
   cancelDeadlineAlarms,
-  DEADLINE_NOTIF_TYPE,
   scheduleDeadlineAlarms,
 } from "../../utils/deadlineAlarmBackground";
+import { isDeadlineAlarmModalEligible } from "../../utils/deadlineAlarmStage";
 import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
 import {
   findOfflineQueuedTask,
@@ -231,6 +231,7 @@ export default function TaskManagerScreen() {
     pendingAction,
     dueAtMs,
     alarmStage,
+    nativeHandoff: nativeHandoffParam,
     filter: filterParam,
     subject: subjectParam,
     subjectId: subjectIdParam,
@@ -242,6 +243,10 @@ export default function TaskManagerScreen() {
     return Number.isFinite(parsed) ? parsed : null;
   })();
   const routeAlarmStage = normalizeRouteString(alarmStage);
+  const routeNativeHandoff = (() => {
+    const raw = normalizeRouteString(nativeHandoffParam);
+    return raw === "1" || raw === "true";
+  })();
   const { colors, isDark } = useTheme();
   const { isOnline, markSynced, refreshPendingSyncSummary } = useOffline();
 
@@ -268,6 +273,7 @@ export default function TaskManagerScreen() {
     showAlarmForTask,
   } = useDeadlineAlarmScheduler(tasks, {
     deadlineWarningEnabled: notificationSettings?.deadlineWarning !== false,
+    foregroundModalEnabled: false,
   });
   const [filter, setFilter] = useState(() => normalizeFilterParam(filterParam));
   const [searchQuery, setSearchQuery] = useState("");
@@ -316,11 +322,18 @@ export default function TaskManagerScreen() {
   // means the modal never sees updates that happen after its initial render.
   const pendingActionRef = useRef(null);
   const [pendingActionState, setPendingActionState] = useState(null);
+  const nativeHandoffRef = useRef(false);
+  const [nativeHandoffState, setNativeHandoffState] = useState(false);
 
   // Helper: set both ref and state together so they stay in sync.
   const setPendingAction = useCallback((value) => {
     pendingActionRef.current = value;
     setPendingActionState(value);
+  }, []);
+  const setNativeHandoff = useCallback((value) => {
+    const resolvedValue = Boolean(value);
+    nativeHandoffRef.current = resolvedValue;
+    setNativeHandoffState(resolvedValue);
   }, []);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -332,43 +345,13 @@ export default function TaskManagerScreen() {
     key: "",
     names: [],
   });
+  const alarmHandleCounterRef = useRef(0);
   const handledParamRef = useRef("");
 
   const highlightedTaskId =
     typeof focusTaskId === "string" && focusTaskId ? focusTaskId : "";
   const isEditMode = Boolean(editingTaskId);
   const editingTaskCreatedAt = normalizeTaskDateInput(editingTask?.createdAt);
-
-  // Bug #4: Handle notification response when app is already open
-  useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener(
-      async (response) => {
-        const data = response.notification.request.content.data ?? {};
-        if (
-          data.type !== DEADLINE_NOTIF_TYPE &&
-          data.notificationType !== DEADLINE_NOTIF_TYPE
-        )
-          return;
-
-        const taskId = data.taskId;
-        if (!taskId) return;
-
-        const task = tasks.find((t) => t.id === taskId);
-        if (!task) return;
-
-        if (typeof showAlarmForTask === "function") {
-          const stageKey =
-            typeof data.stage === "string" && data.stage
-              ? data.stage
-              : typeof data.threshold === "string" && data.threshold
-                ? data.threshold
-                : null;
-          showAlarmForTask(task, stageKey);
-        }
-      }
-    );
-    return () => sub.remove();
-  }, [tasks, showAlarmForTask]);
 
   useEffect(() => {
     const next = normalizeFilterParam(filterParam);
@@ -523,6 +506,7 @@ export default function TaskManagerScreen() {
       pendingAction,
       routeDueAtMs,
       routeAlarmStage,
+      routeNativeHandoff,
       tasksCount: tasks?.length,
       hasShowAlarmFn: typeof showAlarmForTask === "function",
     });
@@ -533,14 +517,17 @@ export default function TaskManagerScreen() {
       );
       return;
     }
-
-    const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${routeAlarmStage ?? "none"}`;
-    console.log("[DEBUG Alarm] Proceeding to check handledKey", {
-      handledKey,
-      handledParamRef: handledParamRef.current,
-    });
-    if (handledParamRef.current === handledKey) {
-      console.log("[DEBUG Alarm] Already handled, skipping");
+    if (!isDeadlineAlarmModalEligible({ stage: routeAlarmStage })) {
+      setPendingAction(null);
+      setNativeHandoff(false);
+      router.setParams({
+        showAlarm: undefined,
+        focusTaskId: undefined,
+        pendingAction: undefined,
+        nativeHandoff: undefined,
+        dueAtMs: undefined,
+        alarmStage: undefined,
+      });
       return;
     }
 
@@ -551,6 +538,7 @@ export default function TaskManagerScreen() {
         showAlarm: undefined,
         focusTaskId: undefined,
         pendingAction: undefined,
+        nativeHandoff: undefined,
         dueAtMs: undefined,
         alarmStage: undefined,
       });
@@ -561,12 +549,32 @@ export default function TaskManagerScreen() {
         pendingAction,
         focusTaskId,
       });
+      if (pendingAction === "notdone") {
+        console.log(
+          "[DEBUG Alarm] Suppressing modal reopen for direct not-done action"
+        );
+        if (active) {
+          setPendingAction(null);
+          setNativeHandoff(false);
+          clearAlarmParams();
+        }
+        return;
+      }
+      alarmHandleCounterRef.current += 1;
+      const thisHandle = alarmHandleCounterRef.current;
+      const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${routeAlarmStage ?? "none"}:${routeNativeHandoff ? "native" : "local"}:${thisHandle}`;
+      console.log("[DEBUG Alarm] Proceeding to check handledKey", {
+        handledKey,
+        handledParamRef: handledParamRef.current,
+      });
+      if (handledParamRef.current === handledKey) {
+        console.log("[DEBUG Alarm] Already handled, skipping");
+        return;
+      }
 
       // [FIX GAP-3] Use setPendingAction so both ref and state are updated.
       const resolvedPendingAction =
-        pendingAction === "acknowledge" ||
-        pendingAction === "markdone" ||
-        pendingAction === "notdone"
+        pendingAction === "acknowledge" || pendingAction === "markdone"
           ? pendingAction
           : null;
 
@@ -593,7 +601,10 @@ export default function TaskManagerScreen() {
           if (!snap.exists()) {
             console.log("[DEBUG Alarm] Task does not exist in Firestore");
             handledParamRef.current = handledKey;
-            if (active) clearAlarmParams();
+            if (active) {
+              setNativeHandoff(false);
+              clearAlarmParams();
+            }
             return;
           }
 
@@ -601,7 +612,10 @@ export default function TaskManagerScreen() {
           if (taskData.completed) {
             console.log("[DEBUG Alarm] Task is completed");
             handledParamRef.current = handledKey;
-            if (active) clearAlarmParams();
+            if (active) {
+              setNativeHandoff(false);
+              clearAlarmParams();
+            }
             return;
           }
 
@@ -615,7 +629,10 @@ export default function TaskManagerScreen() {
             active,
           });
           handledParamRef.current = handledKey;
-          if (active) clearAlarmParams();
+          if (active) {
+            setNativeHandoff(false);
+            clearAlarmParams();
+          }
           return;
         }
 
@@ -634,18 +651,27 @@ export default function TaskManagerScreen() {
           resolvedDue?.title
         );
 
-        // IMPORTANT: show the modal with the task first, THEN update pendingAction.
+        // Silent "Done" confirmation must be set before the modal becomes visible
+        // so the modal can suppress its local alarm loop from first render.
+        if (resolvedPendingAction === "markdone") {
+          setPendingAction(resolvedPendingAction);
+        }
+        setNativeHandoff(routeNativeHandoff);
+
         if (typeof showAlarmForTask === "function") {
           showAlarmForTask(resolvedDue, routeAlarmStage || null);
           console.log("[DEBUG Alarm] showAlarmForTask called successfully");
         }
 
-        setPendingAction(resolvedPendingAction);
+        if (resolvedPendingAction !== "markdone") {
+          setPendingAction(resolvedPendingAction);
+        }
 
         handledParamRef.current = handledKey;
         clearAlarmParams();
       } catch (error) {
         console.error("[DEBUG Alarm] fetchAndShow error:", error);
+        setNativeHandoff(false);
         warnIfDev(
           "TaskManagerScreen: failed to open task alarm from params:",
           error
@@ -663,10 +689,12 @@ export default function TaskManagerScreen() {
     pendingAction,
     routeDueAtMs,
     routeAlarmStage,
+    routeNativeHandoff,
     tasks,
     showAlarmForTask,
     router,
     setPendingAction,
+    setNativeHandoff,
   ]);
 
   useEffect(() => {
@@ -2231,7 +2259,9 @@ export default function TaskManagerScreen() {
       <OfflineBanner />
 
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={{
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+        }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -3055,7 +3085,6 @@ export default function TaskManagerScreen() {
             </>
           )}
 
-          <View style={{ height: 32 }} />
         </Animated.View>
       </ScrollView>
 
@@ -3127,6 +3156,7 @@ export default function TaskManagerScreen() {
         thresholdKey={alarmThresholdKey}
         onNotDone={async () => {
           setPendingAction(null);
+          setNativeHandoff(false);
           if (typeof notDoneAlarm === "function") {
             await notDoneAlarm();
           }
@@ -3135,6 +3165,7 @@ export default function TaskManagerScreen() {
           const taskId = alarmTask?.id;
           if (!taskId) return;
           setPendingAction(null);
+          setNativeHandoff(false);
           if (typeof markDoneAlarm === "function") {
             await markDoneAlarm();
           }
@@ -3147,6 +3178,7 @@ export default function TaskManagerScreen() {
           }
         }}
         pendingAction={pendingActionState}
+        nativeHandoff={nativeHandoffState}
       />
     </View>
   );
@@ -3155,7 +3187,6 @@ export default function TaskManagerScreen() {
 // StyleSheet
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { paddingBottom: 32 },
   hero: {
     backgroundColor: "#f59e0b",
     paddingBottom: 22,

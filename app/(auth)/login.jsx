@@ -34,6 +34,11 @@ const EULA_KEYS = (uid) => [
 ];
 const ACTIVE_UID_KEY = "active_uid_v1";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HERO_POINTS = [
+  "Deadline-aware reminders",
+  "Class and planner synchronization",
+  "Offline-ready student workflow",
+];
 
 function normalizeEmail(value) {
   return String(value || "")
@@ -208,7 +213,7 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor="#0057D9" />
+      <StatusBar barStyle="light-content" backgroundColor="#0a4ecb" />
 
       {/*
          NO KeyboardAvoidingView  it causes layout reflows on Android
@@ -244,11 +249,24 @@ export default function LoginScreen() {
 
           <Text style={styles.appName}>CTU Danao</Text>
           <Text style={styles.appSub}>Academic Task Manager</Text>
+          <Text style={styles.heroPitch}>
+            A research prototype for helping students organize classes, study
+            sessions, and academic deadlines in one place.
+          </Text>
 
           <View style={styles.taglineRow}>
             <View style={styles.taglineLine} />
-            <Text style={styles.tagline}>Plan - Study - Succeed</Text>
+            <Text style={styles.tagline}>Plan / Study / Succeed</Text>
             <View style={styles.taglineLine} />
+          </View>
+
+          <View style={styles.heroPointList}>
+            {HERO_POINTS.map((point) => (
+              <View key={point} style={styles.heroPointChip}>
+                <Ionicons name="checkmark-circle" size={13} color="#bfdbfe" />
+                <Text style={styles.heroPointText}>{point}</Text>
+              </View>
+            ))}
           </View>
         </Animated.View>
 
@@ -264,7 +282,20 @@ export default function LoginScreen() {
         >
           <View style={styles.sheetHandle} />
           <Text style={styles.sheetTitle}>Welcome back</Text>
-          <Text style={styles.sheetSub}>Sign in to continue</Text>
+          <Text style={styles.sheetSub}>
+            Sign in to continue to your planning dashboard
+          </Text>
+
+          <View style={styles.proofRow}>
+            <View style={styles.proofPill}>
+              <Ionicons name="shield-checkmark-outline" size={14} color="#2563eb" />
+              <Text style={styles.proofText}>Campus workflow</Text>
+            </View>
+            <View style={styles.proofPill}>
+              <Ionicons name="flash-outline" size={14} color="#2563eb" />
+              <Text style={styles.proofText}>Fast reminders</Text>
+            </View>
+          </View>
 
           {/*  Email  */}
           <Text style={styles.fieldLabel}>Email Address</Text>
@@ -363,7 +394,7 @@ export default function LoginScreen() {
                 <>
                   <Text style={styles.signInBtnText}>Sign In</Text>
                   <View style={styles.signInArrow}>
-                    <Ionicons name="arrow-forward" size={16} color="#007bff" />
+                    <Ionicons name="arrow-forward" size={16} color="#2563eb" />
                   </View>
                 </>
               )}
@@ -390,7 +421,7 @@ export default function LoginScreen() {
             <Ionicons
               name="person-add-outline"
               size={16}
-              color="#007bff"
+              color="#2563eb"
               style={{ marginRight: 8 }}
             />
             <Text style={styles.registerBtnText}>Create an Account</Text>
@@ -424,13 +455,13 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0057D9" },
+  root: { flex: 1, backgroundColor: "#0a4ecb" },
   scroll: { flexGrow: 1 },
 
   hero: {
-    backgroundColor: "#0057D9",
+    backgroundColor: "#0a4ecb",
     paddingTop: 64,
-    paddingBottom: 44,
+    paddingBottom: 40,
     paddingHorizontal: 30,
     overflow: "hidden",
     alignItems: "flex-start",
@@ -441,18 +472,18 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.15)",
+    borderColor: "rgba(255,255,255,0.16)",
   },
   logoWrap: {
     width: 72,
     height: 72,
     borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.12)",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 22,
+    marginBottom: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.25)",
+    borderColor: "rgba(255,255,255,0.22)",
   },
   logoInner: {
     width: 58,
@@ -474,18 +505,46 @@ const styles = StyleSheet.create({
     letterSpacing: -0.8,
   },
   appSub: {
-    color: "rgba(255,255,255,0.65)",
+    color: "rgba(255,255,255,0.72)",
     fontSize: 17,
-    fontWeight: "500",
+    fontWeight: "600",
+    marginBottom: 10,
+  },
+  heroPitch: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    lineHeight: 21,
     marginBottom: 18,
+    maxWidth: 320,
   },
   taglineRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   taglineLine: { flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.2)" },
   tagline: {
-    color: "rgba(255,255,255,0.45)",
+    color: "rgba(255,255,255,0.58)",
     fontSize: 11,
-    letterSpacing: 1.5,
-    textTransform: "uppercase",
+    letterSpacing: 1.4,
+    fontWeight: "700",
+  },
+  heroPointList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 18,
+  },
+  heroPointChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  heroPointText: {
+    color: "#eff6ff",
+    fontSize: 11,
     fontWeight: "600",
   },
 
@@ -497,6 +556,10 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 48,
     minHeight: height * 0.58,
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
   },
   sheetHandle: {
     width: 36,
@@ -513,6 +576,28 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   sheetSub: { fontSize: 14, color: "#94a3b8", marginBottom: 28 },
+  proofRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 22,
+  },
+  proofPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+  },
+  proofText: {
+    color: "#1e3a8a",
+    fontSize: 11,
+    fontWeight: "700",
+  },
 
   fieldLabel: {
     fontSize: 12,
@@ -542,11 +627,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#007bff",
+    backgroundColor: "#2563eb",
     borderRadius: 16,
     height: 56,
     gap: 10,
-    shadowColor: "#007bff",
+    shadowColor: "#2563eb",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
     shadowRadius: 16,
@@ -592,7 +677,7 @@ const styles = StyleSheet.create({
     borderColor: "#bfdbfe",
     backgroundColor: "#eff6ff",
   },
-  registerBtnText: { color: "#007bff", fontSize: 15, fontWeight: "700" },
+  registerBtnText: { color: "#2563eb", fontSize: 15, fontWeight: "700" },
   eulaLinkBtn: {
     marginTop: 14,
     alignSelf: "center",

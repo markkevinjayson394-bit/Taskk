@@ -19,7 +19,7 @@ import {
   getDoc,
   getDocs,
   query,
-  updateDoc,
+  setDoc,
   where,
 } from "firebase/firestore";
 import { useCallback, useRef, useState } from "react";
@@ -43,11 +43,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, db } from "../../config/firebase";
 import { getCollegeLabel } from "../../constants/academics";
+import LoadingState from "../../components/LoadingState";
 import { CACHE_KEYS, loadFromCache } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
 import { compressImageToBase64DataUri } from "../../utils/nativeImageCompression";
 import { getTutorialRoute } from "../../utils/onboarding";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { APP_VERSION } from "../../utils/version";
 
 const AVATAR_PLACEHOLDER =
@@ -55,7 +57,7 @@ const AVATAR_PLACEHOLDER =
 const PRIORITY_COLORS = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
 const MAX_BASE64_KB = 80;
 
-// ── Offline cache keys ────────────────────────────────────────────────────────
+// Offline cache keys
 const profileCacheKey = (uid) => `offline_profile_${uid}`;
 const statsCacheKey = (uid) => `offline_stats_${uid}`;
 const tasksCacheKey = (uid) => `offline_tasks_${uid}`;
@@ -98,8 +100,15 @@ async function prepareProfilePhotoData(uri) {
 }
 
 function resolvePhotoUploadError(err) {
+  const code = typeof err?.code === "string" ? err.code.trim().toLowerCase() : "";
   const message =
     typeof err?.message === "string" ? err.message.trim().toLowerCase() : "";
+  if (code.includes("permission-denied")) {
+    return {
+      title: "Permission Denied",
+      body: "Profile updates are blocked by Firestore rules. Deploy the latest rules, then try again.",
+    };
+  }
   if (message.includes("too large")) {
     return {
       title: "Photo Too Large",
@@ -138,7 +147,7 @@ export default function ProfileScreen() {
   const slideAnim = useRef(new Animated.Value(30)).current;
   const hasLoaded = useRef(false);
 
-  // ── fetchProfile: try Firestore → cache on success, fallback to cache offline ─
+  // fetchProfile: try Firestore -> cache on success, fallback to cache offline
   const fetchProfile = useCallback(async () => {
     if (!user) return;
     const cacheKey = profileCacheKey(user.uid);
@@ -153,7 +162,7 @@ export default function ProfileScreen() {
         setIsOffline(false);
       }
     } catch (_err) {
-      // Network error – try cached data
+      // Network error - try cached data
       try {
         const raw = await AsyncStorage.getItem(cacheKey);
         if (raw) {
@@ -163,12 +172,12 @@ export default function ProfileScreen() {
           setIsOffline(true);
         }
       } catch {
-        // Cache also unavailable – silently keep defaults
+        // Cache also unavailable - silently keep defaults
       }
     }
   }, [user]);
 
-  // ── fetchScheduleMeta: already uses loadFromCache, keep as-is ────────────────
+  // fetchScheduleMeta: already uses loadFromCache, keep as-is
   const fetchScheduleMeta = useCallback(async () => {
     if (!user) return;
     try {
@@ -182,11 +191,11 @@ export default function ProfileScreen() {
         });
       }
     } catch {
-      // Silently ignore – schedule meta is non-critical
+      // Silently ignore - schedule meta is non-critical
     }
   }, [user]);
 
-  // ── fetchStats: try Firestore → cache on success, fallback to cache offline ──
+  // fetchStats: try Firestore -> cache on success, fallback to cache offline
   const fetchStats = useCallback(async () => {
     if (!user) return;
     const sCacheKey = statsCacheKey(user.uid);
@@ -222,7 +231,7 @@ export default function ProfileScreen() {
       await AsyncStorage.setItem(sCacheKey, JSON.stringify(newStats));
       await AsyncStorage.setItem(tCacheKey, JSON.stringify(pending_tasks));
     } catch (_err) {
-      // Network error – try cached data
+      // Network error - try cached data
       try {
         const rawStats = await AsyncStorage.getItem(sCacheKey);
         const rawTasks = await AsyncStorage.getItem(tCacheKey);
@@ -230,7 +239,7 @@ export default function ProfileScreen() {
         if (rawTasks) setRecentTasks(JSON.parse(rawTasks));
         setIsOffline(true);
       } catch {
-        // Cache also unavailable – keep defaults
+        // Cache also unavailable - keep defaults
       }
     }
   }, [user]);
@@ -272,7 +281,7 @@ export default function ProfileScreen() {
     }, [user, loadAll, fetchProfile, fetchStats, fetchScheduleMeta])
   );
 
-  // Photo picker – saves base64 to Firestore
+  // Photo picker - saves base64 to Firestore
   const pickFromGallery = async () => {
     if (!user) {
       Alert.alert("Session Expired", "Please log in again.");
@@ -302,7 +311,11 @@ export default function ProfileScreen() {
     try {
       setUploading(true);
       const { dataUri } = await prepareProfilePhotoData(result.assets[0].uri);
-      await updateDoc(doc(db, "users", user.uid), { photoBase64: dataUri });
+      await setDoc(
+        doc(db, "users", user.uid),
+        { photoBase64: dataUri },
+        { merge: true }
+      );
 
       // Update local state and cache
       setProfile((p) => {
@@ -315,6 +328,7 @@ export default function ProfileScreen() {
       });
       Alert.alert("Photo Updated", "Your profile picture has been saved.");
     } catch (err) {
+      console.warn("Failed to save profile photo:", err);
       const errorInfo = resolvePhotoUploadError(err);
       Alert.alert(errorInfo.title, errorInfo.body);
     } finally {
@@ -334,9 +348,11 @@ export default function ProfileScreen() {
       return;
     }
     try {
-      await updateDoc(doc(db, "users", user.uid), {
-        fullName: editName.trim(),
-      });
+      await setDoc(
+        doc(db, "users", user.uid),
+        { fullName: editName.trim() },
+        { merge: true }
+      );
       setProfile((p) => {
         const updated = { ...p, fullName: editName.trim() };
         AsyncStorage.setItem(
@@ -387,19 +403,20 @@ export default function ProfileScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={{ color: colors.muted, marginTop: 10 }}>
-          Loading profile...
-        </Text>
-      </View>
+      <LoadingState
+        fullScreen
+        label="Loading profile..."
+        style={{ backgroundColor: colors.background }}
+      />
     );
   }
 
   return (
     <ScrollView
       style={{ backgroundColor: colors.background }}
-      contentContainerStyle={{ paddingBottom: 80 + insets.bottom }}
+      contentContainerStyle={{
+        paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+      }}
       showsVerticalScrollIndicator={false}
     >
       <StatusBar barStyle="light-content" backgroundColor={colors.primary} />
@@ -485,15 +502,25 @@ export default function ProfileScreen() {
             {profile.fullName || "CTU Danao Student"}
           </Text>
           <Text style={styles.emailText}>{user?.email}</Text>
-          <View
-            style={[
-              styles.roleBadge,
-              { backgroundColor: "rgba(255,255,255,0.2)" },
-            ]}
-          >
-            <Text style={styles.roleText}>
-              {profile.role === "admin" ? "Admin" : "Student"}
-            </Text>
+          <View style={styles.bannerMetaRow}>
+            <View
+              style={[
+                styles.roleBadge,
+                { backgroundColor: "rgba(255,255,255,0.2)" },
+              ]}
+            >
+              <Text style={styles.roleText}>
+                {profile.role === "admin" ? "Admin" : "Student"}
+              </Text>
+            </View>
+            <View style={styles.bannerMetaPill}>
+              <Ionicons
+                name="sparkles-outline"
+                size={13}
+                color="rgba(255,255,255,0.92)"
+              />
+              <Text style={styles.bannerMetaText}>Research Prototype</Text>
+            </View>
           </View>
         </View>
       </View>
@@ -501,12 +528,80 @@ export default function ProfileScreen() {
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
+        <View style={[styles.summaryRow, { marginTop: 16 }]}>
+          <View
+            style={[
+              styles.summaryCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryLabel, { color: colors.muted }]}>
+              Completion
+            </Text>
+            <Text style={[styles.summaryValue, { color: colors.primary }]}>
+              {progress}%
+            </Text>
+            <Text style={[styles.summaryHint, { color: colors.muted }]}>
+              tasks finished
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.summaryCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryLabel, { color: colors.muted }]}>
+              Current load
+            </Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>
+              {stats.pending}
+            </Text>
+            <Text style={[styles.summaryHint, { color: colors.muted }]}>
+              active tasks
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.summaryCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryLabel, { color: colors.muted }]}>
+              Risk watch
+            </Text>
+            <Text
+              style={[
+                styles.summaryValue,
+                { color: stats.overdue > 0 ? "#ef4444" : "#16a34a" },
+              ]}
+            >
+              {stats.overdue}
+            </Text>
+            <Text style={[styles.summaryHint, { color: colors.muted }]}>
+              overdue
+            </Text>
+          </View>
+        </View>
+
         {/* STUDENT INFO */}
         {si && (
           <View style={[styles.card, { backgroundColor: colors.card }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>
-              Student Info
-            </Text>
+            <SectionHeader
+              eyebrow="Academic profile"
+              title="Student information"
+              subtitle="Identity and schedule context used by the prototype."
+              colors={colors}
+            />
             <View style={styles.infoGrid}>
               <InfoChip label="ID" value={si.idNumber} colors={colors} />
               <InfoChip label="Course" value={si.course} colors={colors} />
@@ -546,9 +641,12 @@ export default function ProfileScreen() {
 
         {/* PROGRESS */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Task Progress
-          </Text>
+          <SectionHeader
+            eyebrow="Performance snapshot"
+            title="Task progress"
+            subtitle="A quick read of your current academic workload."
+            colors={colors}
+          />
           <View style={styles.progressLabelRow}>
             <Text style={[styles.progressPercent, { color: colors.primary }]}>
               {progress}%
@@ -604,14 +702,19 @@ export default function ProfileScreen() {
         {recentTasks.length > 0 && (
           <View style={[styles.card, { backgroundColor: colors.card }]}>
             <View style={styles.cardTitleRow}>
-              <Text style={[styles.cardTitle, { color: colors.text }]}>
-                Pending Tasks
-              </Text>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={[styles.sectionEyebrow, { color: colors.muted }]}>
+                  Focus queue
+                </Text>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  Pending tasks
+                </Text>
+              </View>
               <TouchableOpacity
                 onPress={() => router.push("/(tabs)/assignments")}
               >
-                <Text style={{ color: colors.primary, fontSize: 13 }}>
-                  See all -&gt;
+                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: "700" }}>
+                  Open all
                 </Text>
               </TouchableOpacity>
             </View>
@@ -661,9 +764,12 @@ export default function ProfileScreen() {
 
         {/* ACTIONS */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Account
-          </Text>
+          <SectionHeader
+            eyebrow="Presentation controls"
+            title="Account and tools"
+            subtitle="Shortcuts for the main demo flows."
+            colors={colors}
+          />
           <ActionRow
             icon="create-outline"
             label="Edit Name"
@@ -889,6 +995,26 @@ function ActionRow({ icon, label, onPress, colors, danger, highlight }) {
   );
 }
 
+function SectionHeader({ eyebrow, title, subtitle, colors }) {
+  return (
+    <View style={styles.sectionHeader}>
+      {eyebrow ? (
+        <Text style={[styles.sectionEyebrow, { color: colors.muted }]}>
+          {eyebrow}
+        </Text>
+      ) : null}
+      <Text style={[styles.cardTitle, styles.sectionTitle, { color: colors.text }]}>
+        {title}
+      </Text>
+      {subtitle ? (
+        <Text style={[styles.sectionSubtitle, { color: colors.muted }]}>
+          {subtitle}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 // Styles
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
@@ -962,12 +1088,62 @@ const styles = StyleSheet.create({
   nameText: { color: "#fff", fontSize: 22, fontWeight: "bold" },
   emailText: { color: "rgba(255,255,255,0.75)", fontSize: 13, marginTop: 2 },
   roleBadge: {
-    marginTop: 8,
     paddingHorizontal: 14,
     paddingVertical: 4,
     borderRadius: 20,
   },
+  bannerMetaRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+  },
+  bannerMetaPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  bannerMetaText: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   roleText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  summaryRow: {
+    marginHorizontal: 16,
+    flexDirection: "row",
+    gap: 10,
+  },
+  summaryCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+  },
+  summaryLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  summaryValue: {
+    fontSize: 24,
+    fontWeight: "800",
+    marginTop: 8,
+  },
+  summaryHint: {
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 4,
+  },
   card: {
     marginHorizontal: 16,
     marginTop: 16,
@@ -979,7 +1155,20 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 6,
   },
+  sectionHeader: { marginBottom: 14 },
+  sectionEyebrow: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 5,
+  },
   cardTitle: { fontSize: 15, fontWeight: "700", marginBottom: 14 },
+  sectionTitle: { marginBottom: 4 },
+  sectionSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
   cardTitleRow: {
     flexDirection: "row",
     justifyContent: "space-between",

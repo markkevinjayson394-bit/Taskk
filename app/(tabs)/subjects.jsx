@@ -26,6 +26,7 @@ import OfflineBanner from "../../components/OfflineBanner";
 import { auth, db } from "../../config/firebase";
 import { useOffline } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 
 const SUBJECT_KEY = (uid) => `subject_catalog_${uid}`;
 const SUBJECT_COLLECTION = "subjects";
@@ -441,7 +442,10 @@ export default function SubjectsScreen() {
         <FlatList
           data={subjects}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: getTabBarContentBottomPadding(insets.bottom) },
+          ]}
           renderItem={({ item }) => (
             <View
               style={[

@@ -80,7 +80,7 @@ export default function ScheduleDaySection({
   colors,
   day,
   classes,
-  dayValidation,
+  dayValidation = {},
   copiedDay,
   repeatEditor,
   repeatTargets,

@@ -22,7 +22,8 @@ export function countClasses(weekSchedule) {
 export function buildCourseOptions(schedules, filterCollege) {
   const seen = new Set();
   if (filterCollege !== "All") {
-    const normalizedFilter = normalizeCollege(filterCollege);
+    // filterCollege is expected to already be normalized by the caller.
+    const normalizedFilter = filterCollege;
     getCoursesForCollege(normalizedFilter).forEach((course) =>
       seen.add(course)
     );

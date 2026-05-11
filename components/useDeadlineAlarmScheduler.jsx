@@ -12,13 +12,21 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import {
   FOREGROUND_THRESHOLDS,
   OVERDUE_CHAIN,
 } from "../utils/deadlineConstants";
+import {
+  DEADLINE_NOTIF_TYPE,
+  displayAlarmNotification,
+} from "../utils/deadlineAlarmBackground";
 import { warnIfDev } from "../utils/logger";
 import { buildDeadlineNotificationId } from "../utils/notificationIds";
+import {
+  resolveCurrentOverdueStageInfo,
+  resolveDailyAckBucket as resolveStoredDailyAckBucket,
+} from "../utils/taskOverdueState";
 import { parseDueDate, resolveTaskDueDate } from "./DeadlineAlarmModal.helpers";
 
 let notifee = null;
@@ -28,9 +36,8 @@ try {
 
 const ACK_STORE_KEY = "deadline_alarm_acks_v1";
 const ACK_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
-const CHECK_INTERVAL_MS = 5_000; // was 1_000
-const DAY_MS = 24 * 60 * 60 * 1000;
-const DAILY_OVERDUE_WINDOW_MS = 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 3_000;
+const OVERDUE_STAGES = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
 
 const OVERDUE_THRESHOLDS = OVERDUE_CHAIN.filter(
   ({ stage }) => stage !== "due" && stage !== "daily"
@@ -90,34 +97,7 @@ function buildAckKey(taskId, thresholdKey) {
 }
 
 function getDailyAckBucket(dueMs, nowMs) {
-  if (!Number.isFinite(dueMs) || nowMs < dueMs + DAY_MS) {
-    return 0;
-  }
-  // Anchor to local midnight of the day after due date
-  const duePlusOne = new Date(dueMs + DAY_MS);
-
-  const firstBucketMidnight = new Date(
-    duePlusOne.getFullYear(),
-    duePlusOne.getMonth(),
-    duePlusOne.getDate(),
-    0,
-    0,
-    0,
-    0
-  ).getTime();
-  if (nowMs < firstBucketMidnight) return 0;
-
-  const nowDate = new Date(nowMs);
-  const nowMidnight = new Date(
-    nowDate.getFullYear(),
-    nowDate.getMonth(),
-    nowDate.getDate(),
-    0,
-    0,
-    0,
-    0
-  ).getTime();
-  return Math.floor((nowMidnight - firstBucketMidnight) / DAY_MS) + 1;
+  return resolveStoredDailyAckBucket(dueMs, nowMs);
 }
 
 function resolveAckKeyForThreshold(task, thresholdKey, nowMs) {
@@ -144,51 +124,18 @@ function findTriggeredThreshold(
 
   const dueMs = due.getTime();
   if (nowMs >= dueMs) {
-    const crossedDue = dueMs > lastCheckedAt && dueMs <= nowMs;
-    const justBecameOverdue =
-      nowMs - dueMs < 10 * 60 * 1000 &&
-      !crossedDue;
-    if (crossedDue || justBecameOverdue) {
-      const ackKey = "due";
-      if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
-        return null;
-      }
-      return { thresholdKey: "due", ackKey };
+    const currentStageInfo = resolveCurrentOverdueStageInfo(dueMs, nowMs);
+    if (!currentStageInfo?.key) return null;
+    const ackKey = resolveAckKeyForThreshold(task, currentStageInfo.key, nowMs);
+    if (!ackKey) return null;
+    if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
+      return null;
     }
-
-    for (const threshold of OVERDUE_THRESHOLDS) {
-      const triggerAt = dueMs + threshold.ms;
-      const crossedSinceLast = triggerAt > lastCheckedAt && triggerAt <= nowMs;
-      const withinWindow =
-        nowMs >= triggerAt && nowMs <= triggerAt + threshold.window;
-      if (crossedSinceLast || withinWindow) {
-        const ackKey = threshold.key;
-        if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
-          return null;
-        }
-        return { thresholdKey: threshold.key, ackKey };
-      }
-    }
-
-    const dailyBucket = getDailyAckBucket(dueMs, nowMs);
-    if (dailyBucket > 0) {
-      const triggerAt = dueMs + DAY_MS * dailyBucket;
-      const crossedSinceLast = triggerAt > lastCheckedAt && triggerAt <= nowMs;
-      const withinWindow =
-        nowMs >= triggerAt && nowMs <= triggerAt + DAILY_OVERDUE_WINDOW_MS;
-      if (crossedSinceLast || withinWindow) {
-        const ackKey = `daily_${dailyBucket}`;
-        if (pendingAcksRef?.current?.has(buildAckKey(task.id, ackKey))) {
-          return null;
-        }
-        return {
-          thresholdKey: "daily",
-          ackKey,
-        };
-      }
-    }
-
-    return null;
+    return {
+      thresholdKey: currentStageInfo.key,
+      ackKey,
+      intendedTriggerAtMs: currentStageInfo.triggerAtMs ?? null,
+    };
   }
 
   for (const threshold of FOREGROUND_THRESHOLDS) {
@@ -270,7 +217,7 @@ async function cancelNotifeeAlarmNotifications(alarmEntry) {
 
 export function useDeadlineAlarmScheduler(
   pendingTasks = [],
-  { deadlineWarningEnabled = true } = {}
+  { deadlineWarningEnabled = true, foregroundModalEnabled = true } = {}
 ) {
   const [alarmVisible, setAlarmVisible] = useState(false);
   const alarmQueueRef = useRef([]);
@@ -337,6 +284,41 @@ export function useDeadlineAlarmScheduler(
 
       const key = buildAckKey(task.id, triggered.ackKey);
       if (acksRef.current[key]) continue;
+      if (
+        AppState.currentState === "active" &&
+        Platform.OS === "android" &&
+        OVERDUE_STAGES.has(triggered.thresholdKey)
+      ) {
+        const due = resolveTaskDueDate(task);
+        const dueAtMs = due?.getTime() ?? null;
+        const notifId = buildDeadlineNotificationId(
+          task.id,
+          triggered.thresholdKey
+        );
+        displayAlarmNotification({
+          id: notifId,
+          title: `⏰ ${task.title ?? "Task"} is due NOW`,
+          body: `"${task.title}" (${task.subject ?? task.subjectName ?? "General"}) — tap Done or Not Done. Alarm loops until you respond.`,
+          data: {
+            type: DEADLINE_NOTIF_TYPE,
+            notificationType: DEADLINE_NOTIF_TYPE,
+            taskId: task.id,
+            taskTitle: task.title ?? "",
+            subject: task.subject ?? task.subjectName ?? "General",
+            dueAtMs,
+            acknowledgeRequired: true,
+            isLeadTime: false,
+            stage: triggered.thresholdKey,
+            intendedTriggerAtMs: triggered.intendedTriggerAtMs ?? null,
+            scheduledAtMs: Date.now(),
+            deliveryPath: "foreground_catchup",
+          },
+          isOngoing: true,
+        }).catch(() => {});
+      }
+      pendingAcksRef.current.add(key);
+
+      if (foregroundModalEnabled === false) continue;
 
       if (alarmQueueRef.current.find(
         (q) => q.taskId === task.id && q.thresholdKey === triggered.thresholdKey
@@ -348,13 +330,18 @@ export function useDeadlineAlarmScheduler(
         thresholdKey: triggered.thresholdKey,
         ackKey: triggered.ackKey,
       });
-      pendingAcksRef.current.add(key);
     }
 
     if (!activeAlarm && alarmQueueRef.current.length > 0) {
       activateNextAlarm();
     }
-  }, [activeAlarm, activateNextAlarm, deadlineWarningEnabled, pendingTasks]);
+  }, [
+    activeAlarm,
+    activateNextAlarm,
+    deadlineWarningEnabled,
+    foregroundModalEnabled,
+    pendingTasks,
+  ]);
 
   useEffect(() => {
     if (activeAlarm) return;
@@ -370,6 +357,7 @@ export function useDeadlineAlarmScheduler(
     let appStateSub = null;
     const handleAppStateChange = (nextState) => {
       if (nextState === "active") {
+        lastCheckedAtRef.current = Date.now() - CHECK_INTERVAL_MS - 1500;
         checkAlarmsRef.current?.();
       }
     };
@@ -389,7 +377,13 @@ export function useDeadlineAlarmScheduler(
     if (!acksLoaded) return;
     lastCheckedAtRef.current = Date.now() - 2_000;
     checkAlarmsRef.current?.();
-    const id = setInterval(() => checkAlarmsRef.current?.(), CHECK_INTERVAL_MS);
+    const id = setInterval(() => {
+      lastCheckedAtRef.current = Math.min(
+        lastCheckedAtRef.current,
+        Date.now() - CHECK_INTERVAL_MS - 500
+      );
+      checkAlarmsRef.current?.();
+    }, CHECK_INTERVAL_MS);
     return () => clearInterval(id);
   }, [acksLoaded]);
 

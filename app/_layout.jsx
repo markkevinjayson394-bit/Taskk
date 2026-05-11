@@ -27,6 +27,7 @@ import {
   DEADLINE_NOTIF_TYPE,
   handleDeadlineAlarmResponse,
 } from "../utils/deadlineAlarmBackground";
+import { isDeadlineAlarmModalEligible, resolveDeadlineAlarmStage } from "../utils/deadlineAlarmStage";
 import {
   errorIfDev,
   reportError,
@@ -47,6 +48,7 @@ import {
 import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
+const LAST_HANDLED_RESPONSE_KEY = "last_handled_notif_response_id";
 
 function buildSentryIntegrations() {
   const integrations = [];
@@ -474,61 +476,96 @@ function RootLayoutNav() {
 
     bootstrap();
 
+    const handleDeadlineNotificationResponse = async (response) => {
+      const data = response?.notification?.request?.content?.data ?? {};
+      const action = response?.actionIdentifier;
+      const notificationId = response?.notification?.request?.identifier;
+
+      const isDeadlineAlarm =
+        data?.type === DEADLINE_NOTIF_TYPE ||
+        data?.type === "deadline" ||
+        data?.notificationType === DEADLINE_NOTIF_TYPE;
+      if (!isDeadlineAlarm) return;
+
+      if (notificationId) {
+        const lastHandled = await AsyncStorage.getItem(
+          LAST_HANDLED_RESPONSE_KEY
+        ).catch(() => null);
+        if (lastHandled === notificationId) return;
+        await AsyncStorage.setItem(
+          LAST_HANDLED_RESPONSE_KEY,
+          notificationId
+        ).catch(() => {});
+      }
+
+      const parseDueAtMs = () => {
+        const raw = Number(data?.dueAtMs);
+        if (Number.isFinite(raw)) return raw;
+        const fallback =
+          typeof data?.dueAt === "string"
+            ? new Date(data.dueAt).getTime()
+            : NaN;
+        return Number.isFinite(fallback) ? fallback : null;
+      };
+
+      const shouldOpenAlarmModal = isDeadlineAlarmModalEligible(data);
+      const nativeHandoff =
+        shouldOpenAlarmModal &&
+        typeof data?.deliveryPath === "string" &&
+        data.deliveryPath.toLowerCase().includes("native");
+
+      const navigateTo = (pendingAction, { handoffToNativeAlarm = false } = {}) => {
+        const dueAtMs = parseDueAtMs();
+        const alarmStage = resolveDeadlineAlarmStage(data);
+
+        routerRef.current.push({
+          pathname: "/(tabs)/TaskManagerScreen",
+          params: {
+            focusTaskId: data.taskId,
+            ...(shouldOpenAlarmModal ? { showAlarm: "1" } : {}),
+            ...(pendingAction ? { pendingAction } : {}),
+            ...(handoffToNativeAlarm ? { nativeHandoff: "1" } : {}),
+            ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
+            ...(alarmStage ? { alarmStage } : {}),
+          },
+        });
+      };
+
+      if (action === ACTION_NOT_DONE) {
+        await handleDeadlineAlarmResponse(response);
+        return;
+      }
+
+      if (!nativeHandoff) {
+        await handleDeadlineAlarmResponse(response);
+      }
+
+      if (action === ACTION_MARK_DONE) {
+        navigateTo("markdone", { handoffToNativeAlarm: nativeHandoff });
+        return;
+      }
+
+      navigateTo(null, { handoffToNativeAlarm: nativeHandoff });
+    };
+
     notificationSubscription =
       Notifications.addNotificationResponseReceivedListener((response) => {
-        const data = response.notification.request.content.data ?? {};
-        const action = response?.actionIdentifier;
-
-        const isDeadlineAlarm =
-          data?.type === DEADLINE_NOTIF_TYPE ||
-          data?.type === "deadline" ||
-          data?.notificationType === DEADLINE_NOTIF_TYPE;
-        if (!isDeadlineAlarm) return;
-
-        const parseDueAtMs = () => {
-          const raw = Number(data?.dueAtMs);
-          if (Number.isFinite(raw)) return raw;
-          const fallback =
-            typeof data?.dueAt === "string"
-              ? new Date(data.dueAt).getTime()
-              : NaN;
-          return Number.isFinite(fallback) ? fallback : null;
-        };
-
-        const navigateTo = (pendingAction) => {
-          const dueAtMs = parseDueAtMs();
-          const alarmStage =
-            typeof data?.stage === "string" && data.stage
-              ? data.stage
-              : typeof data?.threshold === "string" && data.threshold
-                ? data.threshold
-                : null;
-          routerRef.current.push({
-            pathname: "/(tabs)/TaskManagerScreen",
-            params: {
-              focusTaskId: data.taskId,
-              showAlarm: "1",
-              ...(pendingAction ? { pendingAction } : {}),
-              ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-              ...(alarmStage ? { alarmStage } : {}),
-            },
-          });
-        };
-
-        handleDeadlineAlarmResponse(response);
-
-        if (action === ACTION_MARK_DONE) {
-          navigateTo("markdone");
-          return;
-        }
-
-        if (action === ACTION_NOT_DONE) {
-          navigateTo("notdone");
-          return;
-        }
-
-        navigateTo(null);
+        void handleDeadlineNotificationResponse(response);
       });
+
+    if (typeof Notifications.getLastNotificationResponseAsync === "function") {
+      Notifications.getLastNotificationResponseAsync()
+        .then(async (lastResponse) => {
+          if (!lastResponse) return;
+          await handleDeadlineNotificationResponse(lastResponse);
+        })
+        .catch((err) => {
+          warnIfDev(
+            "Failed to read last deadline notification response at startup:",
+            err
+          );
+        });
+    }
 
     if (rawNativeAlarmModule) {
       try {

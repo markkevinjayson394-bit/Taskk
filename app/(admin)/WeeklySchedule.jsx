@@ -76,19 +76,6 @@ const defaultStart = () => ({ hour: "7", minute: "00", period: "AM" });
 const defaultEnd = () => ({ hour: "8", minute: "00", period: "AM" });
 const blankSchedule = () => DAYS.map(() => []);
 
-// ─── InputField (now shared via components/InputField.jsx) ───────────────────
-
-const inpSt = StyleSheet.create({
-  label: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#64748b",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-    marginBottom: 7,
-  },
-});
-
 // ─── Drum-Roll Picker Column ──────────────────────────────────────────────────
 
 const ITEM_H = 44;
@@ -160,10 +147,19 @@ function TimePicker({ label, value, onChange }) {
   const { colors } = useTheme();
   return (
     <View style={{ flex: 1 }}>
-      {/* Label matches InputField label exactly */}
-      <Text style={inpSt.label}>{label}</Text>
+      <Text
+        style={{
+          fontSize: 12,
+          fontWeight: "700",
+          color: "#64748b",
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          marginBottom: 7,
+        }}
+      >
+        {label}
+      </Text>
 
-      {/* Drum-roll container shares InputField border/bg tokens */}
       <View
         style={[
           drum.wrap,

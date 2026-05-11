@@ -20,6 +20,7 @@ import {
   Platform,
   StyleSheet,
   Text,
+  ToastAndroid,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -70,24 +71,25 @@ try {
 async function cancelAllNotifeeIdsForTask(taskId, thresholdKey) {
   if (!notifee || !taskId) return;
 
-  const overdueBaseId =
-    thresholdKey && thresholdKey !== "due"
-      ? buildNotificationId("deadline-overdue", taskId, thresholdKey)
-      : null;
-  const dueBaseId = buildNotificationId("deadline-due", taskId, "due");
-
-  const ids = [
+  const baseVariants = [
+    buildNotificationId("deadline-due", taskId, "due"),
+    buildNotificationId("deadline-overdue", taskId, thresholdKey || "due"),
+    buildNotificationId("deadline-overdue", taskId, "due"),
+    buildNotificationId("deadline-lead", taskId, thresholdKey || "due"),
     thresholdKey ? buildDeadlineNotificationId(taskId, thresholdKey) : null,
-    thresholdKey === "due" ? dueBaseId : null,
-    overdueBaseId,
-    dueBaseId,
-    // FIXED: also cancel -display variants
-    overdueBaseId ? `${overdueBaseId}-display` : null,
-    `${dueBaseId}-display`,
+    buildDeadlineNotificationId(taskId, "due"),
   ].filter(Boolean);
 
+  const allIds = new Set([
+    ...baseVariants,
+    ...baseVariants.map((id) => `${id}-display`),
+    taskId,
+  ]);
+
   await Promise.all(
-    ids.map((id) => notifee.cancelNotification(String(id)).catch(() => {}))
+    [...allIds].map((id) =>
+      notifee.cancelNotification(String(id)).catch(() => {})
+    )
   );
 }
 
@@ -110,6 +112,67 @@ function formatDeadlineDueMoment(date) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function IOSMissedAlarmBanner({ message, onHide }) {
+  const insets = useSafeAreaInsets();
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(-16)).current;
+
+  useEffect(() => {
+    if (!message) return undefined;
+
+    opacity.setValue(0);
+    translateY.setValue(-16);
+
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    const timeoutId = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(opacity, {
+          toValue: 0,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateY, {
+          toValue: -16,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start(() => onHide?.());
+    }, 3000);
+
+    return () => clearTimeout(timeoutId);
+  }, [message, onHide, opacity, translateY]);
+
+  if (!message) return null;
+
+  return (
+    <View
+      pointerEvents="none"
+      style={[styles.missedBannerContainer, { top: insets.top + 12 }]}
+    >
+      <Animated.View
+        style={[
+          styles.missedBanner,
+          { opacity, transform: [{ translateY }] },
+        ]}
+      >
+        <Text style={styles.missedBannerText}>{message}</Text>
+      </Animated.View>
+    </View>
+  );
 }
 
 function buildRescheduledDeadlineContent(
@@ -149,10 +212,10 @@ function buildRescheduledDeadlineContent(
         title: "30 min until deadline",
         body: `"${titleText}" (${subject}) is due in 30 minutes. Due ${dueLabel} [${priority}]`,
       };
-    case "1m":
+    case "5m":
       return {
-        title: "1 minute until deadline",
-        body: `"${titleText}" (${subject}) is due in 1 minute. Due ${dueLabel} [${priority}]`,
+        title: "5 min until deadline",
+        body: `"${titleText}" (${subject}) is due in 5 minutes. Due ${dueLabel} [${priority}]`,
       };
     case "due":
     default: {
@@ -207,6 +270,8 @@ async function scheduleNextDeadlineCheckpoint({
         delayMs: OVERDUE_CHAIN.find((c) => c.key === thresholdKey)?.delayMs ?? null,
       },
       triggerAt,
+      intendedTriggerAtMs: triggerAt,
+      deliveryPathHint: isFollowup ? "followup" : "not_done",
     });
   }
 
@@ -291,6 +356,7 @@ function DeadlineAlarmModal({
   onNotDone,
   onMarkDone,
   pendingAction,
+  nativeHandoff = false,
   thresholdKey = null,
 }) {
   const insets = useSafeAreaInsets();
@@ -300,6 +366,7 @@ function DeadlineAlarmModal({
   // Local self-close flag so modal disappears immediately after button press
   // without waiting for the parent to propagate visible=false back down.
   const [selfClosed, setSelfClosed] = useState(false);
+  const [missedAlarmBannerMessage, setMissedAlarmBannerMessage] = useState("");
   const soundRef = useRef(null);
   const vibRef = useRef(null);
   const tickRef = useRef(null);
@@ -310,7 +377,7 @@ function DeadlineAlarmModal({
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const loopRef = useRef(null);
   const userDismissedRef = useRef(false);
-  const autoHandledPendingActionRef = useRef("");
+  const actionInFlightRef = useRef(false);
 
   const due = resolveTaskDueDate(task);
   const urgencyColor = getUrgencyMeta(due?.getTime(), now.getTime()).color;
@@ -319,9 +386,12 @@ function DeadlineAlarmModal({
   const meta = TYPE_META[task?.type] ?? TYPE_META.custom;
   const notDoneSelected = pendingAction === "notdone";
   const doneSelected = pendingAction === "markdone";
+  const isSilentConfirmMode = pendingAction === "markdone";
+  const shouldUseLocalAlarmLoop = !isSilentConfirmMode && !nativeHandoff;
 
   const isOverdue = due && due.getTime() < now.getTime();
   const effectiveThresholdKey = thresholdKey || (isOverdue ? "due" : null);
+  const requiresExplicitAction = AUTO_MISS_STAGE_KEYS.has(effectiveThresholdKey);
 
   const getOverdueDuration = () => {
     if (!due || !isOverdue) return null;
@@ -347,6 +417,7 @@ function DeadlineAlarmModal({
       setMarkingDone(false);
       setSelfClosed(false);
       userDismissedRef.current = false;
+      actionInFlightRef.current = false;
       slideAnim.setValue(-80);
       shakeAnim.setValue(0);
       pulseAnim.setValue(1);
@@ -384,42 +455,62 @@ function DeadlineAlarmModal({
     loopRef.current.start();
     // Per-second countdown
     tickRef.current = setInterval(() => setNow(new Date()), 1000);
-    // Initial vibration
-    startVibration(vibRef);
-    // Initial alarm sound
-    playAlarmSound(soundRef);
-    // Repeat vibration every 5 seconds
-    vibrationIntervalRef.current = setInterval(() => {
+    if (shouldUseLocalAlarmLoop) {
+      // Initial vibration
       startVibration(vibRef);
-    }, 5000);
-    // Repeat alarm sound every 10 seconds — stop first, then play, to avoid overlap
-    soundIntervalRef.current = setInterval(async () => {
-      const currentId = soundIntervalRef.current;
-      if (currentId === null) return;
-      await stopAlarmSound(soundRef);
-      if (soundIntervalRef.current !== currentId) return;
+      // Initial alarm sound
       playAlarmSound(soundRef);
-    }, 10000);
+      // Repeat vibration every 5 seconds
+      vibrationIntervalRef.current = setInterval(() => {
+        startVibration(vibRef);
+      }, 5000);
+      // Repeat alarm sound every 10 seconds — stop first, then play, to avoid overlap
+      soundIntervalRef.current = setInterval(async () => {
+        const currentId = soundIntervalRef.current;
+        if (currentId === null) return;
+        await stopAlarmSound(soundRef);
+        if (soundIntervalRef.current !== currentId) return;
+        playAlarmSound(soundRef);
+      }, 10000);
+    }
     return () => {
       loopRef.current?.stop();
       clearInterval(tickRef.current);
+      tickRef.current = null;
       clearInterval(vibrationIntervalRef.current);
+      vibrationIntervalRef.current = null;
       clearInterval(soundIntervalRef.current);
       soundIntervalRef.current = null;
       // Always stop sound/vibration on unmount — stopAlarmSound is idempotent
       stopVibration(vibRef);
       stopAlarmSound(soundRef);
     };
-  }, [visible, pulseAnim, shakeAnim, slideAnim]);
+  }, [shouldUseLocalAlarmLoop, visible, pulseAnim, shakeAnim, slideAnim]);
 
   // "Not Done" — stop sound/vibration immediately, advance checkpoint chain,
   // schedule next alarm, close modal. Task remains incomplete.
-  const handleNotDone = useCallback(async ({ skipHaptic = false } = {}) => {
-    if (notDonePressed || markingDone) return;
-    setNotDonePressed(true);
-    userDismissedRef.current = true;
+  useEffect(() => {
+    if (!selfClosed) return undefined;
 
-    // Clear intervals immediately (synchronously)
+    actionInFlightRef.current = false;
+    loopRef.current?.stop();
+    clearInterval(tickRef.current);
+    tickRef.current = null;
+    clearInterval(vibrationIntervalRef.current);
+    vibrationIntervalRef.current = null;
+    clearInterval(soundIntervalRef.current);
+    soundIntervalRef.current = null;
+    stopVibration(vibRef);
+    stopAlarmSound(soundRef);
+    return undefined;
+  }, [selfClosed]);
+
+  const stopCurrentAlarmPresentation = useCallback(async () => {
+    loopRef.current?.stop();
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
     if (vibrationIntervalRef.current) {
       clearInterval(vibrationIntervalRef.current);
       vibrationIntervalRef.current = null;
@@ -428,8 +519,10 @@ function DeadlineAlarmModal({
       clearInterval(soundIntervalRef.current);
       soundIntervalRef.current = null;
     }
-    // Stop vibration and native alarms
+
     stopVibration(vibRef);
+    await stopAlarmSound(soundRef).catch(() => {});
+
     try {
       if (typeof stopActiveNativeAlarm === "function") {
         const stopped = await stopActiveNativeAlarm().catch(() => false);
@@ -438,12 +531,18 @@ function DeadlineAlarmModal({
         }
       }
     } catch (_e) {}
-    // Stop alarm sound and wait for it to complete
-    await stopAlarmSound(soundRef).catch(() => {});
 
-    // [FIX 5] Cancel ALL candidate notification IDs so the ongoing shade
-    // notification is reliably dismissed regardless of which ID builder was used.
     await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey);
+  }, [effectiveThresholdKey, task?.id]);
+
+  const handleNotDone = useCallback(async ({ skipHaptic = false } = {}) => {
+    if (notDonePressed || markingDone || actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setNotDonePressed(true);
+    userDismissedRef.current = true;
+    let nextCheckpoint = null;
+
+    await stopCurrentAlarmPresentation();
 
     if (!skipHaptic) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
@@ -460,22 +559,17 @@ function DeadlineAlarmModal({
       await onNotDone?.();
       if (task?.id && dueDate) {
         try {
-          const nextCheckpoint = await advanceCheckpoint(
+          nextCheckpoint = await advanceCheckpoint(
             task.id,
             effectiveThresholdKey || "due",
             dueDate.getTime()
           );
           if (nextCheckpoint?.key) {
-            const nextTriggerAt =
-              nextCheckpoint.key === "daily" ||
-              !Number.isFinite(nextCheckpoint.delayMs)
-                ? null
-                : dueDate.getTime() + nextCheckpoint.delayMs;
             await scheduleNextDeadlineCheckpoint({
               task,
               dueDate,
               thresholdKey: nextCheckpoint.key,
-              triggerAt: nextTriggerAt,
+              triggerAt: nextCheckpoint.triggerAtMs ?? null,
             });
           }
         } catch (err) {
@@ -490,45 +584,41 @@ function DeadlineAlarmModal({
     }
     // Mark modal as self-closing after callbacks complete so state updates commit first
     setSelfClosed(true);
+    if (skipHaptic) {
+      const nextTriggerAtMs = Number(nextCheckpoint?.triggerAtMs);
+      const message = Number.isFinite(nextTriggerAtMs)
+        ? `Alarm missed — next reminder at ${new Date(
+            nextTriggerAtMs
+          ).toLocaleTimeString(undefined, {
+            hour: "numeric",
+            minute: "2-digit",
+          })}`
+        : "Alarm missed — you'll be reminded again later";
+
+      if (Platform.OS === "android") {
+        ToastAndroid.show(message, ToastAndroid.LONG);
+      } else if (Platform.OS === "ios") {
+        setMissedAlarmBannerMessage(message);
+      }
+    }
   }, [
     effectiveThresholdKey,
     markingDone,
     notDonePressed,
     onNotDone,
+    stopCurrentAlarmPresentation,
     task,
   ]);
 
   // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
   const handleDone = useCallback(async () => {
-    if (notDonePressed || markingDone || !task?.id) return;
+    if (notDonePressed || markingDone || !task?.id || actionInFlightRef.current)
+      return;
+    actionInFlightRef.current = true;
     setMarkingDone(true);
     userDismissedRef.current = true;
 
-    // Clear intervals immediately (synchronously)
-    if (vibrationIntervalRef.current) {
-      clearInterval(vibrationIntervalRef.current);
-      vibrationIntervalRef.current = null;
-    }
-    if (soundIntervalRef.current) {
-      clearInterval(soundIntervalRef.current);
-      soundIntervalRef.current = null;
-    }
-    // Stop vibration and native alarms
-    stopVibration(vibRef);
-    try {
-      if (typeof stopActiveNativeAlarm === "function") {
-        const stopped = await stopActiveNativeAlarm().catch(() => false);
-        if (!stopped && typeof forceStopNativeAlarm === "function") {
-          await forceStopNativeAlarm().catch(() => {});
-        }
-      }
-    } catch (_e) {}
-    // Stop alarm sound and wait for it to complete
-    await stopAlarmSound(soundRef).catch(() => {});
-
-    // [FIX 5] Cancel ALL candidate notification IDs so the ongoing shade
-    // notification is reliably dismissed regardless of which ID builder was used.
-    await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey);
+    await stopCurrentAlarmPresentation();
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
@@ -537,8 +627,10 @@ function DeadlineAlarmModal({
     try {
       await Promise.race([
         (async () => {
-          await cancelDeadlineAlarms(task);
-          await clearCheckpoint(task?.id);
+          if (task?.id) {
+            await cancelDeadlineAlarms(task).catch(() => {});
+            await clearCheckpoint(task.id).catch(() => {});
+          }
           await onMarkDone?.();
           setNotDonePressed(true);
         })(),
@@ -553,17 +645,18 @@ function DeadlineAlarmModal({
     // Mark modal as self-closing after callbacks complete so state updates commit first
     setSelfClosed(true);
   }, [
-    effectiveThresholdKey,
     markingDone,
     notDonePressed,
     onMarkDone,
+    stopCurrentAlarmPresentation,
     task,
   ]);
 
   const handleRequestClose = () => {
     if (notDonePressed || markingDone) return;
-    // For overdue tasks, block dismissal — only show shake animation but don't close
-    if (isOverdue) {
+    // Urgent due/overdue alarms are never dismissible without an explicit
+    // action or the auto-miss timeout.
+    if (requiresExplicitAction) {
       Animated.sequence([
         Animated.timing(shakeAnim, {
           toValue: 10,
@@ -583,40 +676,9 @@ function DeadlineAlarmModal({
       ]).start();
       return;
     }
-    // For non-overdue tasks, allow dismissal
+    // Non-urgent warnings may still be dismissed.
     setSelfClosed(true);
   };
-
-  useEffect(() => {
-    if (!visible || !task?.id || !pendingAction || selfClosed) {
-      autoHandledPendingActionRef.current = "";
-      return;
-    }
-
-    const actionKey = `${task.id}:${pendingAction}`;
-    if (autoHandledPendingActionRef.current === actionKey) return;
-    autoHandledPendingActionRef.current = actionKey;
-
-    const timer = setTimeout(() => {
-      if (pendingAction === "markdone") {
-        void handleDone();
-        return;
-      }
-      if (pendingAction === "notdone") {
-        void handleNotDone();
-      }
-    }, 0);
-
-    return () => clearTimeout(timer);
-  }, [
-    visible,
-    task?.id,
-    pendingAction,
-    selfClosed,
-    thresholdKey,
-    handleDone,
-    handleNotDone,
-  ]);
 
   useEffect(() => {
     if (
@@ -643,29 +705,43 @@ function DeadlineAlarmModal({
     visible,
   ]);
 
-  if (!task || selfClosed) {
+  if (!task) {
     return null;
   }
 
+  const missedAlarmBanner =
+    Platform.OS === "ios" ? (
+      <IOSMissedAlarmBanner
+        message={missedAlarmBannerMessage}
+        onHide={() => setMissedAlarmBannerMessage("")}
+      />
+    ) : null;
+
+  if (selfClosed) {
+    return missedAlarmBanner;
+  }
+
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={handleRequestClose}
-      accessibilityViewIsModal={true}
-      statusBarTranslucent
-    >
-      <View style={styles.overlay}>
-        <Animated.View
-          style={[
-            styles.card,
-            { marginTop: insets.top + 12, borderColor: urgencyColor },
-            {
-              transform: [{ translateY: slideAnim }, { translateX: shakeAnim }],
-            },
-          ]}
-        >
+    <>
+      {missedAlarmBanner}
+      <Modal
+        visible={visible}
+        transparent
+        animationType="none"
+        onRequestClose={handleRequestClose}
+        accessibilityViewIsModal={true}
+        statusBarTranslucent
+      >
+        <View style={styles.overlay}>
+          <Animated.View
+            style={[
+              styles.card,
+              { marginTop: insets.top + 12, borderColor: urgencyColor },
+              {
+                transform: [{ translateY: slideAnim }, { translateX: shakeAnim }],
+              },
+            ]}
+          >
           {/* Left priority stripe */}
           <View style={[styles.stripe, { backgroundColor: pColor }]} />
           {/* Pulsing alarm icon */}
@@ -797,6 +873,7 @@ function DeadlineAlarmModal({
         </Animated.View>
       </View>
     </Modal>
+    </>
   );
 }
 
@@ -903,6 +980,33 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     lineHeight: 17,
     flex: 1,
+  },
+  missedBannerContainer: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 9999,
+    alignItems: "center",
+  },
+  missedBanner: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: "#0f172a",
+    borderColor: "#334155",
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+  },
+  missedBannerText: {
+    color: "#f8fafc",
+    fontSize: 14,
+    fontWeight: "700",
+    textAlign: "center",
   },
   doneBtn: {
     flexDirection: "row",

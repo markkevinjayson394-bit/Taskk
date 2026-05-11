@@ -31,6 +31,7 @@
     "eslint-config-expo": "~10.0.0",
     "expo": "~54.0.25",
     "expo-av": "~16.0.8",
+    "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.10",
     "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.9",
@@ -84,7 +85,9 @@
     },
     "doctor": {
       "reactNativeDirectoryCheck": {
-        "exclude": ["@notifee/react-native"]
+        "exclude": [
+          "@notifee/react-native"
+        ]
       }
     }
   },

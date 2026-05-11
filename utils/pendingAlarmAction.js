@@ -2,6 +2,10 @@ import {
   clearPendingAlarmAction,
   getPendingAlarmAction,
 } from "./nativeAlarm";
+import {
+  isDeadlineAlarmModalEligible,
+  resolveDeadlineAlarmStage,
+} from "./deadlineAlarmStage";
 
 const MAX_AGE_MS = 25 * 60 * 1000;  // 25 minutes
 
@@ -34,34 +38,36 @@ export async function consumePendingAlarmAction() {
     pending.action === "done" || pending.action === "markdone"
       ? "markdone"
       : pending.action === "not_done" || pending.action === "notdone"
-        ? "notdone"
+        ? "__handled_directly__"
         : pending.action === "default"
           ? null
           : undefined;
 
   if (action === undefined) return null;
+  if (action === "__handled_directly__") return null;
 
   let taskId = pending.alarmId;
   let alarmStage = null;
   let dueAtMs = null;
+  let payload = null;
 
   try {
-    const payload = JSON.parse(pending.payloadJson || "{}");
+    payload = JSON.parse(pending.payloadJson || "{}");
     if (payload?.taskId) taskId = payload.taskId;
-    alarmStage =
-      typeof payload?.stage === "string" && payload.stage
-        ? payload.stage
-        : typeof payload?.threshold === "string" && payload.threshold
-          ? payload.threshold
-          : null;
+    alarmStage = resolveDeadlineAlarmStage(payload);
     const raw = Number(payload?.dueAtMs);
     dueAtMs = Number.isFinite(raw) && raw > 0 ? raw : null;
   } catch {}
+
+  if (!isDeadlineAlarmModalEligible(payload ?? { stage: alarmStage })) {
+    return null;
+  }
 
   return {
     focusTaskId: taskId,
     showAlarm: "1",
     ...(action ? { pendingAction: action } : {}),
+    nativeHandoff: "1",
     ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
     ...(alarmStage ? { alarmStage } : {}),
   };

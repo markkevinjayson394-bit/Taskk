@@ -69,7 +69,7 @@ module.exports = ({ config }) => {
   const easProjectId =
     normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
     normalizeFirebaseValue(baseExtra?.eas?.projectId) ||
-    "e044163a-3db8-4577-9ca5-a70fb2634898";
+    "f121e7a5-5b48-49ac-9430-ad6b040eabf8";
 
   const firebase = {
     apiKey:
@@ -106,7 +106,7 @@ module.exports = ({ config }) => {
     orientation: "portrait",
     icon: "./assets/icon.png",
     scheme: "ctuacademictaskmanager",
-    owner: "haahahe",
+    owner: "ikema2004",
     userInterfaceStyle: "automatic",
     androidStatusBar: {
       barStyle: "light-content",
@@ -170,6 +170,17 @@ module.exports = ({ config }) => {
           ],
         },
       ],
+      "expo-task-manager",
+      [
+        "expo-build-properties",
+        {
+          android: {
+            compileSdkVersion: 36, // ✅ changed from 34
+            targetSdkVersion: 35, // ✅ changed from 34
+            minSdkVersion: 24,
+          },
+        },
+      ],
       [
         "expo-image-picker",
         {
@@ -180,6 +191,14 @@ module.exports = ({ config }) => {
         },
       ],
       "@react-native-community/datetimepicker",
+      [
+        "@sentry/react-native/expo",
+        {
+          url: "https://sentry.io/",
+          project: "react-native",
+          organization: "mark-kevin-jayson",
+        },
+      ],
     ],
     experiments: {
       typedRoutes: true,

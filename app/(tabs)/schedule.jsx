@@ -35,6 +35,7 @@ import {
 import { useTheme } from "../../context/ThemeContext";
 import { buildSubjectIdFromName } from "../../utils/academicTaskModel";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 
 // Local imports
 import {
@@ -416,7 +417,9 @@ export default function ViewSchedule() {
       <Animated.ScrollView
         style={{ opacity: fadeAnim }}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.container}
+        contentContainerStyle={{
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
+        }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -559,7 +562,6 @@ export default function ViewSchedule() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: { paddingBottom: 32 },
   content: { paddingTop: 14, paddingHorizontal: 14 },
 });
 

@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, db } from "../../config/firebase";
 import { getCollegeLabel } from "../../constants/academics";
 import { useTheme } from "../../context/ThemeContext";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { APP_VERSION } from "../../utils/version";
 
 export default function ReviewScreen() {
@@ -124,7 +125,7 @@ export default function ReviewScreen() {
       />
       <ScrollView
         contentContainerStyle={{
-          paddingBottom: 40 + insets.bottom,
+          paddingBottom: getTabBarContentBottomPadding(insets.bottom),
           paddingTop: 16 + insets.top,
         }}
         refreshControl={

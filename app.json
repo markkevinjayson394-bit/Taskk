@@ -60,6 +60,16 @@
       ],
       "expo-task-manager",
       [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 34,
+            "targetSdkVersion": 34,
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "CTU Academic Task Manager needs access to your photos to set a profile picture.",

@@ -107,5 +107,12 @@ export async function clearTaskRescheduleIntents(uid, taskIds = null) {
     .map((taskId) => getTaskRescheduleIntentKey(uid, taskId))
     .filter(Boolean);
   if (keys.length === 0) return;
-  await AsyncStorage.multiRemove(keys);
+
+  // Re-validate keys exist before deletion to prevent race conditions
+  // where new intents were added after the initial read
+  const allKeys = await AsyncStorage.getAllKeys();
+  const validKeys = keys.filter((key) => allKeys.includes(key));
+  if (validKeys.length > 0) {
+    await AsyncStorage.multiRemove(validKeys);
+  }
 }

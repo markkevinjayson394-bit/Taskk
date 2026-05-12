@@ -1,23 +1,23 @@
 import notifee from "@notifee/react-native";
 import { AppRegistry } from "react-native";
 import {
-  ALARM_KIND_LEAD_NOTICE,
-  ACTION_MARK_DONE,
-  ACTION_NOT_DONE,
-  bootstrapDeadlineAlarmChannel,
-  DEADLINE_NOTIF_TYPE,
-  displayAlarmNotification,
-  displayLeadNotification,
-  resolveNotificationAlarmKind,
-  scheduleNextOverdueAlarm,
+    ACTION_MARK_DONE,
+    ACTION_NOT_DONE,
+    ALARM_KIND_LEAD_NOTICE,
+    bootstrapDeadlineAlarmChannel,
+    DEADLINE_NOTIF_TYPE,
+    displayAlarmNotification,
+    displayLeadNotification,
+    resolveNotificationAlarmKind,
+    scheduleNextOverdueAlarm,
 } from "../utils/deadlineAlarmBackground";
 import { OVERDUE_CHAIN } from "../utils/deadlineConstants";
 import { warnIfDev } from "../utils/logger";
 import {
-  cancelNativeAlarmByAlarmId,
-  forceStopNativeAlarm,
-  stopActiveNativeAlarm,
-  writeAlarmAction,
+    cancelNativeAlarmByAlarmId,
+    forceStopNativeAlarm,
+    stopActiveNativeAlarm,
+    writeAlarmAction,
 } from "../utils/nativeAlarm";
 import { advanceCheckpoint } from "../utils/taskOverdueState";
 
@@ -119,7 +119,9 @@ async function stopNativeAlarmLoop() {
 
 async function cancelVisibleAlarmNotifications(baseAlarmId, notificationId) {
   const ids = new Set([
-    typeof notificationId === "string" && notificationId ? notificationId : null,
+    typeof notificationId === "string" && notificationId
+      ? notificationId
+      : null,
     typeof baseAlarmId === "string" && baseAlarmId ? baseAlarmId : null,
     typeof baseAlarmId === "string" && baseAlarmId
       ? `${baseAlarmId}-display`
@@ -133,63 +135,83 @@ async function cancelVisibleAlarmNotifications(baseAlarmId, notificationId) {
   );
 }
 
-AppRegistry.registerHeadlessTask("AlarmDisplayTask", () => async (data = {}) => {
-  try {
-    const payload = parsePayloadJson(data?.payloadJson);
-    const notificationType =
-      typeof payload?.notificationType === "string" &&
-      payload.notificationType.trim()
-        ? payload.notificationType.trim()
-        : typeof payload?.type === "string" && payload.type.trim()
-          ? payload.type.trim()
-          : "";
-    if (notificationType !== DEADLINE_NOTIF_TYPE) return;
+AppRegistry.registerHeadlessTask(
+  "AlarmDisplayTask",
+  () =>
+    async (data = {}) => {
+      try {
+        const payload = parsePayloadJson(data?.payloadJson);
+        const notificationType =
+          typeof payload?.notificationType === "string" &&
+          payload.notificationType.trim()
+            ? payload.notificationType.trim()
+            : typeof payload?.type === "string" && payload.type.trim()
+              ? payload.type.trim()
+              : "";
+        if (notificationType !== DEADLINE_NOTIF_TYPE) {
+          warnIfDev("AlarmDisplayTask: ignoring non-deadline notification");
+          return;
+        }
 
-    const alarmId =
-      typeof data?.alarmId === "string" && data.alarmId.trim()
-        ? data.alarmId.trim()
-        : typeof payload?.alarmId === "string" && payload.alarmId.trim()
-          ? payload.alarmId.trim()
-          : typeof payload?.notificationId === "string" &&
-              payload.notificationId.trim()
-            ? payload.notificationId.trim()
-            : null;
-    if (!alarmId) return;
+        const alarmId =
+          typeof data?.alarmId === "string" && data.alarmId.trim()
+            ? data.alarmId.trim()
+            : typeof payload?.alarmId === "string" && payload.alarmId.trim()
+              ? payload.alarmId.trim()
+              : typeof payload?.notificationId === "string" &&
+                  payload.notificationId.trim()
+                ? payload.notificationId.trim()
+                : null;
+        if (!alarmId) {
+          warnIfDev("AlarmDisplayTask: no alarm ID found");
+          return;
+        }
 
-    const resolvedData = {
-      ...payload,
-      alarmId,
-      notificationId: alarmId,
-      taskId:
-        typeof payload?.taskId === "string" && payload.taskId.trim()
-          ? payload.taskId.trim()
-          : alarmId,
-    };
-    const alarmKind = resolveNotificationAlarmKind(resolvedData);
+        const resolvedData = {
+          ...payload,
+          alarmId,
+          notificationId: alarmId,
+          taskId:
+            typeof payload?.taskId === "string" && payload.taskId.trim()
+              ? payload.taskId.trim()
+              : alarmId,
+        };
+        const alarmKind = resolveNotificationAlarmKind(resolvedData);
 
-    await bootstrapDeadlineAlarmChannel().catch(() => {});
+        warnIfDev(
+          `[AlarmDisplayTask] Running for alarm ${alarmId}, kind: ${alarmKind}, stage: ${payload?.stage}`
+        );
 
-    if (alarmKind === ALARM_KIND_LEAD_NOTICE) {
-      await displayLeadNotification({
-        id: alarmId,
-        title: resolveAlarmTitle(data, payload),
-        body: resolveAlarmBody(data, payload),
-        data: resolvedData,
-      });
-      return;
+        await bootstrapDeadlineAlarmChannel().catch(() => {});
+
+        if (alarmKind === ALARM_KIND_LEAD_NOTICE) {
+          warnIfDev(
+            `[AlarmDisplayTask] Displaying lead notification for ${alarmId}`
+          );
+          await displayLeadNotification({
+            id: alarmId,
+            title: resolveAlarmTitle(data, payload),
+            body: resolveAlarmBody(data, payload),
+            data: resolvedData,
+          });
+          return;
+        }
+
+        warnIfDev(
+          `[AlarmDisplayTask] Displaying alarm notification for ${alarmId}`
+        );
+        await displayAlarmNotification({
+          id: `${alarmId}-display`,
+          title: resolveAlarmTitle(data, payload),
+          body: resolveAlarmBody(data, payload),
+          data: resolvedData,
+          isOngoing: true,
+        });
+      } catch (err) {
+        warnIfDev("AlarmDisplayTask headless task failed:", err);
+      }
     }
-
-    await displayAlarmNotification({
-      id: `${alarmId}-display`,
-      title: resolveAlarmTitle(data, payload),
-      body: resolveAlarmBody(data, payload),
-      data: resolvedData,
-      isOngoing: true,
-    });
-  } catch (err) {
-    warnIfDev("AlarmDisplayTask headless task failed:", err);
-  }
-});
+);
 
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification } = detail;
@@ -250,14 +272,17 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
         stageKey,
         dueAtMs
       );
-      if (!nextCheckpoint?.key) return;
+      if (!nextCheckpoint?.key) {
+        warnIfDev(`[AlarmDisplayTask] Failed to advance checkpoint for task ${data.taskId} at stage ${stageKey}`);
+        return;
+      }
 
       const chainEntry =
         OVERDUE_CHAIN.find((entry) => entry.key === nextCheckpoint.key) ||
         nextCheckpoint;
       const triggerAt =
         chainEntry.key === "daily"
-          ? nextCheckpoint.triggerAtMs ?? null
+          ? (nextCheckpoint.triggerAtMs ?? null)
           : Number.isFinite(chainEntry.delayMs)
             ? dueAtMs + chainEntry.delayMs
             : Date.now() + 5 * 60 * 1000;
@@ -278,8 +303,6 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
 
   if (baseAlarmId) {
     await cancelNativeAlarmByAlarmId(baseAlarmId).catch(() => {});
-    await writeAlarmAction("default", baseAlarmId, payloadJson).catch(
-      () => {}
-    );
+    await writeAlarmAction("default", baseAlarmId, payloadJson).catch(() => {});
   }
 });

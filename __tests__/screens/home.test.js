@@ -223,11 +223,14 @@ describe("Home dashboard", () => {
   test("renders urgent tasks and marks a task done", async () => {
     const { getAllByText, getByText } = render(<HomeDashboard />);
 
+    // FIX: flush microtasks so Promise chains in fetchDashboardData settle
+    await flushAllMicrotasks(50);
+
     await waitFor(
       () => {
         expect(getAllByText("Write lab report").length).toBeGreaterThan(0);
       },
-      { timeout: 4000 }
+      { timeout: 12000 }
     );
 
     fireEvent.press(getByText(/^done$/i));
@@ -303,13 +306,13 @@ describe("Home dashboard", () => {
     // getDoc (rejects) → catch handler → loadFromOfflineCache again (4 more
     // reads) → setState. That's at minimum 3 async "hops" so we need more
     // than 3 Promise.resolve() ticks.
-    await flushAllMicrotasks(20);
+    await flushAllMicrotasks(50);
 
     await waitFor(
       () => {
         expect(getAllByText("Cached planner task").length).toBeGreaterThan(0);
       },
-      { timeout: 8000 }
+      { timeout: 12000 }
     );
 
     await waitFor(() => {

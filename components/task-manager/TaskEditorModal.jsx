@@ -2,14 +2,14 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import React from "react";
 import {
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 function getSubjectSourceLabel(source) {
@@ -424,19 +424,27 @@ export default function TaskEditorModal({
                     paddingVertical: 7,
                     borderRadius: 8,
                     marginBottom: 8,
-                    backgroundColor: dueDateWarning.type === "error" ? "#fee2e2" : "#fef3c7",
+                    backgroundColor:
+                      dueDateWarning.type === "error" ? "#fee2e2" : "#fef3c7",
                   }}
                 >
                   <Ionicons
-                    name={dueDateWarning.type === "error" ? "alert-circle-outline" : "warning-outline"}
+                    name={
+                      dueDateWarning.type === "error"
+                        ? "alert-circle-outline"
+                        : "warning-outline"
+                    }
                     size={14}
-                    color={dueDateWarning.type === "error" ? "#ef4444" : "#f59e0b"}
+                    color={
+                      dueDateWarning.type === "error" ? "#ef4444" : "#f59e0b"
+                    }
                   />
                   <Text
                     style={{
                       fontSize: 12,
                       fontWeight: "600",
-                      color: dueDateWarning.type === "error" ? "#b91c1c" : "#b45309",
+                      color:
+                        dueDateWarning.type === "error" ? "#b91c1c" : "#b45309",
                       flex: 1,
                     }}
                   >
@@ -472,7 +480,8 @@ export default function TaskEditorModal({
                 </View>
               )}
 
-              {showDueDatePicker && (
+              {/* FIX: Defer iOS picker initialization until needed */}
+              {showDueDatePicker && Platform.OS !== "ios" && (
                 <DateTimePicker
                   value={dueAt}
                   mode="date"
@@ -481,11 +490,28 @@ export default function TaskEditorModal({
                   onChange={onDueDateChange}
                 />
               )}
-              {showDueTimePicker && (
+              {showDueDatePicker && Platform.OS === "ios" && (
+                <DateTimePicker
+                  value={dueAt}
+                  mode="date"
+                  display="spinner"
+                  minimumDate={new Date()}
+                  onChange={onDueDateChange}
+                />
+              )}
+              {showDueTimePicker && Platform.OS !== "ios" && (
                 <DateTimePicker
                   value={dueAt}
                   mode="time"
-                  display={Platform.OS === "ios" ? "spinner" : "default"}
+                  display="default"
+                  onChange={onDueTimeChange}
+                />
+              )}
+              {showDueTimePicker && Platform.OS === "ios" && (
+                <DateTimePicker
+                  value={dueAt}
+                  mode="time"
+                  display="spinner"
                   onChange={onDueTimeChange}
                 />
               )}
@@ -555,7 +581,8 @@ export default function TaskEditorModal({
                     <Text
                       style={[styles.timeLeftSub, { color: colors.primary }]}
                     >
-                      This task will use the standard lead-time alerts before it becomes due.
+                      This task will use the standard lead-time alerts before it
+                      becomes due.
                     </Text>
                   </View>
                 </View>
@@ -564,348 +591,355 @@ export default function TaskEditorModal({
               {/* Flexible Reminder Section */}
               {showReminderSection && (
                 <View style={styles.reminderSection}>
-                <View style={styles.reminderSectionHeader}>
-                  <Ionicons
-                    name="notifications-outline"
-                    size={14}
-                    color={customReminderAt ? colors.primary : colors.muted}
-                  />
-                  <Text style={[styles.sectionLabel, { color: colors.muted }]}>
-                    Remind me
-                  </Text>
-                  {customReminderAt && (
-                    <TouchableOpacity
-                      style={styles.clearReminderBtn}
-                      onPress={() => {
-                        onClearCustomReminder?.();
-                        setShowCustomOffsetInput(false);
-                        setCustomOffsetError("");
-                      }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      disabled={isSubmitting}
+                  <View style={styles.reminderSectionHeader}>
+                    <Ionicons
+                      name="notifications-outline"
+                      size={14}
+                      color={customReminderAt ? colors.primary : colors.muted}
+                    />
+                    <Text
+                      style={[styles.sectionLabel, { color: colors.muted }]}
                     >
-                      <Ionicons
-                        name="close-circle"
-                        size={16}
-                        color={colors.muted}
-                      />
-                    </TouchableOpacity>
-                  )}
-                </View>
+                      Remind me
+                    </Text>
+                    {customReminderAt && (
+                      <TouchableOpacity
+                        style={styles.clearReminderBtn}
+                        onPress={() => {
+                          onClearCustomReminder?.();
+                          setShowCustomOffsetInput(false);
+                          setCustomOffsetError("");
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        disabled={isSubmitting}
+                      >
+                        <Ionicons
+                          name="close-circle"
+                          size={16}
+                          color={colors.muted}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
 
-                {/* Only show the "cleared" hint in edit mode with a previously set reminder */}
-                {isEditMode && showClearedReminderHint ? (
-                  <Text
-                    style={[
-                      styles.clearedReminderText,
-                      { color: colors.muted },
-                    ]}
-                  >
-                    Previous reminder was cleared. Set a new one below.
-                  </Text>
-                ) : null}
-
-                {/* Deadline context line */}
-                {dueAt && (
-                  <View
-                    style={[
-                      styles.deadlineContext,
-                      {
-                        backgroundColor: isDark ? "#0f172a" : "#f8fafc",
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="flag-outline" size={12} color="#ef4444" />
+                  {/* Only show the "cleared" hint in edit mode with a previously set reminder */}
+                  {isEditMode && showClearedReminderHint ? (
                     <Text
                       style={[
-                        styles.deadlineContextText,
+                        styles.clearedReminderText,
                         { color: colors.muted },
                       ]}
                     >
-                      Deadline:{" "}
-                      <Text style={{ color: colors.text, fontWeight: "700" }}>
-                        {formatTime(dueAt)}
-                      </Text>
+                      Previous reminder was cleared. Set a new one below.
                     </Text>
-                    {createdAt && (
-                      <>
-                        <Text
-                          style={[
-                            styles.deadlineContextDot,
-                            { color: colors.muted },
-                          ]}
-                        >
-                          ·
-                        </Text>
-                        <Ionicons
-                          name="add-circle-outline"
-                          size={12}
-                          color={colors.muted}
-                        />
-                        <Text
-                          style={[
-                            styles.deadlineContextText,
-                            { color: colors.muted },
-                          ]}
-                        >
-                          Created:{" "}
-                          <Text
-                            style={{ color: colors.text, fontWeight: "600" }}
-                          >
-                            {formatTime(createdAt)}
-                          </Text>
-                        </Text>
-                      </>
-                    )}
-                  </View>
-                )}
+                  ) : null}
 
-                {/* Preset chips grid */}
-                <View style={styles.reminderPresets}>
-                  {REMINDER_PRESETS.map((preset) => {
-                    const isActive = activePresetKey === preset.key;
-
-                    if (
-                      preset.minutesBefore !== "custom" &&
-                      preset.minutesBefore !== null
-                    ) {
-                      const computed = computeReminderFromPreset(
-                        preset,
-                        dueAt,
-                        createdAt
-                      );
-                      if (computed && computed.getTime() <= Date.now()) {
-                        return null;
-                      }
-                    }
-
-                    let previewTime = null;
-                    if (
-                      preset.minutesBefore !== "custom" &&
-                      preset.minutesBefore !== null &&
-                      dueAt
-                    ) {
-                      const computed = computeReminderFromPreset(
-                        preset,
-                        dueAt,
-                        createdAt
-                      );
-                      if (computed) {
-                        previewTime = computed.toLocaleTimeString("en-US", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        });
-                      }
-                    }
-
-                    return (
-                      <TouchableOpacity
-                        key={preset.key}
+                  {/* Deadline context line */}
+                  {dueAt && (
+                    <View
+                      style={[
+                        styles.deadlineContext,
+                        {
+                          backgroundColor: isDark ? "#0f172a" : "#f8fafc",
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <Ionicons name="flag-outline" size={12} color="#ef4444" />
+                      <Text
                         style={[
-                          styles.reminderPresetChip,
-                          {
-                            borderColor: isActive
-                              ? colors.primary
-                              : colors.border,
-                            backgroundColor: isActive
-                              ? colors.primary + "18"
-                              : isDark
-                                ? "#0f172a"
-                                : "#f8fafc",
-                          },
+                          styles.deadlineContextText,
+                          { color: colors.muted },
                         ]}
-                        onPress={() => handlePresetSelect(preset)}
-                        disabled={isSubmitting}
-                        activeOpacity={0.75}
                       >
-                        <Ionicons
-                          name={preset.icon}
-                          size={12}
-                          color={isActive ? colors.primary : colors.muted}
-                        />
-                        <View style={styles.reminderPresetTextWrap}>
+                        Deadline:{" "}
+                        <Text style={{ color: colors.text, fontWeight: "700" }}>
+                          {formatTime(dueAt)}
+                        </Text>
+                      </Text>
+                      {createdAt && (
+                        <>
                           <Text
                             style={[
-                              styles.reminderPresetLabel,
-                              {
-                                color: isActive ? colors.primary : colors.text,
-                              },
+                              styles.deadlineContextDot,
+                              { color: colors.muted },
                             ]}
-                            numberOfLines={1}
                           >
-                            {preset.label}
+                            ·
                           </Text>
-                          {previewTime && (
+                          <Ionicons
+                            name="add-circle-outline"
+                            size={12}
+                            color={colors.muted}
+                          />
+                          <Text
+                            style={[
+                              styles.deadlineContextText,
+                              { color: colors.muted },
+                            ]}
+                          >
+                            Created:{" "}
+                            <Text
+                              style={{ color: colors.text, fontWeight: "600" }}
+                            >
+                              {formatTime(createdAt)}
+                            </Text>
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Preset chips grid */}
+                  <View style={styles.reminderPresets}>
+                    {REMINDER_PRESETS.map((preset) => {
+                      const isActive = activePresetKey === preset.key;
+
+                      if (
+                        preset.minutesBefore !== "custom" &&
+                        preset.minutesBefore !== null
+                      ) {
+                        const computed = computeReminderFromPreset(
+                          preset,
+                          dueAt,
+                          createdAt
+                        );
+                        if (computed && computed.getTime() <= Date.now()) {
+                          return null;
+                        }
+                      }
+
+                      let previewTime = null;
+                      if (
+                        preset.minutesBefore !== "custom" &&
+                        preset.minutesBefore !== null &&
+                        dueAt
+                      ) {
+                        const computed = computeReminderFromPreset(
+                          preset,
+                          dueAt,
+                          createdAt
+                        );
+                        if (computed) {
+                          previewTime = computed.toLocaleTimeString("en-US", {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          });
+                        }
+                      }
+
+                      return (
+                        <TouchableOpacity
+                          key={preset.key}
+                          style={[
+                            styles.reminderPresetChip,
+                            {
+                              borderColor: isActive
+                                ? colors.primary
+                                : colors.border,
+                              backgroundColor: isActive
+                                ? colors.primary + "18"
+                                : isDark
+                                  ? "#0f172a"
+                                  : "#f8fafc",
+                            },
+                          ]}
+                          onPress={() => handlePresetSelect(preset)}
+                          disabled={isSubmitting}
+                          activeOpacity={0.75}
+                        >
+                          <Ionicons
+                            name={preset.icon}
+                            size={12}
+                            color={isActive ? colors.primary : colors.muted}
+                          />
+                          <View style={styles.reminderPresetTextWrap}>
                             <Text
                               style={[
-                                styles.reminderPresetTime,
+                                styles.reminderPresetLabel,
                                 {
                                   color: isActive
                                     ? colors.primary
-                                    : colors.muted,
+                                    : colors.text,
                                 },
                               ]}
                               numberOfLines={1}
                             >
-                              {previewTime}
+                              {preset.label}
                             </Text>
+                            {previewTime && (
+                              <Text
+                                style={[
+                                  styles.reminderPresetTime,
+                                  {
+                                    color: isActive
+                                      ? colors.primary
+                                      : colors.muted,
+                                  },
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {previewTime}
+                              </Text>
+                            )}
+                          </View>
+                          {isActive && (
+                            <Ionicons
+                              name="checkmark-circle"
+                              size={13}
+                              color={colors.primary}
+                            />
                           )}
-                        </View>
-                        {isActive && (
-                          <Ionicons
-                            name="checkmark-circle"
-                            size={13}
-                            color={colors.primary}
-                          />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                {/* --- NEW: Inline custom offset input (shown when "Custom offset" is tapped) --- */}
-                {showCustomOffsetInput && (
-                  <View
-                    style={[
-                      styles.customOffsetBox,
-                      {
-                        backgroundColor: isDark ? "#0f172a" : "#f8fafc",
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[styles.customOffsetTitle, { color: colors.text }]}
-                    >
-                      Remind me before due date
-                    </Text>
-                    <View style={styles.customOffsetRow}>
-                      <View style={styles.customOffsetField}>
-                        <TextInput
-                          style={[
-                            styles.customOffsetInput,
-                            {
-                              color: colors.text,
-                              borderColor: customOffsetError
-                                ? "#ef4444"
-                                : colors.border,
-                              backgroundColor: colors.card,
-                            },
-                          ]}
-                          keyboardType="number-pad"
-                          value={customOffsetHours}
-                          onChangeText={(v) => {
-                            setCustomOffsetHours(v.replace(/[^0-9]/g, ""));
-                            setCustomOffsetError("");
-                          }}
-                          maxLength={3}
-                          editable={!isSubmitting}
-                          selectTextOnFocus
-                        />
-                        <Text
-                          style={[
-                            styles.customOffsetUnit,
-                            { color: colors.muted },
-                          ]}
-                        >
-                          hours
-                        </Text>
-                      </View>
-                      <Text
-                        style={[
-                          styles.customOffsetSep,
-                          { color: colors.muted },
-                        ]}
-                      >
-                        +
-                      </Text>
-                      <View style={styles.customOffsetField}>
-                        <TextInput
-                          style={[
-                            styles.customOffsetInput,
-                            {
-                              color: colors.text,
-                              borderColor: customOffsetError
-                                ? "#ef4444"
-                                : colors.border,
-                              backgroundColor: colors.card,
-                            },
-                          ]}
-                          keyboardType="number-pad"
-                          value={customOffsetMins}
-                          onChangeText={(v) => {
-                            setCustomOffsetMins(v.replace(/[^0-9]/g, ""));
-                            setCustomOffsetError("");
-                          }}
-                          maxLength={3}
-                          editable={!isSubmitting}
-                          selectTextOnFocus
-                        />
-                        <Text
-                          style={[
-                            styles.customOffsetUnit,
-                            { color: colors.muted },
-                          ]}
-                        >
-                          min
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        style={[
-                          styles.customOffsetApplyBtn,
-                          { backgroundColor: colors.primary },
-                        ]}
-                        onPress={applyCustomOffset}
-                        disabled={isSubmitting}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.customOffsetApplyText}>Set</Text>
-                      </TouchableOpacity>
-                    </View>
-                    {customOffsetError ? (
-                      <Text style={styles.customOffsetError}>
-                        {customOffsetError}
-                      </Text>
-                    ) : (
-                      <Text
-                        style={[
-                          styles.customOffsetHint,
-                          { color: colors.muted },
-                        ]}
-                      >
-                        Enter how long before the deadline to be reminded.
-                      </Text>
-                    )}
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
-                )}
 
-                {/* Active reminder summary */}
-                {reminderSummary && (
-                  <View
-                    style={[
-                      styles.reminderSummaryBox,
-                      {
-                        backgroundColor: colors.primary + "12",
-                        borderColor: colors.primary + "40",
-                      },
-                    ]}
-                  >
-                    <Ionicons
-                      name="notifications"
-                      size={13}
-                      color={colors.primary}
-                    />
-                    <Text
+                  {/* --- NEW: Inline custom offset input (shown when "Custom offset" is tapped) --- */}
+                  {showCustomOffsetInput && (
+                    <View
                       style={[
-                        styles.reminderSummaryText,
-                        { color: colors.primary },
+                        styles.customOffsetBox,
+                        {
+                          backgroundColor: isDark ? "#0f172a" : "#f8fafc",
+                          borderColor: colors.border,
+                        },
                       ]}
                     >
-                      {reminderSummary}
-                    </Text>
-                  </View>
-                )}
+                      <Text
+                        style={[
+                          styles.customOffsetTitle,
+                          { color: colors.text },
+                        ]}
+                      >
+                        Remind me before due date
+                      </Text>
+                      <View style={styles.customOffsetRow}>
+                        <View style={styles.customOffsetField}>
+                          <TextInput
+                            style={[
+                              styles.customOffsetInput,
+                              {
+                                color: colors.text,
+                                borderColor: customOffsetError
+                                  ? "#ef4444"
+                                  : colors.border,
+                                backgroundColor: colors.card,
+                              },
+                            ]}
+                            keyboardType="number-pad"
+                            value={customOffsetHours}
+                            onChangeText={(v) => {
+                              setCustomOffsetHours(v.replace(/[^0-9]/g, ""));
+                              setCustomOffsetError("");
+                            }}
+                            maxLength={3}
+                            editable={!isSubmitting}
+                            selectTextOnFocus
+                          />
+                          <Text
+                            style={[
+                              styles.customOffsetUnit,
+                              { color: colors.muted },
+                            ]}
+                          >
+                            hours
+                          </Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.customOffsetSep,
+                            { color: colors.muted },
+                          ]}
+                        >
+                          +
+                        </Text>
+                        <View style={styles.customOffsetField}>
+                          <TextInput
+                            style={[
+                              styles.customOffsetInput,
+                              {
+                                color: colors.text,
+                                borderColor: customOffsetError
+                                  ? "#ef4444"
+                                  : colors.border,
+                                backgroundColor: colors.card,
+                              },
+                            ]}
+                            keyboardType="number-pad"
+                            value={customOffsetMins}
+                            onChangeText={(v) => {
+                              setCustomOffsetMins(v.replace(/[^0-9]/g, ""));
+                              setCustomOffsetError("");
+                            }}
+                            maxLength={3}
+                            editable={!isSubmitting}
+                            selectTextOnFocus
+                          />
+                          <Text
+                            style={[
+                              styles.customOffsetUnit,
+                              { color: colors.muted },
+                            ]}
+                          >
+                            min
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={[
+                            styles.customOffsetApplyBtn,
+                            { backgroundColor: colors.primary },
+                          ]}
+                          onPress={applyCustomOffset}
+                          disabled={isSubmitting}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.customOffsetApplyText}>Set</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {customOffsetError ? (
+                        <Text style={styles.customOffsetError}>
+                          {customOffsetError}
+                        </Text>
+                      ) : (
+                        <Text
+                          style={[
+                            styles.customOffsetHint,
+                            { color: colors.muted },
+                          ]}
+                        >
+                          Enter how long before the deadline to be reminded.
+                        </Text>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Active reminder summary */}
+                  {reminderSummary && (
+                    <View
+                      style={[
+                        styles.reminderSummaryBox,
+                        {
+                          backgroundColor: colors.primary + "12",
+                          borderColor: colors.primary + "40",
+                        },
+                      ]}
+                    >
+                      <Ionicons
+                        name="notifications"
+                        size={13}
+                        color={colors.primary}
+                      />
+                      <Text
+                        style={[
+                          styles.reminderSummaryText,
+                          { color: colors.primary },
+                        ]}
+                      >
+                        {reminderSummary}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               )}
 

@@ -154,9 +154,17 @@ jest.mock("../../utils/onboarding", () => ({
 }));
 
 jest.mock("../../utils/nativeAlarm", () => ({
+  ensureNativeAlarmPermissions: jest.fn().mockResolvedValue({
+    exactAlarm: { status: "unsupported", value: true },
+    fullScreenIntent: { status: "unsupported", value: true },
+  }),
   getPendingAlarmAction: jest.fn().mockResolvedValue(null),
   clearPendingAlarmAction: jest.fn().mockResolvedValue(undefined),
+  isIgnoringBatteryOptimizations: jest
+    .fn()
+    .mockResolvedValue({ status: "unsupported", value: true }),
   rawNativeAlarmModule: null,
+  requestIgnoreBatteryOptimizations: jest.fn(),
 }));
 
 jest.mock("../../utils/overdueAutoLaunch", () => ({

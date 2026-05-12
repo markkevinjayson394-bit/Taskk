@@ -15,11 +15,11 @@ import {
 import {
   disableNetwork,
   enableNetwork,
+  getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
 } from "firebase/firestore";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 
 /** @typedef {import("firebase/app").FirebaseApp} FirebaseApp */
 /** @typedef {import("firebase/auth").Auth} Auth */
@@ -146,18 +146,39 @@ try {
   }
 }
 
+function buildFirestoreSettings() {
+  const settings = {};
+
+  // React Native does not provide the browser IndexedDB + multi-tab APIs that
+  // Firestore's persistentLocalCache() relies on. Using it in release builds
+  // can fail during app startup and leave the app on a blank/gray screen.
+  if (Platform.OS !== "web") {
+    settings.experimentalForceLongPolling = true;
+  }
+
+  if (typeof memoryLocalCache === "function") {
+    settings.localCache = memoryLocalCache();
+  }
+
+  return settings;
+}
+
 /**
- * Firestore with offline persistence enabled via persistentLocalCache.
- * This allows getDoc/getDocs to serve from the local cache when offline,
- * complementing the AsyncStorage fallback in profile.jsx and other screens.
+ * Firestore for the React Native runtime. Avoid browser-only persistence
+ * primitives and fall back to the default instance if custom initialization
+ * fails so release builds can still boot.
  * @type {Firestore}
  */
-const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager(),
-  }),
-});
+let db;
+try {
+  db = initializeFirestore(app, buildFirestoreSettings());
+} catch (error) {
+  console.warn(
+    "Firestore initialization with custom settings failed; falling back to the default instance.",
+    error
+  );
+  db = getFirestore(app);
+}
 
 let disableNetworkTimer = null;
 

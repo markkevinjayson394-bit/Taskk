@@ -14,13 +14,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import {
-  FOREGROUND_THRESHOLDS,
-  OVERDUE_CHAIN,
-} from "../utils/deadlineConstants";
-import {
   DEADLINE_NOTIF_TYPE,
   displayAlarmNotification,
 } from "../utils/deadlineAlarmBackground";
+import {
+  FOREGROUND_THRESHOLDS,
+  OVERDUE_CHAIN,
+} from "../utils/deadlineConstants";
 import { warnIfDev } from "../utils/logger";
 import { buildDeadlineNotificationId } from "../utils/notificationIds";
 import {
@@ -37,7 +37,17 @@ try {
 const ACK_STORE_KEY = "deadline_alarm_acks_v1";
 const ACK_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const CHECK_INTERVAL_MS = 3_000;
-const OVERDUE_STAGES = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
+const OVERDUE_STAGES = new Set([
+  "1d",
+  "2h",
+  "30m",
+  "5m",
+  "due",
+  "+15m",
+  "+1h",
+  "+3h",
+  "daily",
+]);
 
 const OVERDUE_THRESHOLDS = OVERDUE_CHAIN.filter(
   ({ stage }) => stage !== "due" && stage !== "daily"
@@ -320,9 +330,13 @@ export function useDeadlineAlarmScheduler(
 
       if (foregroundModalEnabled === false) continue;
 
-      if (alarmQueueRef.current.find(
-        (q) => q.taskId === task.id && q.thresholdKey === triggered.thresholdKey
-      )) continue;
+      if (
+        alarmQueueRef.current.find(
+          (q) =>
+            q.taskId === task.id && q.thresholdKey === triggered.thresholdKey
+        )
+      )
+        continue;
 
       alarmQueueRef.current.push({
         taskId: task.id,
@@ -388,8 +402,10 @@ export function useDeadlineAlarmScheduler(
   }, [acksLoaded]);
 
   useEffect(() => {
-    const currentIds = new Set(pendingTasks.map(t => t.id));
-    const hasNewTask = [...currentIds].some(id => !prevTaskIdsRef.current.has(id));
+    const currentIds = new Set(pendingTasks.map((t) => t.id));
+    const hasNewTask = [...currentIds].some(
+      (id) => !prevTaskIdsRef.current.has(id)
+    );
     if (hasNewTask) {
       lastCheckedAtRef.current = Date.now() - CHECK_INTERVAL_MS - 1000;
     }
@@ -425,13 +441,13 @@ export function useDeadlineAlarmScheduler(
     if (resolvedThreshold?.ackKey) {
       acksRef.current[
         buildAckKey(activeAlarm.task.id, resolvedThreshold.ackKey)
-      ] =
-        true;
+      ] = true;
     }
     saveOverdueAckEntries(
       acksRef.current,
       activeAlarm.task.id,
-      resolveTaskDueDate(activeAlarm.task)?.toISOString() ?? activeAlarm.task?.dueAt,
+      resolveTaskDueDate(activeAlarm.task)?.toISOString() ??
+        activeAlarm.task?.dueAt,
       nowMs
     );
     await saveAcks(acksRef.current);

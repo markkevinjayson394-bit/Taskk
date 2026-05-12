@@ -66,8 +66,9 @@ export default function StudentsScreen() {
 
       snap.forEach((docSnap) => {
         const data = docSnap.data();
+        if (!data) return;
         const info = data.studentInfo;
-        if (!info) return;
+        if (!info || !info.college) return;
         const college = normalizeCollege(info.college) || "COT";
         const course = String(info.course || "Unknown Course").trim();
         const year = normalizeYear(info.year) || "-";
@@ -200,7 +201,7 @@ export default function StudentsScreen() {
           s.fullName,
           s.email,
           String(s.idNumber || ""),
-          String(s.college || ""),          // code e.g. "COT"
+          String(s.college || ""), // code e.g. "COT"
           getCollegeLabel(s.college || ""), // label e.g. "College of Technology"
           String(s.course || ""),
           String(s.year || ""),
@@ -654,7 +655,7 @@ function StudentRow({ student, colors, isDark, courseColor, showMeta }) {
         style={[styles.studentAvatar, { backgroundColor: courseColor + "20" }]}
       >
         <Text style={[styles.studentAvatarText, { color: courseColor }]}>
-          {student.fullName.charAt(0).toUpperCase()}
+          {student.fullName?.charAt(0)?.toUpperCase() || "?"}
         </Text>
       </View>
       <View style={{ flex: 1 }}>

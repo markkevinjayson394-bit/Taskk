@@ -12,13 +12,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { auth, db } from "../../config/firebase";
 import { useTheme } from "../../context/ThemeContext";
@@ -34,7 +34,9 @@ export default function AdminLayout() {
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState(false);
 
-  useEffect(() => { routerRef.current = router; });
+  useEffect(() => {
+    routerRef.current = router;
+  });
 
   useAndroidBackNavigation({ rootPath: "/(admin)/home" });
 
@@ -106,6 +108,19 @@ export default function AdminLayout() {
         </Text>
         <TouchableOpacity
           style={styles.errorBtn}
+          onPress={() => {
+            setError(false);
+            setChecking(true);
+          }}
+        >
+          <Ionicons name="refresh" size={16} color="#fff" />
+          <Text style={styles.errorBtnText}>Retry</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.errorBtn,
+            { marginTop: 12, backgroundColor: "#6b7280" },
+          ]}
           onPress={() => routerRef.current.replace("/(auth)/login")}
         >
           <Ionicons name="arrow-back" size={16} color="#fff" />

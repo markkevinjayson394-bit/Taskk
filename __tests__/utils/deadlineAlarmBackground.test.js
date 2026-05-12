@@ -93,6 +93,7 @@ const {
   ACTION_NOT_DONE,
   DEADLINE_CATEGORY_ID,
   bootstrapDeadlineAlarmChannel,
+  displayAlarmNotification,
   scheduleDeadlineAlarms,
   scheduleNextOverdueAlarm,
 } = require("../../utils/deadlineAlarmBackground");
@@ -225,6 +226,56 @@ describe("deadlineAlarmBackground", () => {
         "native-alarm:deadline-followup:task-1:+15m",
       ])
     );
+  });
+
+  it("marks the due native path as no-fullscreen fallback when popup permission is missing", async () => {
+    mockNativeAlarm.ensureNativeAlarmPermissions.mockResolvedValue({
+      exactAlarm: { status: "success", value: true },
+      fullScreenIntent: { status: "success", value: false },
+    });
+
+    await scheduleDeadlineAlarms({
+      id: "task-1",
+      title: "Essay",
+      subject: "English",
+    });
+
+    const dueCall = mockNativeAlarm.scheduleNativeAlarm.mock.calls.find(
+      ([payload]) => payload.alarmId === "deadline-due:task-1:due"
+    );
+
+    expect(dueCall?.[0]?.payload?.deliveryPath).toBe(
+      "native_no_fullscreen_popup"
+    );
+    expect(mockNotifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it("uses a persistent notification without full-screen action for no-fullscreen delivery paths", async () => {
+    await displayAlarmNotification({
+      id: "deadline-due:task-1:due-display",
+      title: "Task Due",
+      body: "Body",
+      data: {
+        taskId: "task-1",
+        taskTitle: "Essay",
+        dueAtMs: Date.now(),
+        deliveryPath: "native_no_fullscreen_popup",
+      },
+      isOngoing: true,
+    });
+
+    expect(mockNotifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "deadline-due:task-1:due-display",
+        android: expect.objectContaining({
+          ongoing: true,
+          autoCancel: false,
+        }),
+      })
+    );
+    expect(
+      mockNotifee.displayNotification.mock.calls[0][0].android.fullScreenAction
+    ).toBeUndefined();
   });
 
   it("does not post an immediate duplicate notifee notification for overdue fallback scheduling", async () => {

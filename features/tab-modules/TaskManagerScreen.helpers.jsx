@@ -4,19 +4,22 @@
 import { calculateDailyWorkload } from "@/utils/workloadCalculator";
 import * as AcademicTaskModel from "../../utils/academicTaskModel";
 import {
-  parseDueDate,
-  resolveTaskDueDate,
+    parseDueDate,
+    resolveTaskDueDate,
 } from "../../utils/academicTaskModel";
 import {
-  cancelDeadlineAlarms,
-  scheduleDeadlineAlarms,
+    cancelDeadlineAlarms,
+    scheduleDeadlineAlarms,
 } from "../../utils/deadlineAlarmBackground";
 import { warnIfDev } from "../../utils/logger";
 import {
-  prepareQueuedTaskPayloadForFirestore,
-  readOfflineCreateQueue,
-  writeOfflineCreateQueue,
+    prepareQueuedTaskPayloadForFirestore,
+    readOfflineCreateQueue,
+    writeOfflineCreateQueue,
 } from "../../utils/offlineTaskQueue";
+
+// FIX: In-memory cache for parsed subject catalogs to avoid re-parsing on every modal open
+const subjectCatalogCache = {};
 
 const normalizeSubjectName =
   typeof AcademicTaskModel.normalizeSubjectName === "function"
@@ -131,10 +134,21 @@ export function normalizeSubjectOption(item = {}) {
 
 export function parseSubjectCatalogRaw(raw) {
   if (!raw) return [];
+
+  // FIX: Check cache first to avoid re-parsing
+  if (subjectCatalogCache[raw]) {
+    return subjectCatalogCache[raw];
+  }
+
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((item) => normalizeSubjectOption(item)).filter(Boolean);
+    const result = parsed
+      .map((item) => normalizeSubjectOption(item))
+      .filter(Boolean);
+    // Cache the parsed result
+    subjectCatalogCache[raw] = result;
+    return result;
   } catch {
     return [];
   }

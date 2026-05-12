@@ -64,7 +64,11 @@ function resolveNext8AMFromMs(referenceMs) {
   ).getTime();
 }
 
-export function resolveIntendedTriggerAt(stageKey, dueAtMs, nowMs = Date.now()) {
+export function resolveIntendedTriggerAt(
+  stageKey,
+  dueAtMs,
+  nowMs = Date.now()
+) {
   const resolvedDueAtMs = normalizeMs(dueAtMs);
   if (!Number.isFinite(resolvedDueAtMs)) return null;
 
@@ -75,7 +79,8 @@ export function resolveIntendedTriggerAt(stageKey, dueAtMs, nowMs = Date.now()) 
     if (!Number.isFinite(referenceMs) || referenceMs <= firstDailyTrigger) {
       return firstDailyTrigger;
     }
-    const elapsedDays = Math.floor((referenceMs - firstDailyTrigger) / DAY_MS) + 1;
+    const elapsedDays =
+      Math.floor((referenceMs - firstDailyTrigger) / DAY_MS) + 1;
     return firstDailyTrigger + elapsedDays * DAY_MS;
   }
 
@@ -107,10 +112,7 @@ export function resolveDailyAckBucket(dueAtMs, nowMs = Date.now()) {
   return Math.floor((resolvedNowMs - firstDailyTrigger) / DAY_MS) + 1;
 }
 
-export function resolveCurrentOverdueStageInfo(
-  dueAtMs,
-  nowMs = Date.now()
-) {
+export function resolveCurrentOverdueStageInfo(dueAtMs, nowMs = Date.now()) {
   const resolvedDueAtMs = normalizeMs(dueAtMs);
   const resolvedNowMs = normalizeMs(nowMs, { allowZero: true });
   if (
@@ -138,10 +140,7 @@ export function resolveCurrentOverdueStageInfo(
   }
 
   const firstDailyTrigger = resolveFirstDailyTrigger(resolvedDueAtMs);
-  if (
-    Number.isFinite(firstDailyTrigger) &&
-    resolvedNowMs < firstDailyTrigger
-  ) {
+  if (Number.isFinite(firstDailyTrigger) && resolvedNowMs < firstDailyTrigger) {
     return { key: "+3h", triggerAtMs: plus3hTriggerAt };
   }
 
@@ -161,11 +160,7 @@ export function resolveCurrentOverdueStage(dueAtMs, nowMs = Date.now()) {
   return resolveCurrentOverdueStageInfo(dueAtMs, nowMs)?.key ?? null;
 }
 
-export function resolveNextCheckpoint(
-  currentKey,
-  dueAtMs,
-  nowMs = Date.now()
-) {
+export function resolveNextCheckpoint(currentKey, dueAtMs, nowMs = Date.now()) {
   const resolvedDueAtMs = normalizeMs(dueAtMs);
   const resolvedKey = CHAIN_INDEX.has(currentKey) ? currentKey : "due";
 
@@ -245,7 +240,9 @@ export async function setCheckpoint(taskId, key, triggerAtMs = null) {
         triggerAtMs: Number.isFinite(triggerAtMs) ? triggerAtMs : null,
       })
     );
-  } catch {
-    // ignore
+  } catch (err) {
+    warnIfDev(
+      `[setCheckpoint] Failed to persist checkpoint for ${taskId}: ${err.message}`
+    );
   }
 }

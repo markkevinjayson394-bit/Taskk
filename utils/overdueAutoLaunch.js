@@ -12,36 +12,37 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-  collection,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  where,
+    collection,
+    getDocs,
+    limit,
+    orderBy,
+    query,
+    where,
 } from "firebase/firestore";
 import { Platform } from "react-native";
 import { db } from "../config/firebase";
 import { DEADLINE_NOTIF_TYPE } from "./deadlineAlarmBackground";
 import { warnIfDev } from "./logger";
 import {
-  canScheduleExactAlarms,
-  isNativeAlarmSupported,
-  scheduleNativeAlarm,
+    canScheduleExactAlarms,
+    isNativeAlarmSupported,
+    scheduleNativeAlarm,
 } from "./nativeAlarm";
 import {
-  buildManagedNotificationData,
-  buildNotificationId,
+    buildManagedNotificationData,
+    buildNotificationId,
 } from "./notificationIds";
-import { resolveCurrentOverdueStageInfo } from "./taskOverdueState";
 import {
-  buildOfflineTaskFromQueueItem,
-  readOfflineCreateQueue,
+    buildOfflineTaskFromQueueItem,
+    readOfflineCreateQueue,
 } from "./offlineTaskQueue";
 import { isPlannerTask } from "./taskFilters";
+import { resolveCurrentOverdueStageInfo } from "./taskOverdueState";
 
 const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = "overdue_auto_launch_last_triggered_v1";
 const TRIGGER_DELAY_MS = 3_000;
+const RECOVERY_STAGE_KEYS = new Set(["+15m", "+1h", "+3h", "daily"]);
 
 function getTaskDueAtMs(task) {
   const raw = task?.dueAt;
@@ -145,7 +146,7 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
   if (Platform.OS !== "android") return;
   if (!isNativeAlarmSupported) return;
   if (opts.hasPendingAction) return;
-  if (await isInCooldown(userId)) return;
+  if (!opts.skipCooldown && (await isInCooldown(userId))) return;
 
   const exactResult = await canScheduleExactAlarms();
   if (exactResult?.status !== "success" || exactResult?.value !== true) {
@@ -159,7 +160,16 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
   if (!task) return;
 
   const dueAtMs = getTaskDueAtMs(task);
+  if (!Number.isFinite(dueAtMs)) return;
   const currentStageInfo = resolveCurrentOverdueStageInfo(dueAtMs, Date.now());
+  const stageKey =
+    typeof currentStageInfo?.key === "string" ? currentStageInfo.key : "due";
+  if (!RECOVERY_STAGE_KEYS.has(stageKey)) {
+    warnIfDev(
+      `[overdueAutoLaunch] Skipping auto-launch for ${task.id}: native due alarm should own the due moment`
+    );
+    return;
+  }
   const taskTitle =
     typeof task.title === "string" && task.title.trim()
       ? task.title.trim()
@@ -184,7 +194,7 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
     subject,
     dueAtMs: Number.isFinite(dueAtMs) ? dueAtMs : null,
     acknowledgeRequired: true,
-    stage: currentStageInfo?.key ?? "due",
+    stage: stageKey,
     intendedTriggerAtMs: currentStageInfo?.triggerAtMs ?? dueAtMs,
     scheduledAtMs: Date.now(),
     deliveryPath: "app_open_catchup",

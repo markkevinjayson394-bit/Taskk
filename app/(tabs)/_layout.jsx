@@ -28,19 +28,29 @@ import { useExactAlarmStartupCheck } from "../../hooks/useExactAlarmStartupCheck
 import { bootstrapDeadlineAlarmChannel } from "../../utils/deadlineAlarmBackground";
 import { warnIfDev } from "../../utils/logger";
 import {
-  TAB_BAR_PADDING_TOP,
-  TAB_BAR_SIDE_MARGIN,
-  TAB_BAR_VISIBLE_HEIGHT,
-  getFloatingTabBarBottomOffset,
-  getFloatingTabBarHeight,
+    TAB_BAR_PADDING_TOP,
+    TAB_BAR_SIDE_MARGIN,
+    TAB_BAR_VISIBLE_HEIGHT,
+    getFloatingTabBarBottomOffset,
+    getFloatingTabBarHeight,
 } from "../../utils/tabBarLayout";
 
+// Route name constants for type safety
+export const TAB_ROUTES = {
+  HOME: "home",
+  SCHEDULE: "schedule",
+  CALENDAR_PLANNER: "CalendarPlannerScreen",
+  ANNOUNCEMENTS: "AnnouncementsScreen",
+  PROFILE: "profile",
+  TASK_MANAGER: "TaskManagerScreen",
+};
+
 const VISIBLE_TAB_ROUTES = new Set([
-  "home",
-  "schedule",
-  "CalendarPlannerScreen",
-  "AnnouncementsScreen",
-  "profile",
+  TAB_ROUTES.HOME,
+  TAB_ROUTES.SCHEDULE,
+  TAB_ROUTES.CALENDAR_PLANNER,
+  TAB_ROUTES.ANNOUNCEMENTS,
+  TAB_ROUTES.PROFILE,
 ]);
 
 function NotificationStartupEffects() {
@@ -211,8 +221,7 @@ export default function TabsLayout() {
                 // FIX: was `insets.bottom + 72` which double-counted insets.
                 // The tab bar height above safe area is TAB_BAR_VISIBLE_HEIGHT,
                 // so FAB sits that many points above the bottom safe area edge.
-                bottom:
-                  tabBarBottomOffset + TAB_BAR_VISIBLE_HEIGHT + 16,
+                bottom: tabBarBottomOffset + TAB_BAR_VISIBLE_HEIGHT + 16,
                 width: 64,
                 height: 64,
                 borderRadius: 32,

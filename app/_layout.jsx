@@ -27,7 +27,10 @@ import {
   DEADLINE_NOTIF_TYPE,
   handleDeadlineAlarmResponse,
 } from "../utils/deadlineAlarmBackground";
-import { isDeadlineAlarmModalEligible, resolveDeadlineAlarmStage } from "../utils/deadlineAlarmStage";
+import {
+  isDeadlineAlarmModalEligible,
+  resolveDeadlineAlarmStage,
+} from "../utils/deadlineAlarmStage";
 import {
   errorIfDev,
   reportError,
@@ -35,17 +38,18 @@ import {
   warnIfDev,
 } from "../utils/logger";
 import {
+  ensureNativeAlarmPermissions,
   isIgnoringBatteryOptimizations,
   rawNativeAlarmModule,
   requestIgnoreBatteryOptimizations,
 } from "../utils/nativeAlarm";
-import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
 import {
   getPostOnboardingRoute,
   getTutorialRoute,
   hasCompletedOnboarding,
 } from "../utils/onboarding";
 import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
+import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
 const LAST_HANDLED_RESPONSE_KEY = "last_handled_notif_response_id";
@@ -100,11 +104,48 @@ const OTA_UPDATE_FETCH_TIMEOUT_MS = 12000;
 const OTA_PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const OTA_FOREGROUND_CHECK_COOLDOWN_MS = 30 * 60 * 1000;
 const AUTH_ROUTE_TIMEOUT_MS = 15000;
+const expoExtra = Constants.expoConfig?.extra || {};
+
+function getOtaDiagnostics() {
+  return {
+    owner: Constants.expoConfig?.owner || null,
+    projectId: expoExtra?.eas?.projectId || null,
+    channel: typeof Updates.channel === "string" ? Updates.channel : null,
+    runtimeVersion:
+      (typeof Updates.runtimeVersion === "string" && Updates.runtimeVersion) ||
+      Constants.expoConfig?.runtimeVersion ||
+      null,
+    buildProfile:
+      typeof expoExtra?.buildProfile === "string"
+        ? expoExtra.buildProfile
+        : null,
+  };
+}
+
+function addOtaBreadcrumb(message, data = {}) {
+  try {
+    Sentry.addBreadcrumb({
+      category: "startup_ota",
+      message,
+      level: "info",
+      data,
+    });
+  } catch {
+    // Logging should never break startup.
+  }
+}
+
+function logSkippedStartupOta(reason) {
+  const diagnostics = { reason, ...getOtaDiagnostics() };
+  addOtaBreadcrumb("Startup OTA check skipped", diagnostics);
+  warnIfDev("Startup OTA check skipped:", diagnostics);
+}
 
 function canRunStartupUpdateCheck() {
   const isExpoGo = Constants.appOwnership === "expo";
+  const startupOtaEnabled = expoExtra?.startupOtaEnabled === true;
 
-  if (__DEV__ || isExpoGo) return false;
+  if (__DEV__ || isExpoGo || !startupOtaEnabled) return false;
 
   try {
     return (
@@ -143,7 +184,16 @@ function withTimeout(promise, timeoutMs) {
 }
 
 async function resolveStartupUpdate() {
-  if (!canRunStartupUpdateCheck()) return;
+  if (!canRunStartupUpdateCheck()) {
+    const reason =
+      Constants.appOwnership === "expo"
+        ? "expo_go"
+        : expoExtra?.startupOtaEnabled === true
+          ? "updates_unavailable"
+          : "disabled_by_build_profile";
+    logSkippedStartupOta(reason);
+    return;
+  }
 
   try {
     const raw = await AsyncStorage.getItem(OTA_SKIP_UNTIL_KEY);
@@ -155,6 +205,7 @@ async function resolveStartupUpdate() {
     reportWarning(error, {
       message: "Failed to read OTA update backoff state.",
       tags: { location: "startup_update_backoff_read" },
+      extra: getOtaDiagnostics(),
     });
   }
 
@@ -178,6 +229,7 @@ async function resolveStartupUpdate() {
       reportWarning(error, {
         message: "Failed to clear OTA update backoff state.",
         tags: { location: "startup_update_backoff_clear" },
+        extra: getOtaDiagnostics(),
       });
     }
 
@@ -193,16 +245,20 @@ async function resolveStartupUpdate() {
         reportWarning(error, {
           message: "Failed to persist OTA channel backoff state.",
           tags: { location: "startup_update_backoff_write" },
+          extra: getOtaDiagnostics(),
         });
       }
       warnIfDev(
-        "OTA update check paused for this build: update channel has no linked branch."
+        "OTA update check paused for this build: update channel has no linked branch.",
+        getOtaDiagnostics()
       );
       return;
     }
+    addOtaBreadcrumb("Startup OTA check failed", getOtaDiagnostics());
     reportError(err, {
       message: "OTA update check failed.",
       tags: { location: "startup_update_check" },
+      extra: getOtaDiagnostics(),
     });
     warnIfDev("OTA update check failed (non-blocking):", err);
   }
@@ -285,6 +341,7 @@ function RootLayoutNav() {
 
     // Guard prevents double-fire within the same app session
     const alarmActionInFlight = { current: false };
+    let isInitialOverdueCheck = true;
 
     const checkPendingAlarmAction = async () => {
       if (alarmActionInFlight.current) return;
@@ -311,7 +368,12 @@ function RootLayoutNav() {
         const runtimeAuth = getAuth(app);
         const user = runtimeAuth?.currentUser;
         if (!user) return;
-        await checkAndAutoLaunchOverdueAlarm(user.uid, { hasPendingAction });
+        const skipCooldown = isInitialOverdueCheck;
+        isInitialOverdueCheck = false;
+        await checkAndAutoLaunchOverdueAlarm(user.uid, {
+          hasPendingAction,
+          skipCooldown,
+        });
       } catch (err) {
         warnIfDev("[layout] checkForOverdueTaskOnOpen failed:", err);
       }
@@ -368,6 +430,20 @@ function RootLayoutNav() {
     const bootstrap = async () => {
       await bootstrapDeadlineAlarmChannel();
 
+      try {
+        await ensureNativeAlarmPermissions({
+          requireExactAlarm: true,
+          requireFullScreen: true,
+          prompt: false,
+          source: "root_bootstrap",
+        });
+      } catch (err) {
+        warnIfDev(
+          "Failed to refresh native alarm permissions on bootstrap:",
+          err
+        );
+      }
+
       // Check and request battery optimization permission on Android
       try {
         const batteryResult = await isIgnoringBatteryOptimizations();
@@ -375,16 +451,21 @@ function RootLayoutNav() {
           requestIgnoreBatteryOptimizations();
         }
       } catch (err) {
-        warnIfDev("Failed to check/request battery optimization permission:", err);
+        warnIfDev(
+          "Failed to check/request battery optimization permission:",
+          err
+        );
       }
 
       timeoutId = setTimeout(() => {
         if (!active) return;
         reportWarning(null, {
           message:
-            "Auth state is taking longer than expected. Waiting for auth callback before routing.",
+            "Auth state is taking longer than expected. Routing to login fallback.",
           tags: { location: "bootstrap_auth_timeout" },
         });
+        setShowOverlay(false);
+        routerRef.current.replace("/(auth)/login");
       }, AUTH_ROUTE_TIMEOUT_MS);
 
       hasResolvedUpdate.current = true;
@@ -453,9 +534,11 @@ function RootLayoutNav() {
         resolveRoute("/(auth)/login");
       }
 
-      otaIntervalId = setInterval(() => {
-        runOtaUpdateCheck("interval");
-      }, OTA_PERIODIC_CHECK_INTERVAL_MS);
+      if (canRunStartupUpdateCheck()) {
+        otaIntervalId = setInterval(() => {
+          runOtaUpdateCheck("interval");
+        }, OTA_PERIODIC_CHECK_INTERVAL_MS);
+      }
 
       let appState = AppState.currentState;
       appStateSubscription = AppState.addEventListener(
@@ -465,9 +548,12 @@ function RootLayoutNav() {
           appState = nextState;
           if (!wasBackgrounded || nextState !== "active") return;
 
-          const elapsedMs = Date.now() - lastOtaCheckAt.current;
-          if (elapsedMs < OTA_FOREGROUND_CHECK_COOLDOWN_MS) return;
-          runOtaUpdateCheck("foreground_resume");
+          if (canRunStartupUpdateCheck()) {
+            const elapsedMs = Date.now() - lastOtaCheckAt.current;
+            if (elapsedMs >= OTA_FOREGROUND_CHECK_COOLDOWN_MS) {
+              runOtaUpdateCheck("foreground_resume");
+            }
+          }
           void checkPendingAlarmAction();
           void checkForOverdueTaskOnOpen();
         }
@@ -514,7 +600,10 @@ function RootLayoutNav() {
         typeof data?.deliveryPath === "string" &&
         data.deliveryPath.toLowerCase().includes("native");
 
-      const navigateTo = (pendingAction, { handoffToNativeAlarm = false } = {}) => {
+      const navigateTo = (
+        pendingAction,
+        { handoffToNativeAlarm = false } = {}
+      ) => {
         const dueAtMs = parseDueAtMs();
         const alarmStage = resolveDeadlineAlarmStage(data);
 

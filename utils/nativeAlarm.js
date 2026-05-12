@@ -1,8 +1,8 @@
 import {
-  Alert,
-  NativeModules,
-  Platform,
-  TurboModuleRegistry,
+    Alert,
+    NativeModules,
+    Platform,
+    TurboModuleRegistry,
 } from "react-native";
 import { warnIfDev } from "./logger";
 
@@ -136,6 +136,14 @@ function maybeShowPermissionPrompt(kind, title, message, openSettings) {
   state.open = true;
   state.lastAt = now;
 
+  let dismissed = false;
+  const resetTimeout = setTimeout(() => {
+    if (!dismissed) {
+      state.open = false;
+      dismissed = true;
+    }
+  }, 15000);
+
   Alert.alert(
     title,
     message,
@@ -143,22 +151,34 @@ function maybeShowPermissionPrompt(kind, title, message, openSettings) {
       {
         text: "Open Settings",
         onPress: () => {
-          state.open = false;
-          openSettings?.();
+          if (!dismissed) {
+            state.open = false;
+            dismissed = true;
+            clearTimeout(resetTimeout);
+            openSettings?.();
+          }
         },
       },
       {
         text: "Later",
         style: "cancel",
         onPress: () => {
-          state.open = false;
+          if (!dismissed) {
+            state.open = false;
+            dismissed = true;
+            clearTimeout(resetTimeout);
+          }
         },
       },
     ],
     {
       cancelable: true,
       onDismiss: () => {
-        state.open = false;
+        if (!dismissed) {
+          state.open = false;
+          dismissed = true;
+          clearTimeout(resetTimeout);
+        }
       },
     }
   );
@@ -277,7 +297,9 @@ export async function cancelNativeAlarmByScheduledId(scheduledId) {
 
 export async function cancelNativeAlarmByAlarmId(alarmId) {
   if (!alarmId) return false;
-  return cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(String(alarmId)));
+  return cancelNativeAlarmByScheduledId(
+    toNativeAlarmScheduledId(String(alarmId))
+  );
 }
 
 export async function cancelAllNativeAlarms() {

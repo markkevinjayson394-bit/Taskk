@@ -3,8 +3,8 @@ import { db } from "../config/firebase";
 import { resolveTaskDueDate } from "./academicTaskModel";
 import { warnIfDev } from "./logger";
 import {
-  mergePendingTasksWithOfflineQueue,
-  readOfflineCreateQueue,
+    mergePendingTasksWithOfflineQueue,
+    readOfflineCreateQueue,
 } from "./offlineTaskQueue";
 import { isPlannerTask } from "./taskFilters";
 
@@ -17,19 +17,14 @@ function isIncompleteTask(task = {}) {
 
 async function readRemotePendingTasks(userId) {
   if (!userId) return [];
-  try {
-    const snap = await getDocs(
-      query(
-        collection(db, "assignments"),
-        where("userId", "==", userId),
-        where("completed", "==", false)
-      )
-    );
-    return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
-  } catch (err) {
-    warnIfDev("[readRemotePendingTasks] Firestore fetch failed, returning []:", err);
-    return [];   // caller merges with offline queue anyway
-  }
+  const snap = await getDocs(
+    query(
+      collection(db, "assignments"),
+      where("userId", "==", userId),
+      where("completed", "==", false)
+    )
+  );
+  return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
 }
 
 export function getTaskDueAtMs(task) {

@@ -4,42 +4,42 @@ import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  serverTimestamp,
-  Timestamp,
-  updateDoc,
-  where,
+    addDoc,
+    collection,
+    deleteDoc,
+    doc,
+    getDoc,
+    getDocs,
+    query,
+    serverTimestamp,
+    Timestamp,
+    updateDoc,
+    where,
 } from "firebase/firestore";
 import {
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+    useCallback,
+    useDeferredValue,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
 } from "react";
 import {
-  Alert,
-  Animated,
-  Platform,
-  RefreshControl,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    Alert,
+    Animated,
+    Platform,
+    RefreshControl,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import DeadlineAlarmModal, {
-  useDeadlineAlarmScheduler,
+    useDeadlineAlarmScheduler,
 } from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import OfflineBanner from "../../components/OfflineBanner";
@@ -47,90 +47,90 @@ import TaskEditorModal from "../../components/task-manager/TaskEditorModal";
 import { auth, db } from "../../config/firebase";
 import { useNotifications } from "../../context/NotificationContext";
 import {
-  CACHE_KEYS,
-  loadFromCache,
-  OFFLINE_QUEUE_KEYS,
-  saveToCache,
-  useOffline,
+    CACHE_KEYS,
+    loadFromCache,
+    OFFLINE_QUEUE_KEYS,
+    saveToCache,
+    useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { loadAllPlans } from "../../features/tab-modules/CalendarPlannerScreen.helpers";
 import {
-  SubjectBreakdown,
-  TaskCard,
-  WorkloadBanner,
+    SubjectBreakdown,
+    TaskCard,
+    WorkloadBanner,
 } from "../../features/tab-modules/TaskManagerScreen.components";
 import {
-  AUTO_REFRESH_COOLDOWN_MS,
-  buildQuickDueOptions,
-  calculateWorkloadScore,
-  CREATE_PRIORITY_OPTIONS,
-  DAY_MS,
-  DEFAULT_MANUAL_TASK_REMINDER_POLICY,
-  ensureGeneralSubjectOption,
-  extractScheduleSubjectNames,
-  extractStudentScheduleProfile,
-  FILTERS,
-  flushCreateQueue,
-  formatDurationMs,
-  formatEstimatedMinutes,
-  GENERAL_SUBJECT,
-  GENERAL_SUBJECT_ID,
-  GENERAL_SUBJECT_OPTION,
-  getDefaultDueAt,
-  getPreferredCreateSubject,
-  getQuickCreateDueAt,
-  getQuickSnoozePlan,
-  getSectionKey,
-  getTaskSubjectId,
-  normalizeDateToISO,
-  normalizeFilterParam,
-  normalizePendingUpdates,
-  normalizeRouteString,
-  normalizeSubjectOption,
-  PAGE_SIZE,
-  parseDueDate,
-  parsePlannerRef,
-  parseSubjectCatalogRaw,
-  PENDING_UPDATES_KEY,
-  readCreateQueue,
-  resolveTaskDueDate,
-  SCHEDULE_SUBJECT_SOURCES,
-  SORT_OPTIONS,
-  sortSubjectOptions,
-  SUBJECT_CATALOG_KEY,
-  SUBJECT_FILTER_ALL_ID,
-  TYPE_META,
-  TYPE_ROWS,
-  writeCreateQueue,
+    AUTO_REFRESH_COOLDOWN_MS,
+    buildQuickDueOptions,
+    calculateWorkloadScore,
+    CREATE_PRIORITY_OPTIONS,
+    DAY_MS,
+    DEFAULT_MANUAL_TASK_REMINDER_POLICY,
+    ensureGeneralSubjectOption,
+    extractScheduleSubjectNames,
+    extractStudentScheduleProfile,
+    FILTERS,
+    flushCreateQueue,
+    formatDurationMs,
+    formatEstimatedMinutes,
+    GENERAL_SUBJECT,
+    GENERAL_SUBJECT_ID,
+    GENERAL_SUBJECT_OPTION,
+    getDefaultDueAt,
+    getPreferredCreateSubject,
+    getQuickCreateDueAt,
+    getQuickSnoozePlan,
+    getSectionKey,
+    getTaskSubjectId,
+    normalizeDateToISO,
+    normalizeFilterParam,
+    normalizePendingUpdates,
+    normalizeRouteString,
+    normalizeSubjectOption,
+    PAGE_SIZE,
+    parseDueDate,
+    parsePlannerRef,
+    parseSubjectCatalogRaw,
+    PENDING_UPDATES_KEY,
+    readCreateQueue,
+    resolveTaskDueDate,
+    SCHEDULE_SUBJECT_SOURCES,
+    SORT_OPTIONS,
+    sortSubjectOptions,
+    SUBJECT_CATALOG_KEY,
+    SUBJECT_FILTER_ALL_ID,
+    TYPE_META,
+    TYPE_ROWS,
+    writeCreateQueue,
 } from "../../features/tab-modules/TaskManagerScreen.helpers";
 import {
-  buildSubjectIdFromName,
-  buildTaskCompletionUpdate,
-  buildTaskCreateData,
-  getTaskPriorityLevel,
-  isTaskCompleted,
-  normalizeSubjectName,
-  normalizeTaskDateInput,
-  normalizeTaskPriority,
-  normalizeTaskType,
+    buildSubjectIdFromName,
+    buildTaskCompletionUpdate,
+    buildTaskCreateData,
+    getTaskPriorityLevel,
+    isTaskCompleted,
+    normalizeSubjectName,
+    normalizeTaskDateInput,
+    normalizeTaskPriority,
+    normalizeTaskType,
 } from "../../utils/academicTaskModel";
 import { toLocalDayKey } from "../../utils/dateHelpers";
-import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import {
-  cancelDeadlineAlarms,
-  scheduleDeadlineAlarms,
+    cancelDeadlineAlarms,
+    scheduleDeadlineAlarms,
 } from "../../utils/deadlineAlarmBackground";
 import { isDeadlineAlarmModalEligible } from "../../utils/deadlineAlarmStage";
 import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
 import {
-  findOfflineQueuedTask,
-  isLocalOnlyTaskId,
-  mergePendingTasksWithOfflineQueue,
-  removeOfflineQueuedTask,
+    findOfflineQueuedTask,
+    isLocalOnlyTaskId,
+    mergePendingTasksWithOfflineQueue,
+    removeOfflineQueuedTask,
 } from "../../utils/offlineTaskQueue";
 import { syncCalendarDayPlans } from "../../utils/plannerTaskSync";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { clearCheckpoint } from "../../utils/taskOverdueState";
 
 function buildTaskSubjectFields(subjectValue, subjectIdValue) {
@@ -347,6 +347,7 @@ export default function TaskManagerScreen() {
   });
   const alarmHandleCounterRef = useRef(0);
   const handledParamRef = useRef("");
+  const subjectsPreloadedRef = useRef(false);
 
   const highlightedTaskId =
     typeof focusTaskId === "string" && focusTaskId ? focusTaskId : "";
@@ -359,7 +360,7 @@ export default function TaskManagerScreen() {
   }, [filterParam]);
 
   useEffect(() => {
-    if (!subjectOptions.length) return;
+    if (!Array.isArray(subjectOptions) || !subjectOptions.length) return;
     if (subjectOptions.some((option) => option.id === selectedSubjectId))
       return;
     const currentName = normalizeSubjectName(newTaskSubject || GENERAL_SUBJECT);
@@ -520,28 +521,32 @@ export default function TaskManagerScreen() {
     if (!isDeadlineAlarmModalEligible({ stage: routeAlarmStage })) {
       setPendingAction(null);
       setNativeHandoff(false);
-      router.setParams({
-        showAlarm: undefined,
-        focusTaskId: undefined,
-        pendingAction: undefined,
-        nativeHandoff: undefined,
-        dueAtMs: undefined,
-        alarmStage: undefined,
-      });
+      setTimeout(() => {
+        router.setParams({
+          showAlarm: undefined,
+          focusTaskId: undefined,
+          pendingAction: undefined,
+          nativeHandoff: undefined,
+          dueAtMs: undefined,
+          alarmStage: undefined,
+        });
+      }, 0);
       return;
     }
 
     let active = true;
     const clearAlarmParams = () => {
       console.log("[DEBUG Alarm] Clearing alarm params");
-      router.setParams({
-        showAlarm: undefined,
-        focusTaskId: undefined,
-        pendingAction: undefined,
-        nativeHandoff: undefined,
-        dueAtMs: undefined,
-        alarmStage: undefined,
-      });
+      setTimeout(() => {
+        router.setParams({
+          showAlarm: undefined,
+          focusTaskId: undefined,
+          pendingAction: undefined,
+          nativeHandoff: undefined,
+          dueAtMs: undefined,
+          alarmStage: undefined,
+        });
+      }, 0);
     };
 
     const fetchAndShow = async () => {
@@ -579,7 +584,8 @@ export default function TaskManagerScreen() {
           : null;
 
       try {
-        let taskToShow = tasks.find((task) => task.id === focusTaskId) || null;
+        if (!active) return;
+        let taskToShow = tasks?.find((task) => task.id === focusTaskId) || null;
 
         if (!taskToShow) {
           if (isLocalOnlyTaskId(focusTaskId)) {
@@ -593,11 +599,12 @@ export default function TaskManagerScreen() {
           }
         }
 
-        if (!taskToShow) {
+        if (!taskToShow && active) {
           console.log(
             "[DEBUG Alarm] Task not in local state, fetching from Firestore"
           );
           const snap = await getDoc(doc(db, "assignments", focusTaskId));
+          if (!active) return;
           if (!snap.exists()) {
             console.log("[DEBUG Alarm] Task does not exist in Firestore");
             handledParamRef.current = handledKey;
@@ -707,6 +714,8 @@ export default function TaskManagerScreen() {
       const currentUser = auth.currentUser;
       let flushedCreates = 0;
       await flushPendingUpdates();
+      if (!active) return;
+
       if (currentUser) {
         const flushResult = await flushCreateQueue(
           currentUser.uid,
@@ -719,6 +728,8 @@ export default function TaskManagerScreen() {
           },
           notificationSettings?.soundSettings || {}
         ).catch((_e) => null);
+        if (!active) return;
+
         flushedCreates = Number(flushResult?.flushed) || 0;
         if (flushedCreates > 0 && typeof markSynced === "function") {
           const createQueueKeys =
@@ -727,9 +738,11 @@ export default function TaskManagerScreen() {
               ? [OFFLINE_QUEUE_KEYS.createAssignments(currentUser.uid)]
               : null;
           await markSynced(currentUser.uid, createQueueKeys);
+          if (!active) return;
         }
         if (typeof refreshPendingSyncSummary === "function") {
           await refreshPendingSyncSummary(currentUser.uid).catch(() => {});
+          if (!active) return;
         }
         if (flushedCreates > 0 && typeof rescheduleAll === "function") {
           await rescheduleAll().catch((error) => {
@@ -738,6 +751,7 @@ export default function TaskManagerScreen() {
               error
             );
           });
+          if (!active) return;
         }
       }
       if (active) {
@@ -799,6 +813,17 @@ export default function TaskManagerScreen() {
     await writeQueue(uid, next);
     setPendingCount(next.length);
   };
+
+  // FIX: Pre-load subjects in background when screen is focused to avoid blocking modal open
+  useFocusEffect(
+    useCallback(() => {
+      const user = auth.currentUser;
+      if (!user || subjectsPreloadedRef.current) return;
+      subjectsPreloadedRef.current = true;
+      loadSubjectOptions(user.uid, [...tasks, ...history]).catch(() => {});
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tasks, history])
+  );
 
   const loadAdminScheduleSubjects = useCallback(
     async (uid) => {
@@ -986,7 +1011,7 @@ export default function TaskManagerScreen() {
       }
       setRefreshing(false);
       animateIn();
-     // setTasksLoaded(true);
+      // setTasksLoaded(true);
       return;
     }
 
@@ -1058,7 +1083,7 @@ export default function TaskManagerScreen() {
     } finally {
       setRefreshing(false);
       animateIn();
-    //  setTasksLoaded(true);
+      //  setTasksLoaded(true);
     }
   }
 
@@ -1173,8 +1198,6 @@ export default function TaskManagerScreen() {
     setEditingTask(null);
     createSubjectAutoPickedRef.current = Boolean(preferredSubject);
     setShowCreateModal(true);
-    const user = auth.currentUser;
-    if (user) loadSubjectOptions(user.uid, [...tasks, ...history]);
   }
 
   function openEditTaskModal(task) {
@@ -1202,7 +1225,6 @@ export default function TaskManagerScreen() {
     setShowReminderPicker(false);
     setShowSubjectPicker(false);
     setShowCreateModal(true);
-    if (user) loadSubjectOptions(user.uid, [...tasks, ...history, task]);
   }
 
   function closeCreateTaskModal() {
@@ -1293,6 +1315,7 @@ export default function TaskManagerScreen() {
 
   function updateDueAt(nextDueAt) {
     if (!(nextDueAt instanceof Date) || Number.isNaN(nextDueAt.getTime())) {
+      warnIfDev("updateDueAt: Invalid date provided:", nextDueAt);
       return;
     }
     setNewTaskDueAt(nextDueAt);
@@ -1422,22 +1445,24 @@ export default function TaskManagerScreen() {
 
   async function handleSaveTask() {
     if (creatingTask) return;
+
+    const title = newTaskTitle.trim();
+    if (!title) {
+      setTitleError("Please enter a task title.");
+      return;
+    }
+
     const user = auth.currentUser;
     if (!user) return;
 
     let newTaskId = null;
 
-    const title = newTaskTitle.trim();
     const subjectFields = buildTaskSubjectFields(
       newTaskSubject,
       selectedSubjectId
     );
     const type = normalizeTaskType(newTaskType);
     const priority = normalizeTaskPriority(newTaskPriority);
-    if (!title) {
-      setTitleError("Please enter a task title.");
-      return;
-    }
     setTitleError("");
 
     // ── Due date limit validation ──────────────────────────────────────
@@ -1519,7 +1544,11 @@ export default function TaskManagerScreen() {
           mergePendingTasksWithOfflineQueue(tasks, queue)
         );
         setTasks(nextPending);
-        void loadSubjectOptions(user.uid, [...nextPending, ...history]);
+        void loadSubjectOptions(user.uid, [...nextPending, ...history]).catch(
+          (err) => {
+            warnIfDev("Failed to load subject options:", err);
+          }
+        );
 
         const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
         await saveToCache(CACHE_KEYS.assignments(user.uid), {
@@ -1627,7 +1656,13 @@ export default function TaskManagerScreen() {
       });
 
       upsertPendingTaskLocally(optimisticTask);
-      void loadSubjectOptions(user.uid, [...tasks, ...history, optimisticTask]);
+      void loadSubjectOptions(user.uid, [
+        ...tasks,
+        ...history,
+        optimisticTask,
+      ]).catch((err) => {
+        warnIfDev("Failed to load subject options after save:", err);
+      });
       dismissTaskEditor({ resetTaskView: true });
       queuePostSaveRefresh(savedTaskId);
     } catch (error) {
@@ -2942,7 +2977,18 @@ export default function TaskManagerScreen() {
                     const cMs = (() => {
                       const c = parseDueDate(t.completedAt),
                         cr = parseDueDate(t.createdAt);
-                      if (!c || !cr) return null;
+                      if (
+                        !c ||
+                        !cr ||
+                        !(c instanceof Date) ||
+                        !(cr instanceof Date)
+                      )
+                        return null;
+                      if (
+                        Number.isNaN(c.getTime()) ||
+                        Number.isNaN(cr.getTime())
+                      )
+                        return null;
                       const d = c - cr;
                       return d > 0 ? d : null;
                     })();
@@ -2979,7 +3025,7 @@ export default function TaskManagerScreen() {
                               ]}
                               numberOfLines={1}
                             >
-                              {formatDurationMs(cMs)}
+                              {cMs ? formatDurationMs(cMs) : "—"}
                             </Text>
                             {isPlannerLinked && (
                               <View
@@ -3084,7 +3130,6 @@ export default function TaskManagerScreen() {
               )}
             </>
           )}
-
         </Animated.View>
       </ScrollView>
 

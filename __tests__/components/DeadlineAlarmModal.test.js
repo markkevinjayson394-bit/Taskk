@@ -224,6 +224,36 @@ describe("Deadline alarm flow", () => {
     expect(alarmHelpers.startVibration).not.toHaveBeenCalled();
   });
 
+  test("foreground modal starts one continuous local alarm loop without restart timers", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const alarmHelpers = jest.requireMock(
+        "../../components/DeadlineAlarmModal.helpers"
+      );
+      const task = {
+        id: "task-local-loop-1",
+        title: "Submit capstone draft",
+        subject: "Research",
+        dueAt: new Date(Date.now() - 60 * 1000).toISOString(),
+        priority: "high",
+        type: "project",
+      };
+
+      render(<DeadlineAlarmModal visible task={task} thresholdKey="due" />);
+
+      await act(async () => {
+        jest.advanceTimersByTime(20 * 1000);
+      });
+
+      expect(alarmHelpers.playAlarmSound).toHaveBeenCalledTimes(1);
+      expect(alarmHelpers.startVibration).toHaveBeenCalledTimes(1);
+      expect(alarmHelpers.stopAlarmSound).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   // â”€â”€ 2. Done callback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   test("overdue alarms auto-miss after five minutes", async () => {
     jest.useFakeTimers();

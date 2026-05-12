@@ -149,10 +149,14 @@ export default function AnnouncementsScreen() {
       setAnnouncements(list);
       setFromCache(false);
       setVisibleCount(PAGE_SIZE);
-      await saveToCache(CACHE_KEYS.announcements(user.uid), list);
+      await saveToCache(CACHE_KEYS.announcements(user.uid), { data: list });
       await markSynced(user.uid);
     } catch (_err) {
-      reportWarning(_err, { message: "Failed to load announcements.", tags: { location: "announcements_load" }, extra: { userId: user?.uid } });
+      reportWarning(_err, {
+        message: "Failed to load announcements.",
+        tags: { location: "announcements_load" },
+        extra: { userId: user?.uid },
+      });
       const cached = await loadFromCache(CACHE_KEYS.announcements(user.uid));
       if (cached?.data) {
         setAnnouncements(cached.data);
@@ -177,7 +181,10 @@ export default function AnnouncementsScreen() {
       const next = new Set(readIds);
       next.add(id);
       setReadIds(next);
-      readKey && AsyncStorage.setItem(readKey, JSON.stringify([...next])).catch(() => {});
+      readKey &&
+        AsyncStorage.setItem(readKey, JSON.stringify([...next])).catch(
+          () => {}
+        );
     }
   };
   const formatDateTime = (iso) => {
@@ -273,7 +280,9 @@ export default function AnnouncementsScreen() {
                 style={[
                   styles.annCard,
                   {
-                    backgroundColor: readIds.has(ann.id) ? colors.card : cfg.color + "08",
+                    backgroundColor: readIds.has(ann.id)
+                      ? colors.card
+                      : cfg.color + "08",
                     borderLeftColor: cfg.color,
                   },
                 ]}
@@ -302,12 +311,44 @@ export default function AnnouncementsScreen() {
                 </View>
                 {/* FIX: unread dot indicator */}
                 {!readIds.has(ann.id) && (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: cfg.color }} />
-                    <Text style={{ fontSize: 10, fontWeight: "700", color: cfg.color, textTransform: "uppercase", letterSpacing: 0.5 }}>New</Text>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                      marginBottom: 4,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: cfg.color,
+                      }}
+                    />
+                    <Text
+                      style={{
+                        fontSize: 10,
+                        fontWeight: "700",
+                        color: cfg.color,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.5,
+                      }}
+                    >
+                      New
+                    </Text>
                   </View>
                 )}
-                <Text style={[styles.annTitle, { color: colors.text, fontWeight: readIds.has(ann.id) ? "600" : "800" }]}>
+                <Text
+                  style={[
+                    styles.annTitle,
+                    {
+                      color: colors.text,
+                      fontWeight: readIds.has(ann.id) ? "600" : "800",
+                    },
+                  ]}
+                >
                   {ann.title}
                 </Text>
                 <Text style={[styles.annDate, { color: colors.muted }]}>
@@ -465,5 +506,3 @@ const styles = StyleSheet.create({
   },
   loadMoreText: { fontSize: 13, fontWeight: "700" },
 });
-
-

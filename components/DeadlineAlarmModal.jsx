@@ -370,8 +370,6 @@ function DeadlineAlarmModal({
   const soundRef = useRef(null);
   const vibRef = useRef(null);
   const tickRef = useRef(null);
-  const soundIntervalRef = useRef(null);
-  const vibrationIntervalRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(-80)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -456,34 +454,15 @@ function DeadlineAlarmModal({
     // Per-second countdown
     tickRef.current = setInterval(() => setNow(new Date()), 1000);
     if (shouldUseLocalAlarmLoop) {
-      // Initial vibration
       startVibration(vibRef);
-      // Initial alarm sound
-      playAlarmSound(soundRef);
-      // Repeat vibration every 5 seconds
-      vibrationIntervalRef.current = setInterval(() => {
-        startVibration(vibRef);
-      }, 5000);
-      // Repeat alarm sound every 10 seconds — stop first, then play, to avoid overlap
-      soundIntervalRef.current = setInterval(async () => {
-        const currentId = soundIntervalRef.current;
-        if (currentId === null) return;
-        await stopAlarmSound(soundRef);
-        if (soundIntervalRef.current !== currentId) return;
-        playAlarmSound(soundRef);
-      }, 10000);
+      void playAlarmSound(soundRef);
     }
     return () => {
       loopRef.current?.stop();
       clearInterval(tickRef.current);
       tickRef.current = null;
-      clearInterval(vibrationIntervalRef.current);
-      vibrationIntervalRef.current = null;
-      clearInterval(soundIntervalRef.current);
-      soundIntervalRef.current = null;
-      // Always stop sound/vibration on unmount — stopAlarmSound is idempotent
       stopVibration(vibRef);
-      stopAlarmSound(soundRef);
+      void stopAlarmSound(soundRef);
     };
   }, [shouldUseLocalAlarmLoop, visible, pulseAnim, shakeAnim, slideAnim]);
 
@@ -496,12 +475,8 @@ function DeadlineAlarmModal({
     loopRef.current?.stop();
     clearInterval(tickRef.current);
     tickRef.current = null;
-    clearInterval(vibrationIntervalRef.current);
-    vibrationIntervalRef.current = null;
-    clearInterval(soundIntervalRef.current);
-    soundIntervalRef.current = null;
     stopVibration(vibRef);
-    stopAlarmSound(soundRef);
+    void stopAlarmSound(soundRef);
     return undefined;
   }, [selfClosed]);
 
@@ -510,14 +485,6 @@ function DeadlineAlarmModal({
     if (tickRef.current) {
       clearInterval(tickRef.current);
       tickRef.current = null;
-    }
-    if (vibrationIntervalRef.current) {
-      clearInterval(vibrationIntervalRef.current);
-      vibrationIntervalRef.current = null;
-    }
-    if (soundIntervalRef.current) {
-      clearInterval(soundIntervalRef.current);
-      soundIntervalRef.current = null;
     }
 
     stopVibration(vibRef);

@@ -14,29 +14,28 @@ import { enableNetwork } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
 import { resolveTaskDueDate } from "./academicTaskModel";
 import {
-  bootstrapDeadlineAlarmChannel,
-  cancelDeadlineAlarms,
-  rescheduleAllDeadlineAlarms,
-  scheduleNextOverdueAlarm,
+    bootstrapDeadlineAlarmChannel,
+    cancelDeadlineAlarms,
+    rescheduleAllDeadlineAlarms,
+    scheduleNextOverdueAlarm,
 } from "./deadlineAlarmBackground";
+import { OVERDUE_CHAIN } from "./deadlineConstants";
 import { reportError, warnIfDev } from "./logger";
 import { buildNotificationId } from "./notificationIds";
 import {
-  clearPendingNotificationReschedule,
-  clearTaskRescheduleIntent,
-  clearTaskRescheduleIntents,
-  listTaskRescheduleIntents,
-  readPendingNotificationReschedule,
+    clearPendingNotificationReschedule,
+    clearTaskRescheduleIntent,
+    clearTaskRescheduleIntents,
+    listTaskRescheduleIntents,
+    readPendingNotificationReschedule,
 } from "./notificationScheduleRecovery";
 import {
-  getOverdueTasks,
-  readSchedulablePendingTasks,
+    readSchedulablePendingTasks
 } from "./pendingTaskSources";
 import {
-  getCheckpoint,
-  resolveCurrentOverdueStageInfo,
+    getCheckpoint,
+    resolveCurrentOverdueStageInfo,
 } from "./taskOverdueState";
-import { OVERDUE_CHAIN } from "./deadlineConstants";
 
 let TaskManager = null;
 try {
@@ -58,6 +57,19 @@ const MAX_TASKS_PER_RUN = 20;
 const backgroundFetchResult = BackgroundFetch?.BackgroundFetchResult || {};
 const backgroundFetchStatus = BackgroundFetch?.BackgroundFetchStatus || {};
 
+const isValidBackgroundFetchResult = (result) => {
+  return result && (result === backgroundFetchResult.NewData || result === backgroundFetchResult.NoData || result === backgroundFetchResult.Failed);
+};
+
+const getBackgroundFetchResult = (resultType) => {
+  const result = backgroundFetchResult[resultType];
+  if (result === undefined) {
+    warnIfDev(`[BackgroundTask] BackgroundFetchResult.${resultType} is undefined`);
+    return resultType === "Failed" ? 1 : (resultType === "NewData" ? 1 : 0);
+  }
+  return result;
+};
+
 const isTaskManagerTaskDefined = (taskName) => {
   if (!TaskManager || typeof TaskManager.isTaskDefined !== "function") {
     return false;
@@ -72,7 +84,6 @@ const isTaskManagerTaskDefined = (taskName) => {
 
 export const BACKGROUND_ALARM_TASK = "background-deadline-alarm-checker";
 
-
 try {
   if (
     TaskManager &&
@@ -83,7 +94,7 @@ try {
       const user = auth.currentUser;
       if (!user) {
         warnIfDev("[BackgroundTask] No user - skipping");
-        return backgroundFetchResult.NoData;
+        return getBackgroundFetchResult("NoData");
       }
 
       try {
@@ -103,6 +114,17 @@ try {
         const pendingTaskIntents = await listTaskRescheduleIntents(user.uid);
         let recoveredSchedules = 0;
 
+        // Get all currently scheduled notification identifiers BEFORE clearing recovery intents
+        // This prevents race conditions where new alarms are scheduled during recovery
+        let scheduledIds = new Set();
+        try {
+          const scheduled =
+            await Notifications.getAllScheduledNotificationsAsync();
+          scheduledIds = new Set(scheduled.map((n) => n.request.identifier));
+        } catch {
+          scheduledIds = new Set();
+        }
+
         if (
           pendingReschedule?.uid === user.uid ||
           pendingTaskIntents.length > 0
@@ -115,8 +137,12 @@ try {
                   .filter(Boolean);
 
           if (tasksToRecover.length > 0) {
-            await rescheduleAllDeadlineAlarms(tasksToRecover);
-            recoveredSchedules += tasksToRecover.length;
+            const rescheduledIds = await rescheduleAllDeadlineAlarms(tasksToRecover);
+            if (Array.isArray(rescheduledIds) && rescheduledIds.length > 0) {
+              recoveredSchedules += rescheduledIds.length;
+            } else {
+              warnIfDev(`[BackgroundTask] Failed to reschedule ${tasksToRecover.length} tasks for recovery`);
+            }
           }
 
           if (pendingReschedule?.uid === user.uid) {
@@ -130,21 +156,6 @@ try {
               await clearTaskRescheduleIntent(user.uid, taskId);
             }
           }
-        }
-
-        const overdueTasks = getOverdueTasks(pendingTasks, now).slice(
-          0,
-          MAX_TASKS_PER_RUN
-        );
-
-        // Get all currently scheduled notification identifiers
-        let scheduledIds = new Set();
-        try {
-          const scheduled =
-            await Notifications.getAllScheduledNotificationsAsync();
-          scheduledIds = new Set(scheduled.map((n) => n.request.identifier));
-        } catch {
-          scheduledIds = new Set();
         }
 
         let repaired = 0;
@@ -171,7 +182,7 @@ try {
           const expectedId = buildNotificationId(
             "deadline-overdue",
             task.id,
-            checkpoint.key    // ← confirmed: uses .key (normalized in Step 2)
+            checkpoint.key // ← confirmed: uses .key (normalized in Step 2)
           );
           if (scheduledIds.has(expectedId)) continue;
           const currentExpectedId = buildNotificationId(
@@ -192,7 +203,7 @@ try {
           const TRIGGER_GRACE_MS = 30 * 1000;
           if (
             Number.isFinite(checkpoint?.triggerAtMs) &&
-            checkpoint.triggerAtMs > now + 5 * 1000
+            checkpoint.triggerAtMs > now + TRIGGER_GRACE_MS
           ) {
             continue;
           }
@@ -207,9 +218,19 @@ try {
 
           // Chain is broken - repair by scheduling the current checkpoint alarm
           const currentCheckpoint = OVERDUE_CHAIN.find(
-            (c) => c.key === checkpoint.key   // ← confirmed: uses .key
+            (c) => c.key === checkpoint.key // ← confirmed: uses .key
           );
           if (!currentCheckpoint) continue;
+
+          // Re-validate checkpoint hasn't changed due to concurrent modifications
+          const revalidatedCheckpoint = await getCheckpoint(task.id);
+          if (revalidatedCheckpoint?.key !== checkpoint.key) {
+            warnIfDev(
+              `[BackgroundTask] Checkpoint changed concurrently for task ${task.id}, skipping repair`
+            );
+            continue;
+          }
+
           const effectiveCheckpoint =
             OVERDUE_CHAIN.find((c) => c.key === resolvedStageKey) ||
             currentCheckpoint;
@@ -237,14 +258,14 @@ try {
           `[BackgroundTask] Recovered ${recoveredSchedules} schedules and repaired ${repaired} broken chains for ${user.uid}`
         );
         return recoveredSchedules > 0 || repaired > 0
-          ? backgroundFetchResult.NewData
-          : backgroundFetchResult.NoData;
+          ? getBackgroundFetchResult("NewData")
+          : getBackgroundFetchResult("NoData");
       } catch (err) {
         reportError(err, {
           message: "Background alarm checker failed",
           tags: { location: "background_alarm_checker" },
         });
-        return backgroundFetchResult.Failed;
+        return getBackgroundFetchResult("Failed");
       }
     });
   }

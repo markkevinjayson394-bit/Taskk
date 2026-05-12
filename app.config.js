@@ -61,47 +61,62 @@ const FIREBASE_ENV_MAP = {
   appId: ["FIREBASE_APP_ID", "EXPO_PUBLIC_FIREBASE_APP_ID"],
 };
 
+const DEFAULT_EAS_PROJECT_ID = "f121e7a5-5b48-49ac-9430-ad6b040eabf8";
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyATU3db7Insdhl0SBT1-AlsaO6_vXyG8i4",
+  authDomain: "my-expo-auth-app-290eb.firebaseapp.com",
+  projectId: "my-expo-auth-app-290eb",
+  storageBucket: "my-expo-auth-app-290eb.firebasestorage.app",
+  messagingSenderId: "719496561355",
+  appId: "1:719496561355:web:250898c948e69d1d42d14e",
+};
+
 module.exports = ({ config }) => {
   const base = config || {};
   const baseExtra = base.extra || {};
   const sentryDsn =
     getEnv("SENTRY_DSN") || normalizeFirebaseValue(baseExtra?.sentryDsn);
+  const buildProfile =
+    normalizeFirebaseValue(process.env.EAS_BUILD_PROFILE) ||
+    normalizeFirebaseValue(baseExtra?.buildProfile) ||
+    "development";
+  const startupOtaEnabled = buildProfile === "production";
   const easProjectId =
     normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
     normalizeFirebaseValue(baseExtra?.eas?.projectId) ||
-    "f121e7a5-5b48-49ac-9430-ad6b040eabf8";
+    DEFAULT_EAS_PROJECT_ID;
 
   const firebase = {
     apiKey:
       getFirstEnv(...FIREBASE_ENV_MAP.apiKey) ||
       getExtra(baseExtra, "apiKey") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.apiKey,
     authDomain:
       getFirstEnv(...FIREBASE_ENV_MAP.authDomain) ||
       getExtra(baseExtra, "authDomain") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.authDomain,
     projectId:
       getFirstEnv(...FIREBASE_ENV_MAP.projectId) ||
       getExtra(baseExtra, "projectId") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.projectId,
     storageBucket:
       getFirstEnv(...FIREBASE_ENV_MAP.storageBucket) ||
       getExtra(baseExtra, "storageBucket") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.storageBucket,
     messagingSenderId:
       getFirstEnv(...FIREBASE_ENV_MAP.messagingSenderId) ||
       getExtra(baseExtra, "messagingSenderId") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.messagingSenderId,
     appId:
       getFirstEnv(...FIREBASE_ENV_MAP.appId) ||
       getExtra(baseExtra, "appId") ||
-      "",
+      DEFAULT_FIREBASE_CONFIG.appId,
   };
 
   return {
     ...base,
     name: "CTU Academic Task Manager",
-    slug: "time-management-app",
+    slug: "taskmanagement",
     version: "1.0.3",
     orientation: "portrait",
     icon: "./assets/icon.png",
@@ -207,8 +222,11 @@ module.exports = ({ config }) => {
     extra: {
       ...baseExtra,
       sentryDsn,
+      buildProfile,
+      startupOtaEnabled,
       router: {},
       eas: {
+        ...(baseExtra?.eas || {}),
         projectId: easProjectId,
       },
       firebase,

@@ -1,13 +1,10 @@
 import {
-  clearPendingAlarmAction,
-  getPendingAlarmAction,
-} from "./nativeAlarm";
-import {
-  isDeadlineAlarmModalEligible,
-  resolveDeadlineAlarmStage,
+    isDeadlineAlarmModalEligible,
+    resolveDeadlineAlarmStage,
 } from "./deadlineAlarmStage";
+import { clearPendingAlarmAction, getPendingAlarmAction } from "./nativeAlarm";
 
-const MAX_AGE_MS = 25 * 60 * 1000;  // 25 minutes
+const MAX_AGE_MS = 25 * 60 * 1000; // 25 minutes
 
 /**
  * Reads the native pending alarm action, validates it, clears it,
@@ -26,7 +23,13 @@ export async function consumePendingAlarmAction() {
     return null;
   }
 
-  if (Date.now() - pending.timestamp > MAX_AGE_MS) {
+  const pendingTimestamp = Number(pending.timestamp);
+  if (!Number.isFinite(pendingTimestamp)) {
+    await clearPendingAlarmAction().catch(() => {});
+    return null;
+  }
+
+  if (Date.now() - pendingTimestamp > MAX_AGE_MS) {
     await clearPendingAlarmAction().catch(() => {});
     return null;
   }

@@ -18,8 +18,39 @@ import {
     writeOfflineCreateQueue,
 } from "../../utils/offlineTaskQueue";
 
-// FIX: In-memory cache for parsed subject catalogs to avoid re-parsing on every modal open
-const subjectCatalogCache = {};
+// Simple LRU cache for parsed subject catalogs
+class LRUCache {
+  constructor(maxSize = 50) {
+    this.maxSize = maxSize;
+    this.cache = new Map();
+  }
+
+  get(key) {
+    if (!this.cache.has(key)) return null;
+    const value = this.cache.get(key);
+    // Move to end (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    return value;
+  }
+
+  set(key, value) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      // Remove least recently used (first entry)
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    this.cache.set(key, value);
+  }
+
+  clear() {
+    this.cache.clear();
+  }
+}
+
+const subjectCatalogCache = new LRUCache(50);
 
 const normalizeSubjectName =
   typeof AcademicTaskModel.normalizeSubjectName === "function"
@@ -52,7 +83,8 @@ export const PAGE_SIZE = 12;
 // ---
 
 export async function readCreateQueue(uid) {
-  return readOfflineCreateQueue(uid);
+  const queue = await readOfflineCreateQueue(uid);
+  return Array.isArray(queue) ? queue : [];
 }
 
 export async function writeCreateQueue(uid, queue) {
@@ -78,7 +110,7 @@ export async function flushCreateQueue(uid, flushFn, soundSettings = {}) {
       }
     } catch (err) {
       warnIfDev("TaskManagerScreen: failed to flush create queue item:", err);
-      remaining.push({ ...item, payload });
+      remaining.push(item);
     }
   }
   await writeOfflineCreateQueue(uid, remaining);
@@ -135,9 +167,10 @@ export function normalizeSubjectOption(item = {}) {
 export function parseSubjectCatalogRaw(raw) {
   if (!raw) return [];
 
-  // FIX: Check cache first to avoid re-parsing
-  if (subjectCatalogCache[raw]) {
-    return subjectCatalogCache[raw];
+  // Check cache first to avoid re-parsing
+  const cached = subjectCatalogCache.get(raw);
+  if (cached) {
+    return cached;
   }
 
   try {
@@ -147,11 +180,15 @@ export function parseSubjectCatalogRaw(raw) {
       .map((item) => normalizeSubjectOption(item))
       .filter(Boolean);
     // Cache the parsed result
-    subjectCatalogCache[raw] = result;
+    subjectCatalogCache.set(raw, result);
     return result;
   } catch {
     return [];
   }
+}
+
+export function invalidateSubjectCache() {
+  subjectCatalogCache.clear();
 }
 
 export function extractScheduleSubjectNames(weekSchedule = {}) {

@@ -33,6 +33,7 @@ export default function AdminLayout() {
   const routerRef = useRef(router);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     routerRef.current = router;
@@ -90,7 +91,7 @@ export default function AdminLayout() {
       unsub();
       clearTimeout(timeout);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [retryKey]);
 
   //  Error screen
   if (error) {
@@ -111,6 +112,7 @@ export default function AdminLayout() {
           onPress={() => {
             setError(false);
             setChecking(true);
+            setRetryKey((k) => k + 1);
           }}
         >
           <Ionicons name="refresh" size={16} color="#fff" />

@@ -8,45 +8,45 @@ import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { Component, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  AppState,
-  InteractionManager,
-  NativeEventEmitter,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    AppState,
+    InteractionManager,
+    NativeEventEmitter,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { app, db } from "../config/firebase";
 import { ThemeProvider } from "../context/ThemeContext";
 import {
-  ACTION_MARK_DONE,
-  ACTION_NOT_DONE,
-  bootstrapDeadlineAlarmChannel,
-  DEADLINE_NOTIF_TYPE,
-  handleDeadlineAlarmResponse,
+    ACTION_MARK_DONE,
+    ACTION_NOT_DONE,
+    bootstrapDeadlineAlarmChannel,
+    DEADLINE_NOTIF_TYPE,
+    handleDeadlineAlarmResponse,
 } from "../utils/deadlineAlarmBackground";
 import {
-  isDeadlineAlarmModalEligible,
-  resolveDeadlineAlarmStage,
+    isDeadlineAlarmModalEligible,
+    resolveDeadlineAlarmStage,
 } from "../utils/deadlineAlarmStage";
 import {
-  errorIfDev,
-  reportError,
-  reportWarning,
-  warnIfDev,
+    errorIfDev,
+    reportError,
+    reportWarning,
+    warnIfDev,
 } from "../utils/logger";
 import {
-  ensureNativeAlarmPermissions,
-  isIgnoringBatteryOptimizations,
-  rawNativeAlarmModule,
-  requestIgnoreBatteryOptimizations,
+    ensureNativeAlarmPermissions,
+    isIgnoringBatteryOptimizations,
+    rawNativeAlarmModule,
+    requestIgnoreBatteryOptimizations,
 } from "../utils/nativeAlarm";
 import {
-  getPostOnboardingRoute,
-  getTutorialRoute,
-  hasCompletedOnboarding,
+    getPostOnboardingRoute,
+    getTutorialRoute,
+    hasCompletedOnboarding,
 } from "../utils/onboarding";
 import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
 import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
@@ -299,7 +299,6 @@ async function resolveAuthenticatedRoute(user, db) {
 
   Sentry.setUser({
     id: user.uid,
-    email: user.email || undefined,
   });
 
   // 3. Onboarding gate.
@@ -464,6 +463,7 @@ function RootLayoutNav() {
             "Auth state is taking longer than expected. Routing to login fallback.",
           tags: { location: "bootstrap_auth_timeout" },
         });
+        pendingRoute.current = "/(auth)/login";
         setShowOverlay(false);
         routerRef.current.replace("/(auth)/login");
       }, AUTH_ROUTE_TIMEOUT_MS);

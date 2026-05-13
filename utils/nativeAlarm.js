@@ -404,7 +404,7 @@ export async function checkAlarmPopupPermission() {
   if (!granted) {
     Alert.alert(
       "Popup Alarms Disabled",
-      "To see alarm popups on your lock screen, allow this app to display full-screen notifications.\\n\\nGo to Settings → Special app access → Alarms & reminders → enable this app.",
+      "To see alarm popups on your lock screen, allow this app to display full-screen notifications.\n\nGo to Settings → Special app access → Alarms & reminders → enable this app.",
       [
         { text: "Open Settings", onPress: openFullScreenIntentSettings },
         { text: "Later", style: "cancel" },

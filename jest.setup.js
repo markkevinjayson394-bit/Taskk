@@ -50,6 +50,6 @@ jest.mock("expo-haptics", () => ({
     Success: "success",
   },
   notificationAsync: jest.fn(() => Promise.resolve()),
-  selectionAsync: jest.fn(),
+  selectionAsync: jest.fn(() => Promise.resolve()),
   cancelAsync: jest.fn(() => Promise.resolve()),
 }));

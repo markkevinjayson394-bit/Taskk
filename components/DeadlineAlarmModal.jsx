@@ -15,46 +15,47 @@ import * as Haptics from "expo-haptics";
 import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Animated,
-  Modal,
-  Platform,
-  StyleSheet,
-  Text,
-  ToastAndroid,
-  TouchableOpacity,
-  View,
+    Animated,
+    Modal,
+    Platform,
+    StyleSheet,
+    Text,
+    ToastAndroid,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  cancelDeadlineAlarms,
-  DEADLINE_CATEGORY_ID,
-  DEADLINE_CHANNEL_ID,
-  DEADLINE_NOTIF_TYPE,
-  scheduleNextOverdueAlarm,
+    cancelDeadlineAlarms,
+    DEADLINE_CATEGORY_ID,
+    DEADLINE_CHANNEL_ID,
+    DEADLINE_NOTIF_TYPE,
+    scheduleNextOverdueAlarm,
 } from "../utils/deadlineAlarmBackground";
 import { OVERDUE_CHAIN } from "../utils/deadlineConstants";
 import { getUrgencyMeta } from "../utils/deadlineTime";
+import { warnIfDev } from "../utils/logger";
 import {
-  forceStopNativeAlarm,
-  isNativeAlarmSupported,
-  scheduleNativeAlarm,
-  stopActiveNativeAlarm,
+    forceStopNativeAlarm,
+    isNativeAlarmSupported,
+    scheduleNativeAlarm,
+    stopActiveNativeAlarm,
 } from "../utils/nativeAlarm";
 import {
-  buildDeadlineNotificationId,
-  buildManagedNotificationData,
-  buildNotificationId,
+    buildDeadlineNotificationId,
+    buildManagedNotificationData,
+    buildNotificationId,
 } from "../utils/notificationIds";
 import { advanceCheckpoint, clearCheckpoint } from "../utils/taskOverdueState";
 import {
-  formatDeadlineCountdown,
-  playAlarmSound,
-  PRIORITY_COLOR,
-  resolveTaskDueDate,
-  startVibration,
-  stopAlarmSound,
-  stopVibration,
-  TYPE_META,
+    formatDeadlineCountdown,
+    playAlarmSound,
+    PRIORITY_COLOR,
+    resolveTaskDueDate,
+    startVibration,
+    stopAlarmSound,
+    stopVibration,
+    TYPE_META,
 } from "./DeadlineAlarmModal.helpers";
 import { useDeadlineAlarmScheduler } from "./useDeadlineAlarmScheduler";
 
@@ -164,10 +165,7 @@ function IOSMissedAlarmBanner({ message, onHide }) {
       style={[styles.missedBannerContainer, { top: insets.top + 12 }]}
     >
       <Animated.View
-        style={[
-          styles.missedBanner,
-          { opacity, transform: [{ translateY }] },
-        ]}
+        style={[styles.missedBanner, { opacity, transform: [{ translateY }] }]}
       >
         <Text style={styles.missedBannerText}>{message}</Text>
       </Animated.View>
@@ -267,7 +265,8 @@ async function scheduleNextDeadlineCheckpoint({
       task,
       checkpoint: {
         key: thresholdKey,
-        delayMs: OVERDUE_CHAIN.find((c) => c.key === thresholdKey)?.delayMs ?? null,
+        delayMs:
+          OVERDUE_CHAIN.find((c) => c.key === thresholdKey)?.delayMs ?? null,
       },
       triggerAt,
       intendedTriggerAtMs: triggerAt,
@@ -320,7 +319,7 @@ async function scheduleNextDeadlineCheckpoint({
       });
       if (nativeScheduledId) return;
     } catch (_e) {
-      console.warn(
+      warnIfDev(
         "DeadlineAlarmModal: failed to schedule native checkpoint:",
         _e
       );
@@ -389,7 +388,9 @@ function DeadlineAlarmModal({
 
   const isOverdue = due && due.getTime() < now.getTime();
   const effectiveThresholdKey = thresholdKey || (isOverdue ? "due" : null);
-  const requiresExplicitAction = AUTO_MISS_STAGE_KEYS.has(effectiveThresholdKey);
+  const requiresExplicitAction = AUTO_MISS_STAGE_KEYS.has(
+    effectiveThresholdKey
+  );
 
   const getOverdueDuration = () => {
     if (!due || !isOverdue) return null;
@@ -502,80 +503,83 @@ function DeadlineAlarmModal({
     await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey);
   }, [effectiveThresholdKey, task?.id]);
 
-  const handleNotDone = useCallback(async ({ skipHaptic = false } = {}) => {
-    if (notDonePressed || markingDone || actionInFlightRef.current) return;
-    actionInFlightRef.current = true;
-    setNotDonePressed(true);
-    userDismissedRef.current = true;
-    let nextCheckpoint = null;
+  const handleNotDone = useCallback(
+    async ({ skipHaptic = false } = {}) => {
+      if (notDonePressed || markingDone || actionInFlightRef.current) return;
+      actionInFlightRef.current = true;
+      setNotDonePressed(true);
+      userDismissedRef.current = true;
+      let nextCheckpoint = null;
 
-    await stopCurrentAlarmPresentation();
+      await stopCurrentAlarmPresentation();
 
-    if (!skipHaptic) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
-        () => {}
-      );
-    }
+      if (!skipHaptic) {
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Warning
+        ).catch(() => {});
+      }
 
-    // Advance the overdue checkpoint chain and schedule the next alarm.
-    // Skip checkpoint scheduling for lead-time warnings (task not yet due) —
-    // "Not Done" on a 2h/30m warning just dismisses the modal without chaining.
-    const dueDate = resolveTaskDueDate(task);
-    const isLeadTime = !dueDate || dueDate.getTime() - Date.now() > 0;
-    if (!isLeadTime) {
-      await onNotDone?.();
-      if (task?.id && dueDate) {
-        try {
-          nextCheckpoint = await advanceCheckpoint(
-            task.id,
-            effectiveThresholdKey || "due",
-            dueDate.getTime()
-          );
-          if (nextCheckpoint?.key) {
-            await scheduleNextDeadlineCheckpoint({
-              task,
-              dueDate,
-              thresholdKey: nextCheckpoint.key,
-              triggerAt: nextCheckpoint.triggerAtMs ?? null,
-            });
+      // Advance the overdue checkpoint chain and schedule the next alarm.
+      // Skip checkpoint scheduling for lead-time warnings (task not yet due) —
+      // "Not Done" on a 2h/30m warning just dismisses the modal without chaining.
+      const dueDate = resolveTaskDueDate(task);
+      const isLeadTime = !dueDate || dueDate.getTime() - Date.now() > 0;
+      if (!isLeadTime) {
+        await onNotDone?.();
+        if (task?.id && dueDate) {
+          try {
+            nextCheckpoint = await advanceCheckpoint(
+              task.id,
+              effectiveThresholdKey || "due",
+              dueDate.getTime()
+            );
+            if (nextCheckpoint?.key) {
+              await scheduleNextDeadlineCheckpoint({
+                task,
+                dueDate,
+                thresholdKey: nextCheckpoint.key,
+                triggerAt: nextCheckpoint.triggerAtMs ?? null,
+              });
+            }
+          } catch (err) {
+            warnIfDev(
+              "DeadlineAlarmModal: failed to schedule next overdue checkpoint:",
+              err
+            );
           }
-        } catch (err) {
-          console.warn(
-            "DeadlineAlarmModal: failed to schedule next overdue checkpoint:",
-            err
-          );
+        }
+      } else {
+        await onNotDone?.();
+      }
+      // Mark modal as self-closing after callbacks complete so state updates commit first
+      setSelfClosed(true);
+      if (skipHaptic) {
+        const nextTriggerAtMs = Number(nextCheckpoint?.triggerAtMs);
+        const message = Number.isFinite(nextTriggerAtMs)
+          ? `Alarm missed — next reminder at ${new Date(
+              nextTriggerAtMs
+            ).toLocaleTimeString(undefined, {
+              hour: "numeric",
+              minute: "2-digit",
+            })}`
+          : "Alarm missed — you'll be reminded again later";
+
+        if (Platform.OS === "android") {
+          ToastAndroid.show(message, ToastAndroid.LONG);
+        } else if (Platform.OS === "ios") {
+          setMissedAlarmBannerMessage(message);
         }
       }
-    } else {
-      await onNotDone?.();
-    }
-    // Mark modal as self-closing after callbacks complete so state updates commit first
-    setSelfClosed(true);
-    if (skipHaptic) {
-      const nextTriggerAtMs = Number(nextCheckpoint?.triggerAtMs);
-      const message = Number.isFinite(nextTriggerAtMs)
-        ? `Alarm missed — next reminder at ${new Date(
-            nextTriggerAtMs
-          ).toLocaleTimeString(undefined, {
-            hour: "numeric",
-            minute: "2-digit",
-          })}`
-        : "Alarm missed — you'll be reminded again later";
-
-      if (Platform.OS === "android") {
-        ToastAndroid.show(message, ToastAndroid.LONG);
-      } else if (Platform.OS === "ios") {
-        setMissedAlarmBannerMessage(message);
-      }
-    }
-  }, [
-    effectiveThresholdKey,
-    markingDone,
-    notDonePressed,
-    onNotDone,
-    stopCurrentAlarmPresentation,
-    task,
-  ]);
+    },
+    [
+      effectiveThresholdKey,
+      markingDone,
+      notDonePressed,
+      onNotDone,
+      stopCurrentAlarmPresentation,
+      task,
+    ]
+  );
 
   // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
   const handleDone = useCallback(async () => {
@@ -606,7 +610,7 @@ function DeadlineAlarmModal({
         ),
       ]);
     } catch (err) {
-      console.warn("DeadlineAlarmModal: failed to mark task done:", err);
+      warnIfDev("DeadlineAlarmModal: failed to mark task done:", err);
       // Still close the modal after 10s so the user isn't stuck on "Marking Done..."
     }
     // Mark modal as self-closing after callbacks complete so state updates commit first
@@ -705,141 +709,144 @@ function DeadlineAlarmModal({
               styles.card,
               { marginTop: insets.top + 12, borderColor: urgencyColor },
               {
-                transform: [{ translateY: slideAnim }, { translateX: shakeAnim }],
+                transform: [
+                  { translateY: slideAnim },
+                  { translateX: shakeAnim },
+                ],
               },
             ]}
           >
-          {/* Left priority stripe */}
-          <View style={[styles.stripe, { backgroundColor: pColor }]} />
-          {/* Pulsing alarm icon */}
-          <Animated.View
-            style={[
-              styles.iconWrap,
-              {
-                backgroundColor: urgencyColor + "22",
-                transform: [{ scale: pulseAnim }],
-              },
-            ]}
-          >
-            <Ionicons name="alarm" size={48} color={urgencyColor} />
+            {/* Left priority stripe */}
+            <View style={[styles.stripe, { backgroundColor: pColor }]} />
+            {/* Pulsing alarm icon */}
+            <Animated.View
+              style={[
+                styles.iconWrap,
+                {
+                  backgroundColor: urgencyColor + "22",
+                  transform: [{ scale: pulseAnim }],
+                },
+              ]}
+            >
+              <Ionicons name="alarm" size={48} color={urgencyColor} />
+            </Animated.View>
+            {/* Header label */}
+            <Text style={[styles.alarmBadge, { color: urgencyColor }]}>
+              DEADLINE ALARM
+            </Text>
+            {/* Type + priority chip */}
+            <View style={[styles.typeChip, { borderColor: pColor + "70" }]}>
+              <Ionicons name={meta.icon} size={12} color={pColor} />
+              <Text style={[styles.chipText, { color: pColor }]}>
+                {meta.label}
+              </Text>
+              <View style={[styles.dot, { backgroundColor: pColor }]} />
+              <Text style={[styles.chipText, { color: pColor }]}>
+                {(task.priority || "medium").toUpperCase()}
+              </Text>
+            </View>
+            {/* Task title */}
+            <Text style={styles.title} numberOfLines={3}>
+              {task.title}
+            </Text>
+            {/* Subject */}
+            <Text style={styles.subject}>
+              {task.subject || task.subjectName || "General"}
+            </Text>
+            {/* Live countdown or overdue duration */}
+            <View
+              style={[
+                styles.countdownBox,
+                {
+                  borderColor: urgencyColor + "55",
+                  backgroundColor: urgencyColor + "14",
+                },
+              ]}
+            >
+              <Ionicons name="time" size={16} color={urgencyColor} />
+              <Text style={[styles.countdownText, { color: urgencyColor }]}>
+                {isOverdue && overdueDuration
+                  ? `⏰ +${overdueDuration} overdue`
+                  : countdown}
+              </Text>
+            </View>
+            {/* Exact due date */}
+            {due && (
+              <Text style={styles.dueDate}>
+                {"Due: "}
+                {due.toLocaleString("en-US", {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </Text>
+            )}
+            {/* Info row */}
+            <View style={styles.infoRow}>
+              <Ionicons
+                name="information-circle-outline"
+                size={13}
+                color="#475569"
+              />
+              <Text style={styles.infoText}>
+                {
+                  'Tap "Done" when finished. Tap "Not Done" to silence this alarm and be reminded again later.'
+                }
+              </Text>
+            </View>
+            {/* Done button */}
+            <TouchableOpacity
+              style={[
+                styles.doneBtn,
+                doneSelected && styles.pendingActionBtn,
+                {
+                  opacity: notDonePressed || markingDone ? 0.65 : 1,
+                },
+              ]}
+              onPress={handleDone}
+              disabled={notDonePressed || markingDone}
+              activeOpacity={0.8}
+              accessibilityLabel="Mark task as done"
+              accessibilityRole="button"
+            >
+              <Ionicons
+                name={markingDone ? "checkmark-circle" : "checkmark-outline"}
+                size={20}
+                color="#052e16"
+              />
+              <Text style={styles.doneBtnText}>
+                {markingDone ? "Marking Done..." : "Done"}
+              </Text>
+            </TouchableOpacity>
+            {/* Not Done button */}
+            <TouchableOpacity
+              style={[
+                styles.notDoneBtn,
+                notDoneSelected && styles.pendingActionBtn,
+                {
+                  opacity: notDonePressed || markingDone ? 0.65 : 1,
+                },
+              ]}
+              onPress={handleNotDone}
+              disabled={notDonePressed || markingDone}
+              activeOpacity={0.8}
+              accessibilityLabel="Not done — silence alarm and remind me later"
+              accessibilityRole="button"
+            >
+              <Ionicons
+                name={notDonePressed ? "checkmark-circle" : "time-outline"}
+                size={20}
+                color="#e2e8f0"
+              />
+              <Text style={styles.notDoneBtnText}>
+                {notDonePressed ? "Noted" : "Not Done"}
+              </Text>
+            </TouchableOpacity>
           </Animated.View>
-          {/* Header label */}
-          <Text style={[styles.alarmBadge, { color: urgencyColor }]}>
-            DEADLINE ALARM
-          </Text>
-          {/* Type + priority chip */}
-          <View style={[styles.typeChip, { borderColor: pColor + "70" }]}>
-            <Ionicons name={meta.icon} size={12} color={pColor} />
-            <Text style={[styles.chipText, { color: pColor }]}>
-              {meta.label}
-            </Text>
-            <View style={[styles.dot, { backgroundColor: pColor }]} />
-            <Text style={[styles.chipText, { color: pColor }]}>
-              {(task.priority || "medium").toUpperCase()}
-            </Text>
-          </View>
-          {/* Task title */}
-          <Text style={styles.title} numberOfLines={3}>
-            {task.title}
-          </Text>
-          {/* Subject */}
-          <Text style={styles.subject}>
-            {task.subject || task.subjectName || "General"}
-          </Text>
-          {/* Live countdown or overdue duration */}
-          <View
-            style={[
-              styles.countdownBox,
-              {
-                borderColor: urgencyColor + "55",
-                backgroundColor: urgencyColor + "14",
-              },
-            ]}
-          >
-            <Ionicons name="time" size={16} color={urgencyColor} />
-            <Text style={[styles.countdownText, { color: urgencyColor }]}>
-              {isOverdue && overdueDuration
-                ? `⏰ +${overdueDuration} overdue`
-                : countdown}
-            </Text>
-          </View>
-          {/* Exact due date */}
-          {due && (
-            <Text style={styles.dueDate}>
-              {"Due: "}
-              {due.toLocaleString("en-US", {
-                weekday: "short",
-                month: "short",
-                day: "numeric",
-                hour: "numeric",
-                minute: "2-digit",
-              })}
-            </Text>
-          )}
-          {/* Info row */}
-          <View style={styles.infoRow}>
-            <Ionicons
-              name="information-circle-outline"
-              size={13}
-              color="#475569"
-            />
-            <Text style={styles.infoText}>
-              {
-                'Tap "Done" when finished. Tap "Not Done" to silence this alarm and be reminded again later.'
-              }
-            </Text>
-          </View>
-          {/* Done button */}
-          <TouchableOpacity
-            style={[
-              styles.doneBtn,
-              doneSelected && styles.pendingActionBtn,
-              {
-                opacity: notDonePressed || markingDone ? 0.65 : 1,
-              },
-            ]}
-            onPress={handleDone}
-            disabled={notDonePressed || markingDone}
-            activeOpacity={0.8}
-            accessibilityLabel="Mark task as done"
-            accessibilityRole="button"
-          >
-            <Ionicons
-              name={markingDone ? "checkmark-circle" : "checkmark-outline"}
-              size={20}
-              color="#052e16"
-            />
-            <Text style={styles.doneBtnText}>
-              {markingDone ? "Marking Done..." : "Done"}
-            </Text>
-          </TouchableOpacity>
-          {/* Not Done button */}
-          <TouchableOpacity
-            style={[
-              styles.notDoneBtn,
-              notDoneSelected && styles.pendingActionBtn,
-              {
-                opacity: notDonePressed || markingDone ? 0.65 : 1,
-              },
-            ]}
-            onPress={handleNotDone}
-            disabled={notDonePressed || markingDone}
-            activeOpacity={0.8}
-            accessibilityLabel="Not done — silence alarm and remind me later"
-            accessibilityRole="button"
-          >
-            <Ionicons
-              name={notDonePressed ? "checkmark-circle" : "time-outline"}
-              size={20}
-              color="#e2e8f0"
-            />
-            <Text style={styles.notDoneBtnText}>
-              {notDonePressed ? "Noted" : "Not Done"}
-            </Text>
-          </TouchableOpacity>
-        </Animated.View>
-      </View>
-    </Modal>
+        </View>
+      </Modal>
     </>
   );
 }

@@ -1,4 +1,13 @@
-# Fix getWorkloadLabel thresholds ✅
+d"|"apiKey"|"appId"'
+grep : The term 'grep' is not recognized as the name of a cmdlet, function, script 
+file, or operable program. Check the spelling of the name, or if a path was included, 
+verify that the path is correct and try again.
+At line:1 char:31
++ npx expo config --json 2>&1 | grep -E '"projectId"|"apiKey"|"appId"'
++                               ~~~~
+    + CategoryInfo          : ObjectNotFound: (grep:String) [], CommandNotFoundExcepti 
+   on
+    + FullyQualifiedErrorId : CommandNotFoundException# Fix getWorkloadLabel thresholds ✅
 
 ## Steps:
 

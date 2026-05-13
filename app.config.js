@@ -4,12 +4,22 @@ try {
   const fs = require("fs");
   const path = require("path");
   const dotenv = require("dotenv");
-  const configRoot = process.cwd();
+
+  // Try multiple root paths
+  const possibleRoots = [
+    path.dirname(__filename),
+    process.cwd(),
+    path.resolve(__dirname),
+  ];
+
   const envFiles = [".env.local", ".env"];
-  for (const file of envFiles) {
-    const fullPath = path.resolve(configRoot, file);
-    if (fs.existsSync(fullPath)) {
-      dotenv.config({ path: fullPath, override: false });
+
+  for (const root of possibleRoots) {
+    for (const file of envFiles) {
+      const fullPath = path.resolve(root, file);
+      if (fs.existsSync(fullPath)) {
+        dotenv.config({ path: fullPath, override: false });
+      }
     }
   }
 } catch {
@@ -61,16 +71,6 @@ const FIREBASE_ENV_MAP = {
   appId: ["FIREBASE_APP_ID", "EXPO_PUBLIC_FIREBASE_APP_ID"],
 };
 
-const DEFAULT_EAS_PROJECT_ID = "f121e7a5-5b48-49ac-9430-ad6b040eabf8";
-const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyATU3db7Insdhl0SBT1-AlsaO6_vXyG8i4",
-  authDomain: "my-expo-auth-app-290eb.firebaseapp.com",
-  projectId: "my-expo-auth-app-290eb",
-  storageBucket: "my-expo-auth-app-290eb.firebasestorage.app",
-  messagingSenderId: "719496561355",
-  appId: "1:719496561355:web:250898c948e69d1d42d14e",
-};
-
 module.exports = ({ config }) => {
   const base = config || {};
   const baseExtra = base.extra || {};
@@ -83,34 +83,25 @@ module.exports = ({ config }) => {
   const startupOtaEnabled = buildProfile === "production";
   const easProjectId =
     normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
-    normalizeFirebaseValue(baseExtra?.eas?.projectId) ||
-    DEFAULT_EAS_PROJECT_ID;
+    normalizeFirebaseValue(baseExtra?.eas?.projectId);
 
   const firebase = {
     apiKey:
-      getFirstEnv(...FIREBASE_ENV_MAP.apiKey) ||
-      getExtra(baseExtra, "apiKey") ||
-      DEFAULT_FIREBASE_CONFIG.apiKey,
+      getFirstEnv(...FIREBASE_ENV_MAP.apiKey) || getExtra(baseExtra, "apiKey"),
     authDomain:
       getFirstEnv(...FIREBASE_ENV_MAP.authDomain) ||
-      getExtra(baseExtra, "authDomain") ||
-      DEFAULT_FIREBASE_CONFIG.authDomain,
+      getExtra(baseExtra, "authDomain"),
     projectId:
       getFirstEnv(...FIREBASE_ENV_MAP.projectId) ||
-      getExtra(baseExtra, "projectId") ||
-      DEFAULT_FIREBASE_CONFIG.projectId,
+      getExtra(baseExtra, "projectId"),
     storageBucket:
       getFirstEnv(...FIREBASE_ENV_MAP.storageBucket) ||
-      getExtra(baseExtra, "storageBucket") ||
-      DEFAULT_FIREBASE_CONFIG.storageBucket,
+      getExtra(baseExtra, "storageBucket"),
     messagingSenderId:
       getFirstEnv(...FIREBASE_ENV_MAP.messagingSenderId) ||
-      getExtra(baseExtra, "messagingSenderId") ||
-      DEFAULT_FIREBASE_CONFIG.messagingSenderId,
+      getExtra(baseExtra, "messagingSenderId"),
     appId:
-      getFirstEnv(...FIREBASE_ENV_MAP.appId) ||
-      getExtra(baseExtra, "appId") ||
-      DEFAULT_FIREBASE_CONFIG.appId,
+      getFirstEnv(...FIREBASE_ENV_MAP.appId) || getExtra(baseExtra, "appId"),
   };
 
   return {

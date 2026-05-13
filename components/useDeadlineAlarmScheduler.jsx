@@ -14,18 +14,18 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import {
-  DEADLINE_NOTIF_TYPE,
-  displayAlarmNotification,
+    DEADLINE_NOTIF_TYPE,
+    displayAlarmNotification,
 } from "../utils/deadlineAlarmBackground";
 import {
-  FOREGROUND_THRESHOLDS,
-  OVERDUE_CHAIN,
+    FOREGROUND_THRESHOLDS,
+    OVERDUE_CHAIN,
 } from "../utils/deadlineConstants";
 import { warnIfDev } from "../utils/logger";
 import { buildDeadlineNotificationId } from "../utils/notificationIds";
 import {
-  resolveCurrentOverdueStageInfo,
-  resolveDailyAckBucket as resolveStoredDailyAckBucket,
+    resolveCurrentOverdueStageInfo,
+    resolveDailyAckBucket as resolveStoredDailyAckBucket,
 } from "../utils/taskOverdueState";
 import { parseDueDate, resolveTaskDueDate } from "./DeadlineAlarmModal.helpers";
 
@@ -504,6 +504,7 @@ export function useDeadlineAlarmScheduler(
             ...alarmQueueRef.current[existingIdx],
             thresholdKey,
             task,
+            ackKey: resolveAckKeyForThreshold(task, thresholdKey, Date.now()),
           };
         }
         if (!activeAlarm && existingIdx === 0) {

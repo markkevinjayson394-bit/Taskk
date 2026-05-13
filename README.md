@@ -7,6 +7,7 @@ CTU Academic Task Manager is a mobile academic planning application for students
 This repository contains the implementation artifact for a student-focused time management system with separate student and admin flows.
 
 Student capabilities:
+
 - Create, edit, prioritize, and complete academic tasks
 - View class schedules and planner timelines
 - Receive deadline and class reminders
@@ -14,6 +15,7 @@ Student capabilities:
 - Use cached data and queued actions while offline
 
 Admin capabilities:
+
 - Manage schedules
 - Publish announcements
 - View student-related administrative screens
@@ -77,6 +79,28 @@ npm run ios
 npm run web
 ```
 
+### EAS Cloud Builds
+
+To build for production using EAS (Expo Application Services):
+
+1. Set up environment variables for your build profile. You can use `eas env` to manage secrets:
+
+```bash
+eas env:create --scope production --name EAS_PROJECT_ID --value your-eas-project-id
+eas env:create --scope production --name FIREBASE_API_KEY --value your-firebase-api-key
+eas env:create --scope production --name FIREBASE_PROJECT_ID --value your-firebase-project-id
+eas env:create --scope production --name FIREBASE_APP_ID --value your-firebase-app-id
+```
+
+2. Trigger the cloud build:
+
+```bash
+eas build --platform android --profile production
+eas build --platform ios --profile production
+```
+
+For local EAS builds (using your machine's resources), the app will use environment variables from your `.env` or `.env.local` file. For EAS cloud builds, use the `eas env` commands above to set secrets in the EAS servers.
+
 ## Verification
 
 Run the local quality checks:
@@ -95,7 +119,7 @@ CI runs the same checks on GitHub Actions through [.github/workflows/ci.yml](.gi
 - [context](context): theme, offline, and notification providers
 - [utils](utils): task model, planner sync, workload, alarms, logging
 - [docs](docs): architecture, data model, diagrams, mockups, research notes
-- [__tests__](__tests__): unit tests
+- [**tests**](__tests__): unit tests
 
 ## Current Quality Status
 

@@ -47,8 +47,10 @@ export function isSameLocalDay(a, b) {
  * Positive if b is after a.
  */
 export function localDaysBetween(from, to) {
+  const fromDate = startOfLocalDay(toValidDate(from));
+  const toDate = startOfLocalDay(toValidDate(to));
   const msPerDay = 1000 * 60 * 60 * 24;
-  return Math.round((to - from) / msPerDay);
+  return Math.round((toDate - fromDate) / msPerDay);
 }
 
 /**

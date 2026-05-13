@@ -26,68 +26,68 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  setDoc,
-  where,
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    limit,
+    orderBy,
+    query,
+    setDoc,
+    where,
 } from "firebase/firestore";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import { auth, db } from "../config/firebase";
 import {
-  BACKGROUND_ALARM_TASK,
-  enableBackgroundAlarms,
+    BACKGROUND_ALARM_TASK,
+    enableBackgroundAlarms,
 } from "../utils/backgroundAlarmChecker";
 import {
-  loadLocalClassSchedule,
-  saveLocalClassSchedule,
+    loadLocalClassSchedule,
+    saveLocalClassSchedule,
 } from "../utils/classScheduleCache";
 import {
-  cancelDeadlineAlarms,
-  rescheduleAllDeadlineAlarms,
-  scheduleDeadlineAlarms,
+    cancelDeadlineAlarms,
+    rescheduleAllDeadlineAlarms,
+    scheduleDeadlineAlarms,
 } from "../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { reportError, reportWarning, warnIfDev } from "../utils/logger";
 import {
-  cancelNativeAlarmByScheduledId,
-  ensureNativeAlarmPermissions,
-  canUseFullScreenIntent,
-  canPickNativeAlarmAudioFile,
-  canPickNativeAlarmTone,
-  canScheduleExactAlarms,
-  isIgnoringBatteryOptimizations,
-  isNativeAlarmScheduledId,
-  isNativeAlarmSupported,
-  openExactAlarmSettings,
-  openFullScreenIntentSettings,
-  pickNativeAlarmAudioFile,
-  pickNativeAlarmTone,
-  requestIgnoreBatteryOptimizations,
-  scheduleNativeAlarm,
-  toNativeAlarmScheduledId,
+    cancelNativeAlarmByScheduledId,
+    canPickNativeAlarmAudioFile,
+    canPickNativeAlarmTone,
+    canScheduleExactAlarms,
+    canUseFullScreenIntent,
+    ensureNativeAlarmPermissions,
+    isIgnoringBatteryOptimizations,
+    isNativeAlarmScheduledId,
+    isNativeAlarmSupported,
+    openExactAlarmSettings,
+    openFullScreenIntentSettings,
+    pickNativeAlarmAudioFile,
+    pickNativeAlarmTone,
+    requestIgnoreBatteryOptimizations,
+    scheduleNativeAlarm,
+    toNativeAlarmScheduledId,
 } from "../utils/nativeAlarm";
 import {
-  buildManagedNotificationData,
-  buildNotificationId,
+    buildManagedNotificationData,
+    buildNotificationId,
 } from "../utils/notificationIds";
 import {
-  clearPendingNotificationReschedule,
-  clearTaskRescheduleIntent,
-  clearTaskRescheduleIntents,
-  listTaskRescheduleIntents,
-  readPendingNotificationReschedule,
-  writePendingNotificationReschedule,
-  writeTaskRescheduleIntent,
+    clearPendingNotificationReschedule,
+    clearTaskRescheduleIntent,
+    clearTaskRescheduleIntents,
+    listTaskRescheduleIntents,
+    readPendingNotificationReschedule,
+    writePendingNotificationReschedule,
+    writeTaskRescheduleIntent,
 } from "../utils/notificationScheduleRecovery";
 import {
-  findOfflineQueuedTask,
-  isLocalOnlyTaskId,
+    findOfflineQueuedTask,
+    isLocalOnlyTaskId,
 } from "../utils/offlineTaskQueue";
 import { readSchedulablePendingTasks } from "../utils/pendingTaskSources";
 import { findBestScheduleDoc } from "../utils/scheduleMatcher";
@@ -1179,7 +1179,10 @@ export function NotificationProvider({ children }) {
 
       await AsyncStorage.setItem(migrationKey, "1");
     } catch (err) {
-      warnIfDev("NotificationContext: deadline alarm channel migration failed:", err);
+      warnIfDev(
+        "NotificationContext: deadline alarm channel migration failed:",
+        err
+      );
     } finally {
       deadlineAlarmMigrationInFlightRef.current.delete(migrationKey);
     }
@@ -1555,7 +1558,6 @@ export function NotificationProvider({ children }) {
             batteryResult?.status === "success" &&
             batteryResult.value === false
           ) {
-            await AsyncStorage.setItem(dismissedKey, "1").catch(() => {});
             setShowBatteryOptimizationPrompt(true);
           }
         }
@@ -1565,7 +1567,13 @@ export function NotificationProvider({ children }) {
     return granted;
   };
 
-  const dismissBatteryPrompt = () => {
+  const dismissBatteryPrompt = async () => {
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      await AsyncStorage.setItem(KEYS.batteryPromptDismiss(uid), "1").catch(
+        () => {}
+      );
+    }
     setShowBatteryOptimizationPrompt(false);
   };
 

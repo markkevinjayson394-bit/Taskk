@@ -16,7 +16,9 @@
       "Bash(grep -oP '.{0,20}All</div></div>.{0,20}High' \"C:\\\\Users\\\\miptac\\\\time-management-app\\\\dist-verify-build\\\\\\(tabs\\)\\\\assignments.html\")",
       "Bash(python3 *)",
       "mcp__ide__getDiagnostics",
-      "Bash(gh repo *)",
+      "Bash(gh repo view)",
+      "Bash(gh repo list)",
+      "Bash(gh repo clone)",
       "Bash(npx expo *)"
     ]
   }

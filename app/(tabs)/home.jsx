@@ -12,64 +12,64 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  updateDoc,
-  where,
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    orderBy,
+    query,
+    updateDoc,
+    where,
 } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
-  Animated,
-  RefreshControl,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    Alert,
+    Animated,
+    RefreshControl,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import DeadlineAlarmModal, {
-  useDeadlineAlarmScheduler,
+    useDeadlineAlarmScheduler,
 } from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import LoadingState from "../../components/LoadingState";
 import { auth, db } from "../../config/firebase";
 import { useNotifications } from "../../context/NotificationContext";
 import {
-  CACHE_KEYS,
-  formatSyncTime,
-  loadFromCache,
-  saveToCache,
-  useOffline,
+    CACHE_KEYS,
+    formatSyncTime,
+    loadFromCache,
+    saveToCache,
+    useOffline,
 } from "../../context/OfflineContext";
-import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import { useTheme } from "../../context/ThemeContext";
 import {
-  PRIORITY_COLOR,
-  daysUntil,
-  getGreeting,
-  getTodayString,
-  resolveTaskDueDate,
-  safeParseObject,
+    PRIORITY_COLOR,
+    daysUntil,
+    getGreeting,
+    getTodayString,
+    resolveTaskDueDate,
+    safeParseObject,
 } from "../../features/tab-modules/home.helpers";
 import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
 import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../../utils/deadlineTime";
-import { reportError, reportWarning } from "../../utils/logger";
+import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
 import {
-  isLocalOnlyTaskId,
-  removeOfflineQueuedTask,
+    isLocalOnlyTaskId,
+    removeOfflineQueuedTask,
 } from "../../utils/offlineTaskQueue";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
+import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 import {
-  calculateDailyWorkload,
-  getWorkloadLabel,
+    calculateDailyWorkload,
+    getWorkloadLabel,
 } from "../../utils/workloadCalculator";
 
 const PLANS_KEY = (uid) => `exam_prep_plans_${uid}`;
@@ -260,7 +260,11 @@ export default function HomeDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
-  const { rescheduleAll, rescheduleDeadlineAlarmsForTask, clearTaskAlarmSuppression } = useNotifications();
+  const {
+    rescheduleAll,
+    rescheduleDeadlineAlarmsForTask,
+    clearTaskAlarmSuppression,
+  } = useNotifications();
   const {
     isOnline,
     lastSync,
@@ -347,8 +351,7 @@ export default function HomeDashboard() {
 
   useEffect(() => {
     if (todayClasses.length === 0) return;
-    const nowMinutes =
-      nowTick.getHours() * 60 + nowTick.getMinutes();
+    const nowMinutes = nowTick.getHours() * 60 + nowTick.getMinutes();
 
     const current = todayClasses.find((cls) => {
       const range = getClassTimeRange(cls);
@@ -658,8 +661,10 @@ export default function HomeDashboard() {
     if (!user) return;
 
     // Optimistic removal
-    setUpcomingAssignments(prev => prev.filter(t => t.id !== assignment.id));
-    setUpcomingExams(prev => prev.filter(t => t.id !== assignment.id));
+    setUpcomingAssignments((prev) =>
+      prev.filter((t) => t.id !== assignment.id)
+    );
+    setUpcomingExams((prev) => prev.filter((t) => t.id !== assignment.id));
 
     try {
       // Step 1: Cancel alarms — never let this abort the whole flow
@@ -733,7 +738,9 @@ export default function HomeDashboard() {
       if (cached?.data) {
         await saveToCache(CACHE_KEYS.assignments(user.uid), {
           ...cached.data,
-          pending: (cached.data.pending || []).filter(t => t.id !== assignment.id),
+          pending: (cached.data.pending || []).filter(
+            (t) => t.id !== assignment.id
+          ),
           done: [completedTask, ...(cached.data.done || [])],
         });
       }
@@ -763,7 +770,6 @@ export default function HomeDashboard() {
         });
         queueReminderRefresh("mark_done_fallback", { taskId: assignment.id });
       }
-
     } catch (error) {
       // Roll back optimistic removal
       fetchDashboardData(false, { forceRefresh: true });
@@ -1731,7 +1737,6 @@ export default function HomeDashboard() {
               </Text>
             </TouchableOpacity>
           )}
-
         </Animated.View>
       </ScrollView>
 
@@ -1740,15 +1745,23 @@ export default function HomeDashboard() {
         task={alarmTask}
         thresholdKey={alarmThresholdKey}
         onNotDone={async () => {
-          await notDoneAlarm();
-          fetchDashboardData(false, { forceRefresh: true });
+          try {
+            await notDoneAlarm();
+            fetchDashboardData(false, { forceRefresh: true });
+          } catch (err) {
+            warnIfDev("Failed to mark as not done:", err);
+          }
         }}
         onMarkDone={async () => {
-          // acknowledgeAlarm first so the modal closes immediately
-          // even if the Firestore write is slow
-          await acknowledgeAlarm();
-          if (alarmTask?.id) {
-            await markDone(alarmTask);
+          try {
+            // acknowledgeAlarm first so the modal closes immediately
+            // even if the Firestore write is slow
+            await acknowledgeAlarm();
+            if (alarmTask?.id) {
+              await markDone(alarmTask);
+            }
+          } catch (err) {
+            warnIfDev("Failed to mark as done:", err);
           }
         }}
       />

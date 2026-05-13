@@ -26,6 +26,8 @@
         hydrated[field] = parsed;
       } else if (task[field] === undefined) {
         delete hydrated[field];
+      } else {
+        delete hydrated[field];
       }
     });
     return hydrated;
@@ -110,6 +112,7 @@
       );
     } catch (err) {
       warnIfDev("offlineTaskQueue: failed to write create queue:", err);
+      throw err;
     }
   }
 

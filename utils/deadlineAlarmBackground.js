@@ -1130,16 +1130,6 @@ export async function scheduleDeadlineAlarms(
   const ids = [];
   const dueAtMs = due.getTime();
 
-  const skipReschedule = false;
-  if (skipReschedule) {
-    warnIfDev(
-      "scheduleDeadlineAlarms: due date unchanged for",
-      task.id,
-      "— skipping reschedule"
-    );
-    return [];
-  }
-
   await cancelDeadlineAlarms(task);
 
   const { taskTitle, subjectLabel } = getTaskAlarmMeta(task, soundSettings);

@@ -66,7 +66,6 @@ import {
     calculateWorkloadScore,
     CREATE_PRIORITY_OPTIONS,
     DAY_MS,
-    DEFAULT_MANUAL_TASK_REMINDER_POLICY,
     ensureGeneralSubjectOption,
     extractScheduleSubjectNames,
     extractStudentScheduleProfile,
@@ -144,10 +143,6 @@ function buildTaskSubjectFields(subjectValue, subjectIdValue) {
   };
 }
 
-function parseCustomReminderDate(value) {
-  return normalizeTaskDateInput(value);
-}
-
 function isReminderBeforeDue(reminderDate, dueDate) {
   if (!reminderDate || !dueDate) return false;
   if (!(reminderDate instanceof Date) || Number.isNaN(reminderDate.getTime())) {
@@ -157,12 +152,6 @@ function isReminderBeforeDue(reminderDate, dueDate) {
     return false;
   }
   return reminderDate < dueDate;
-}
-
-function isAtCreationReminder(reminderDate, createdAtValue) {
-  const createdAt = normalizeTaskDateInput(createdAtValue);
-  if (!reminderDate || !createdAt) return false;
-  return Math.abs(reminderDate.getTime() - createdAt.getTime()) < 60 * 1000;
 }
 
 function isValidCustomReminder(
@@ -177,13 +166,6 @@ function isValidCustomReminder(
     return false;
   }
   return true;
-}
-
-function buildAtCreationReminderPolicy() {
-  return {
-    ...DEFAULT_MANUAL_TASK_REMINDER_POLICY,
-    type: "at_creation",
-  };
 }
 
 function sortPendingTasks(items = []) {
@@ -727,10 +709,18 @@ export default function TaskManagerScreen() {
             return docRef;
           },
           notificationSettings?.soundSettings || {}
-        ).catch((_e) => null);
+        ).catch((err) => {
+          warnIfDev("Failed to flush create queue:", err);
+          return null;
+        });
         if (!active) return;
 
-        flushedCreates = Number(flushResult?.flushed) || 0;
+        if (flushResult === null) {
+          flushedCreates = 0;
+        } else {
+          flushedCreates = Number(flushResult?.flushed) || 0;
+        }
+
         if (flushedCreates > 0 && typeof markSynced === "function") {
           const createQueueKeys =
             Array.isArray(flushResult?.remaining) &&
@@ -1202,7 +1192,6 @@ export default function TaskManagerScreen() {
 
   function openEditTaskModal(task) {
     if (!task || creatingTask || deletingId || !isOnline) return;
-    const user = auth.currentUser;
     const due = resolveTaskDueDate(task);
     const resolvedDue = due || getDefaultDueAt();
     const subjectFields = buildTaskSubjectFields(
@@ -1565,7 +1554,12 @@ export default function TaskManagerScreen() {
         if (typeof refreshPendingSyncSummary === "function") {
           refreshPendingSyncSummary(user.uid).catch((_e) => {});
         }
-        scheduleDeadlineAlarms(localTask).catch((_e) => {});
+        void scheduleDeadlineAlarms(localTask).catch((_e) => {
+          warnIfDev(
+            "Failed to schedule deadline alarms for offline created task:",
+            _e
+          );
+        });
         setShowCreateModal(false);
         setShowSubjectPicker(false);
         setEditingTaskId("");

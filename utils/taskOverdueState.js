@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
+import { warnIfDev } from "./logger";
 
 const KEYS = {
   checkpoint: (taskId) => `task_overdue_checkpoint_${taskId}`,

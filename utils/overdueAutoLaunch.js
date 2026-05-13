@@ -148,6 +148,11 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
   if (opts.hasPendingAction) return;
   if (!opts.skipCooldown && (await isInCooldown(userId))) return;
 
+  // Stamp cooldown immediately to prevent concurrent calls from bypassing the check
+  if (!opts.skipCooldown) {
+    await stampCooldown(userId);
+  }
+
   const exactResult = await canScheduleExactAlarms();
   if (exactResult?.status !== "success" || exactResult?.value !== true) {
     warnIfDev(
@@ -216,7 +221,6 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
         task.id +
         ")"
     );
-    await stampCooldown(userId);
   } else {
     warnIfDev(
       "[overdueAutoLaunch] scheduleNativeAlarm returned null - alarm not scheduled"

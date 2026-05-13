@@ -517,7 +517,7 @@ export default function TaskEditorModal({
               )}
 
               {/* --- NEW: Time Left Banner --- */}
-              {timeLeftLabel && urgencyMeta && (
+              {urgencyMeta && (timeLeftLabel || timeLeftMs <= 0) && (
                 <View
                   style={[
                     styles.timeLeftBanner,

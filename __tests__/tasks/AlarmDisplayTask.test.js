@@ -277,7 +277,11 @@ describe("tasks/AlarmDisplayTask background events", () => {
     expect(mockWriteAlarmAction).not.toHaveBeenCalled();
     expect(mockBootstrapDeadlineAlarmChannel).toHaveBeenCalled();
     expect(mockCancelNativeAlarmByAlarmId).toHaveBeenCalledWith("deadline-1");
-    expect(mockAdvanceCheckpoint).toHaveBeenCalledWith("task-1", "due", dueAtMs);
+    expect(mockAdvanceCheckpoint).toHaveBeenCalledWith(
+      "task-1",
+      "due",
+      dueAtMs
+    );
     expect(mockScheduleNextOverdueAlarm).toHaveBeenCalledWith({
       task: expect.objectContaining({
         id: "task-1",
@@ -318,13 +322,11 @@ describe("tasks/AlarmDisplayTask background events", () => {
 
     expect(mockNotifee.cancelNotification).not.toHaveBeenCalled();
     expect(mockStopActiveNativeAlarm).not.toHaveBeenCalled();
+    expect(mockCancelNativeAlarmByAlarmId).not.toHaveBeenCalled();
     expect(mockWriteAlarmAction).toHaveBeenCalledWith(
       "default",
       "deadline-urgent-open",
       expect.any(String)
-    );
-    expect(mockCancelNativeAlarmByAlarmId).toHaveBeenCalledWith(
-      "deadline-urgent-open"
     );
     expect(mockAdvanceCheckpoint).not.toHaveBeenCalled();
     expect(mockScheduleNextOverdueAlarm).not.toHaveBeenCalled();

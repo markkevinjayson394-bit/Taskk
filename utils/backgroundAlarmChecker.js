@@ -14,27 +14,25 @@ import { enableNetwork } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
 import { resolveTaskDueDate } from "./academicTaskModel";
 import {
-    bootstrapDeadlineAlarmChannel,
-    cancelDeadlineAlarms,
-    rescheduleAllDeadlineAlarms,
-    scheduleNextOverdueAlarm,
+  bootstrapDeadlineAlarmChannel,
+  cancelDeadlineAlarms,
+  rescheduleAllDeadlineAlarms,
+  scheduleNextOverdueAlarm,
 } from "./deadlineAlarmBackground";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
 import { reportError, warnIfDev } from "./logger";
 import { buildNotificationId } from "./notificationIds";
 import {
-    clearPendingNotificationReschedule,
-    clearTaskRescheduleIntent,
-    clearTaskRescheduleIntents,
-    listTaskRescheduleIntents,
-    readPendingNotificationReschedule,
+  clearPendingNotificationReschedule,
+  clearTaskRescheduleIntent,
+  clearTaskRescheduleIntents,
+  listTaskRescheduleIntents,
+  readPendingNotificationReschedule,
 } from "./notificationScheduleRecovery";
+import { readSchedulablePendingTasks } from "./pendingTaskSources";
 import {
-    readSchedulablePendingTasks
-} from "./pendingTaskSources";
-import {
-    getCheckpoint,
-    resolveCurrentOverdueStageInfo,
+  getCheckpoint,
+  resolveCurrentOverdueStageInfo,
 } from "./taskOverdueState";
 
 let TaskManager = null;
@@ -52,20 +50,16 @@ try {
   warnIfDev("BackgroundFetch unavailable:", err);
 }
 
-const MAX_TASKS_PER_RUN = 20;
-
 const backgroundFetchResult = BackgroundFetch?.BackgroundFetchResult || {};
 const backgroundFetchStatus = BackgroundFetch?.BackgroundFetchStatus || {};
-
-const isValidBackgroundFetchResult = (result) => {
-  return result && (result === backgroundFetchResult.NewData || result === backgroundFetchResult.NoData || result === backgroundFetchResult.Failed);
-};
 
 const getBackgroundFetchResult = (resultType) => {
   const result = backgroundFetchResult[resultType];
   if (result === undefined) {
-    warnIfDev(`[BackgroundTask] BackgroundFetchResult.${resultType} is undefined`);
-    return resultType === "Failed" ? 1 : (resultType === "NewData" ? 1 : 0);
+    warnIfDev(
+      `[BackgroundTask] BackgroundFetchResult.${resultType} is undefined`
+    );
+    return resultType === "Failed" ? 1 : resultType === "NewData" ? 1 : 0;
   }
   return result;
 };
@@ -137,11 +131,14 @@ try {
                   .filter(Boolean);
 
           if (tasksToRecover.length > 0) {
-            const rescheduledIds = await rescheduleAllDeadlineAlarms(tasksToRecover);
+            const rescheduledIds =
+              await rescheduleAllDeadlineAlarms(tasksToRecover);
             if (Array.isArray(rescheduledIds) && rescheduledIds.length > 0) {
               recoveredSchedules += rescheduledIds.length;
             } else {
-              warnIfDev(`[BackgroundTask] Failed to reschedule ${tasksToRecover.length} tasks for recovery`);
+              warnIfDev(
+                `[BackgroundTask] Failed to reschedule ${tasksToRecover.length} tasks for recovery`
+              );
             }
           }
 
@@ -159,6 +156,11 @@ try {
         }
 
         let repaired = 0;
+
+        const overdueTasks = pendingTasks.filter((task) => {
+          const dueAtMs = resolveTaskDueDate(task)?.getTime?.();
+          return dueAtMs && dueAtMs <= now;
+        });
 
         for (const task of overdueTasks) {
           if (task.status === "done" || task.completed === true) {

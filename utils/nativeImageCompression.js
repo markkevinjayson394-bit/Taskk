@@ -12,27 +12,38 @@ export const canCompressNativeImages =
 export async function compressImageToBase64DataUri(uri, maxBytes) {
   if (!canCompressNativeImages || !uri) return null;
 
-  const result = await NativeImageCompressionModule.compressImageToBase64(
-    String(uri),
-    Number(maxBytes)
-  );
-  if (!result || typeof result.base64 !== "string" || !result.base64.trim()) {
+  const maxBytesNum = Number(maxBytes);
+  if (!Number.isFinite(maxBytesNum) || maxBytesNum <= 0) {
+    console.warn("compressImageToBase64DataUri: invalid maxBytes", maxBytes);
     return null;
   }
 
-  const mimeType =
-    typeof result.mimeType === "string" && result.mimeType.trim()
-      ? result.mimeType.trim()
-      : "image/jpeg";
-  const sizeBytes = Number(result.sizeBytes);
-  const width = Number(result.width);
-  const height = Number(result.height);
+  try {
+    const result = await NativeImageCompressionModule.compressImageToBase64(
+      String(uri),
+      maxBytesNum
+    );
+    if (!result || typeof result.base64 !== "string" || !result.base64.trim()) {
+      return null;
+    }
 
-  return {
-    dataUri: `data:${mimeType};base64,${result.base64}`,
-    mimeType,
-    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : null,
-    width: Number.isFinite(width) ? width : null,
-    height: Number.isFinite(height) ? height : null,
-  };
+    const mimeType =
+      typeof result.mimeType === "string" && result.mimeType.trim()
+        ? result.mimeType.trim()
+        : "image/jpeg";
+    const sizeBytes = Number(result.sizeBytes);
+    const width = Number(result.width);
+    const height = Number(result.height);
+
+    return {
+      dataUri: `data:${mimeType};base64,${result.base64}`,
+      mimeType,
+      sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : null,
+      width: Number.isFinite(width) ? width : null,
+      height: Number.isFinite(height) ? height : null,
+    };
+  } catch (error) {
+    console.warn("compressImageToBase64DataUri: compression failed", error);
+    return null;
+  }
 }

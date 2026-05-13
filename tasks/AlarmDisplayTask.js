@@ -273,7 +273,9 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
         dueAtMs
       );
       if (!nextCheckpoint?.key) {
-        warnIfDev(`[AlarmDisplayTask] Failed to advance checkpoint for task ${data.taskId} at stage ${stageKey}`);
+        warnIfDev(
+          `[AlarmDisplayTask] Failed to advance checkpoint for task ${data.taskId} at stage ${stageKey}`
+        );
         return;
       }
 
@@ -302,7 +304,6 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
   }
 
   if (baseAlarmId) {
-    await cancelNativeAlarmByAlarmId(baseAlarmId).catch(() => {});
     await writeAlarmAction("default", baseAlarmId, payloadJson).catch(() => {});
   }
 });

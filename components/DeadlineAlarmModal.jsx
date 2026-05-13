@@ -454,7 +454,9 @@ function DeadlineAlarmModal({
     loopRef.current.start();
     // Per-second countdown
     tickRef.current = setInterval(() => setNow(new Date()), 1000);
-    if (shouldUseLocalAlarmLoop) {
+    // Play sound and vibration on alarm modal mount, unless in silent confirm mode or native handoff.
+    // The shouldUseLocalAlarmLoop flag determines if we need the local alarm loop timer.
+    if (!isSilentConfirmMode && !nativeHandoff) {
       startVibration(vibRef);
       void playAlarmSound(soundRef);
     }
@@ -465,7 +467,7 @@ function DeadlineAlarmModal({
       stopVibration(vibRef);
       void stopAlarmSound(soundRef);
     };
-  }, [shouldUseLocalAlarmLoop, visible, pulseAnim, shakeAnim, slideAnim]);
+  }, [visible, pulseAnim, shakeAnim, slideAnim]);
 
   // "Not Done" — stop sound/vibration immediately, advance checkpoint chain,
   // schedule next alarm, close modal. Task remains incomplete.

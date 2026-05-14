@@ -1,6 +1,7 @@
 // TaskManagerScreen.helpers.js
 // Extracted helper functions and constants from TaskManagerScreen.js
 
+import { Timestamp } from "firebase/firestore";
 import { calculateDailyWorkload } from "@/utils/workloadCalculator";
 import * as AcademicTaskModel from "../../utils/academicTaskModel";
 import {
@@ -91,13 +92,37 @@ export async function writeCreateQueue(uid, queue) {
   return writeOfflineCreateQueue(uid, queue);
 }
 
+function convertDatesToTimestamps(payload = {}) {
+  const DATE_FIELDS = [
+    "dueAt",
+    "createdAt",
+    "completedAt",
+    "updatedAt",
+    "startedAt",
+    "customReminderAt",
+  ];
+  const result = { ...payload };
+  DATE_FIELDS.forEach((field) => {
+    const val = result[field];
+    if (val instanceof Date && !Number.isNaN(val.getTime())) {
+      result[field] = Timestamp.fromDate(val);
+    } else if (val === undefined) {
+      delete result[field];
+    }
+  });
+  return result;
+}
+
 export async function flushCreateQueue(uid, flushFn, soundSettings = {}) {
   const queue = await readOfflineCreateQueue(uid);
   if (!queue.length) return { flushed: 0, remaining: [] };
   const remaining = [];
   let flushed = 0;
   for (const item of queue) {
-    const payload = prepareQueuedTaskPayloadForFirestore(item.payload);
+    // Convert plain Dates → Firestore Timestamps before writing
+    const payload = convertDatesToTimestamps(
+      prepareQueuedTaskPayloadForFirestore(item.payload)
+    );
     try {
       const docRef = await flushFn({ ...item, payload });
       flushed++;

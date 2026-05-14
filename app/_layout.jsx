@@ -343,17 +343,25 @@ function RootLayoutNav() {
     let isInitialOverdueCheck = true;
 
     const checkPendingAlarmAction = async () => {
-      if (alarmActionInFlight.current) return;
+      if (alarmActionInFlight.current) return false;
       alarmActionInFlight.current = true;
       try {
         const params = await consumePendingAlarmAction();
-        if (!params) return;
+        if (!params) return false;
+        // Native alarm is still ringing when this fires.
+        // Pass nativeHandoff=1 so the modal owns stopping it via button press.
+        // Do NOT call stopActiveNativeAlarm here.
         routerRef.current.push({
           pathname: "/(tabs)/TaskManagerScreen",
-          params,
+          params: {
+            ...params,
+            nativeHandoff: "1",
+          },
         });
+        return true; // signal that a pending action was found
       } catch (err) {
         warnIfDev("Failed to check pending native alarm action:", err);
+        return false;
       } finally {
         // Hold the lock for 2 s so concurrent callers are suppressed
         setTimeout(() => {
@@ -391,9 +399,13 @@ function RootLayoutNav() {
         const params = await consumePendingAlarmAction();
         const hasPendingAction = Boolean(params);
         if (params) {
+          // Native alarm still ringing at startup — modal must own stopping it.
           routerRef.current.push({
             pathname: "/(tabs)/TaskManagerScreen",
-            params,
+            params: {
+              ...params,
+              nativeHandoff: "1",
+            },
           });
         }
         InteractionManager.runAfterInteractions(() => {
@@ -554,8 +566,12 @@ function RootLayoutNav() {
               runOtaUpdateCheck("foreground_resume");
             }
           }
-          void checkPendingAlarmAction();
-          void checkForOverdueTaskOnOpen();
+          void (async () => {
+            const hadPendingAction = await checkPendingAlarmAction();
+            if (!hadPendingAction) {
+              await checkForOverdueTaskOnOpen(false);
+            }
+          })();
         }
       );
     };
@@ -595,10 +611,6 @@ function RootLayoutNav() {
       };
 
       const shouldOpenAlarmModal = isDeadlineAlarmModalEligible(data);
-      const nativeHandoff =
-        shouldOpenAlarmModal &&
-        typeof data?.deliveryPath === "string" &&
-        data.deliveryPath.toLowerCase().includes("native");
 
       const navigateTo = (
         pendingAction,
@@ -621,20 +633,25 @@ function RootLayoutNav() {
       };
 
       if (action === ACTION_NOT_DONE) {
+        // Shade "Not Done" button — stop alarm + advance chain, no modal needed
         await handleDeadlineAlarmResponse(response);
         return;
-      }
-
-      if (!nativeHandoff) {
-        await handleDeadlineAlarmResponse(response);
       }
 
       if (action === ACTION_MARK_DONE) {
-        navigateTo("markdone", { handoffToNativeAlarm: nativeHandoff });
+        // Shade "Done" button — stop alarm + open modal for task completion
+        await handleDeadlineAlarmResponse(response);
+        // nativeHandoff=true suppresses local JS sound loop in the modal
+        // since the alarm is already stopped — no double audio
+        navigateTo("markdone", { handoffToNativeAlarm: true });
         return;
       }
 
-      navigateTo(null, { handoffToNativeAlarm: nativeHandoff });
+      // Default tap (user tapped notification body, no action button pressed).
+      // Native alarm is STILL RINGING. Do not stop it here.
+      // nativeHandoff=true tells the modal to suppress local sound loop and
+      // stop the native alarm only when the user presses Done or Not Done.
+      navigateTo(null, { handoffToNativeAlarm: true });
     };
 
     notificationSubscription =
@@ -646,6 +663,18 @@ function RootLayoutNav() {
       Notifications.getLastNotificationResponseAsync()
         .then(async (lastResponse) => {
           if (!lastResponse) return;
+          
+          // Ignore responses older than 5 minutes — they are stale from
+          // a previous app session and should not re-trigger the modal
+          const responseTimestamp = lastResponse.notification?.date;
+          if (responseTimestamp) {
+            const ageMs = Date.now() - new Date(responseTimestamp * 1000).getTime();
+            if (ageMs > 5 * 60 * 1000) {
+              warnIfDev("[layout] Ignoring stale last notification response, age:", ageMs);
+              return;
+            }
+          }
+          
           await handleDeadlineNotificationResponse(lastResponse);
         })
         .catch((err) => {

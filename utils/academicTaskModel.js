@@ -113,12 +113,27 @@ export function parseDueDate(value) {
 }
 
 export function resolveTaskDueDate(task = {}) {
-  if (!task || typeof task !== "object") return null;
-  return (
-    normalizeTaskDateInput(task.dueAt) ??
-    normalizeTaskDateInput(task.dueDate) ??
-    null
-  );
+  const raw = task?.dueAt ?? task?.due ?? task?.dueDate ?? null;
+  if (!raw) return null;
+
+  // Handle Firestore Timestamp objects ({ toDate: Function })
+  if (typeof raw?.toDate === "function") {
+    try {
+      const d = raw.toDate();
+      return Number.isNaN(d.getTime()) ? null : d;
+    } catch {
+      return null;
+    }
+  }
+
+  // Handle plain numeric milliseconds
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? new Date(raw) : null;
+  }
+
+  // Handle ISO string or any Date-parseable string
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 export function normalizeEstimatedMinutes(value) {

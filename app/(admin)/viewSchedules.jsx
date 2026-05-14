@@ -205,12 +205,13 @@ export default function ViewSchedules() {
                 item={item}
                 courseColor={courseColor}
                 classCount={classCount}
-                onEdit={() =>
+                onEdit={() => {
+                  console.log("Editing item:", JSON.stringify(item, null, 2));
                   router.push({
                     pathname: "/(admin)/createSchedule",
                     params: { scheduleData: JSON.stringify(item) },
-                  })
-                }
+                  });
+                }}
                 onDelete={() => handleDelete(item.id, label)}
               />
             );

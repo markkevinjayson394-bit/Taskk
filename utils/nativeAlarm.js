@@ -260,9 +260,7 @@ export async function scheduleNativeAlarm({
   const triggerMs = Number(triggerAt);
   if (!Number.isFinite(triggerMs)) return null;
   const isPastDue = triggerMs <= now;
-  const resolvedTriggerMs = isPastDue
-    ? now + 1500
-    : Math.max(triggerMs, now + 1500);
+  const resolvedTriggerMs = isPastDue ? now + 1500 : triggerMs;
 
   try {
     const payloadJson =

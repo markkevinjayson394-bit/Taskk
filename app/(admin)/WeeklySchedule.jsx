@@ -87,6 +87,14 @@ function DrumColumn({ items, selected, onChange }) {
   const ref = useRef(null);
   const idx = items.indexOf(String(selected));
 
+  useEffect(() => {
+    if (idx >= 0) {
+      setTimeout(() => {
+        ref.current?.scrollToIndex({ index: idx, animated: false });
+      }, 80);
+    }
+  }, [idx]);
+
   const onEnd = (e) => {
     const i = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
     const c = Math.max(0, Math.min(i, items.length - 1));
@@ -345,6 +353,11 @@ export default function WeeklySchedule() {
     setMStart({ ...e.startTime });
     setMEnd({ ...e.endTime });
     setModal(true);
+    // Give FlatList time to mount before scrolling to the saved value
+    setTimeout(() => {
+      setMStart((prev) => ({ ...prev }));
+      setMEnd((prev) => ({ ...prev }));
+    }, 120);
   };
 
   const saveEntry = () => {

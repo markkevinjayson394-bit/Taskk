@@ -158,13 +158,19 @@ export default function AdminHome() {
         text: "Logout",
         style: "destructive",
         onPress: async () => {
-          const uid = auth.currentUser?.uid;
-          if (uid) {
-            await clearLocalClassSchedule(uid);
+          try {
+            const uid = auth.currentUser?.uid;
+            if (uid) {
+              await clearLocalClassSchedule(uid);
+            }
+            // Remove local data BEFORE signing out so it's always cleaned up
+            await AsyncStorage.removeItem("active_uid_v1");
+            await signOut(auth);
+          } catch (err) {
+            console.warn("Logout cleanup error:", err);
+          } finally {
+            router.replace("/(auth)/login");
           }
-          await signOut(auth);
-          await AsyncStorage.removeItem("active_uid_v1");
-          router.replace("/(auth)/login");
         },
       },
     ]);
@@ -183,10 +189,16 @@ export default function AdminHome() {
             style: "destructive",
             onPress: async () => {
               try {
+                // Re-fetch fresh snapshot at the moment of confirm, not before the dialog
+                const freshSnap = await getDocs(collection(db, "announcements"));
+                if (freshSnap.empty) {
+                  Alert.alert("Done", "No announcements to delete.");
+                  return;
+                }
                 const BATCH_SIZE = 500;
-                for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+                for (let i = 0; i < freshSnap.docs.length; i += BATCH_SIZE) {
                   const batch = writeBatch(db);
-                  snap.docs.slice(i, i + BATCH_SIZE).forEach((d) => batch.delete(d.ref));
+                  freshSnap.docs.slice(i, i + BATCH_SIZE).forEach((d) => batch.delete(d.ref));
                   await batch.commit();
                 }
                 Alert.alert("Done", "All announcements cleared.");

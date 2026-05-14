@@ -320,6 +320,7 @@ export default function TaskManagerScreen() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const flushingRef = useRef(false);
+  const flushingCreatesRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
   const routeSubjectKeyRef = useRef("");
   const createSubjectAutoPickedRef = useRef(false);
@@ -340,6 +341,10 @@ export default function TaskManagerScreen() {
     const next = normalizeFilterParam(filterParam);
     setFilter((prev) => (prev === next ? prev : next));
   }, [filterParam]);
+
+  useEffect(() => {
+    setVisiblePending(PAGE_SIZE);
+  }, [filter, subjectFilterId, sortMode, deferredSearchQuery]);
 
   useEffect(() => {
     if (!Array.isArray(subjectOptions) || !subjectOptions.length) return;
@@ -699,20 +704,27 @@ export default function TaskManagerScreen() {
       if (!active) return;
 
       if (currentUser) {
-        const flushResult = await flushCreateQueue(
-          currentUser.uid,
-          async (item) => {
-            const docRef = await addDoc(
-              collection(db, "assignments"),
-              item.payload
-            );
-            return docRef;
-          },
-          notificationSettings?.soundSettings || {}
-        ).catch((err) => {
-          warnIfDev("Failed to flush create queue:", err);
-          return null;
-        });
+        if (flushingCreatesRef.current) return;
+        flushingCreatesRef.current = true;
+        let flushResult = null;
+        try {
+          flushResult = await flushCreateQueue(
+            currentUser.uid,
+            async (item) => {
+              const docRef = await addDoc(
+                collection(db, "assignments"),
+                item.payload
+              );
+              return docRef;
+            },
+            notificationSettings?.soundSettings || {}
+          ).catch((err) => {
+            warnIfDev("Failed to flush create queue:", err);
+            return null;
+          });
+        } finally {
+          flushingCreatesRef.current = false;
+        }
         if (!active) return;
 
         if (flushResult === null) {
@@ -1127,6 +1139,9 @@ export default function TaskManagerScreen() {
     priority,
     source = "manual",
     createdAt,
+    customReminderAt = null,
+    estimatedMinutes = null,
+    reminderPolicy = null,
   }) {
     return {
       id,
@@ -1142,6 +1157,9 @@ export default function TaskManagerScreen() {
       priorityLevel: getTaskPriorityLevel(priority),
       source,
       createdAt: createdAt?.toISOString?.() || new Date().toISOString(),
+      ...(customReminderAt ? { customReminderAt: customReminderAt.toISOString() } : {}),
+      ...(estimatedMinutes !== null ? { estimatedMinutes } : {}),
+      ...(reminderPolicy ? { reminderPolicy } : {}),
     };
   }
 
@@ -1154,13 +1172,13 @@ export default function TaskManagerScreen() {
     });
   }
 
-  function queuePostSaveRefresh(taskId) {
+  function queuePostSaveRefresh(taskId, optimisticTask) {
     void load().catch((err) => {
       warnIfDev("TaskManagerScreen: background reload after save failed:", err);
     });
 
     if (typeof rescheduleDeadlineAlarmsForTask === "function" && taskId) {
-      void rescheduleDeadlineAlarmsForTask(taskId).catch((err) => {
+      void rescheduleDeadlineAlarmsForTask(taskId, optimisticTask).catch((err) => {
         warnIfDev(
           "TaskManagerScreen: background reminder refresh after save failed:",
           err
@@ -1454,7 +1472,7 @@ export default function TaskManagerScreen() {
     const priority = normalizeTaskPriority(newTaskPriority);
     setTitleError("");
 
-    // ── Due date limit validation ──────────────────────────────────────
+    // ── Validate due date for BOTH create and edit ─────────────────────
     const now = new Date();
     const minDueAt = new Date(now.getTime() + 5 * 60 * 1000);
     const maxDueAt = new Date(
@@ -1463,11 +1481,12 @@ export default function TaskManagerScreen() {
       now.getDate()
     );
 
+    if (!(newTaskDueAt instanceof Date) || isNaN(newTaskDueAt.getTime())) {
+      Alert.alert("Invalid Date", "Please select a valid due date.");
+      return;
+    }
+
     if (!isEditMode) {
-      if (!(newTaskDueAt instanceof Date) || isNaN(newTaskDueAt.getTime())) {
-        Alert.alert("Invalid Date", "Please select a valid due date.");
-        return;
-      }
       if (newTaskDueAt < minDueAt) {
         Alert.alert(
           "Due date too soon",
@@ -1485,6 +1504,7 @@ export default function TaskManagerScreen() {
     }
     // ──────────────────────────────────────────────────────────────────
 
+    // Check online status EARLY, before setting creatingTask(true)
     if (!isOnline) {
       if (isEditMode) {
         Alert.alert(
@@ -1579,25 +1599,12 @@ export default function TaskManagerScreen() {
 
     setCreatingTask(true);
     try {
-      const dueDate =
-        newTaskDueAt instanceof Date && !Number.isNaN(newTaskDueAt.getTime())
-          ? newTaskDueAt
-          : null;
+      if (!editingTaskId && isEditMode) {
+        throw new Error("Missing task ID for update.");
+      }
 
-      if (!dueDate) {
-        Alert.alert(
-          "Invalid Date",
-          "Please select a valid due date and try again."
-        );
-        setCreatingTask(false);
-        return;
-      }
-      if (Number.isNaN(dueDate.getTime())) {
-        throw new Error("Invalid due date - cannot create task");
-      }
-      const dueAtTimestamp = Timestamp.fromDate(dueDate);
+      const dueAtTimestamp = Timestamp.fromDate(newTaskDueAt);
       if (isEditMode) {
-        if (!editingTaskId) throw new Error("Missing task id for update.");
         const updatePayload = {
           title,
           ...subjectFields,
@@ -1642,11 +1649,12 @@ export default function TaskManagerScreen() {
         id: savedTaskId,
         title,
         subjectFields,
-        dueDate,
+        dueDate: newTaskDueAt,
         type,
         priority,
         source: editingTask?.source || "manual",
         createdAt: editingTaskCreatedAt || new Date(),
+        customReminderAt: customReminderAt ?? null,
       });
 
       upsertPendingTaskLocally(optimisticTask);
@@ -1657,8 +1665,8 @@ export default function TaskManagerScreen() {
       ]).catch((err) => {
         warnIfDev("Failed to load subject options after save:", err);
       });
+      queuePostSaveRefresh(savedTaskId, optimisticTask);
       dismissTaskEditor({ resetTaskView: true });
-      queuePostSaveRefresh(savedTaskId);
     } catch (error) {
       console.error(
         isEditMode ? "Failed to update task:" : "Failed to create task:",

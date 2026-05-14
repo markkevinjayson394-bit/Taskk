@@ -111,12 +111,24 @@ try {
         // Get all currently scheduled notification identifiers BEFORE clearing recovery intents
         // This prevents race conditions where new alarms are scheduled during recovery
         let scheduledIds = new Set();
+        let displayedIds = new Set();
         try {
           const scheduled =
             await Notifications.getAllScheduledNotificationsAsync();
           scheduledIds = new Set(scheduled.map((n) => n.request.identifier));
         } catch {
           scheduledIds = new Set();
+        }
+        
+        // Also check for displayed notifications (ongoing alarms that can't be swiped away)
+        try {
+          const notifeeModule = require("@notifee/react-native")?.default;
+          if (notifeeModule && typeof notifeeModule.getDisplayedNotifications === "function") {
+            const displayed = await notifeeModule.getDisplayedNotifications();
+            displayedIds = new Set(displayed.map((n) => n.id));
+          }
+        } catch {
+          displayedIds = new Set();
         }
 
         if (
@@ -180,19 +192,19 @@ try {
             };
           }
 
-          // Check if the current checkpoint alarm is already scheduled
+          // Check if the current checkpoint alarm is already scheduled or displayed
           const expectedId = buildNotificationId(
             "deadline-overdue",
             task.id,
             checkpoint.key // ← confirmed: uses .key (normalized in Step 2)
           );
-          if (scheduledIds.has(expectedId)) continue;
+          if (scheduledIds.has(expectedId) || displayedIds.has(expectedId)) continue;
           const currentExpectedId = buildNotificationId(
             "deadline-overdue",
             task.id,
             resolvedStageKey
           );
-          if (scheduledIds.has(currentExpectedId)) continue;
+          if (scheduledIds.has(currentExpectedId) || displayedIds.has(currentExpectedId)) continue;
 
           const pendingTriggerAt =
             Number.isFinite(currentStageInfo?.triggerAtMs) &&

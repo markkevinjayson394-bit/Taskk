@@ -86,22 +86,16 @@ const firebaseFromManifest = pickBestFirebaseCandidate(
 
 const runtimeEnv = /** @type {any} */ (globalThis)?.process?.env || {};
 
+// In React Native/Expo, only EXPO_PUBLIC_* variables are available at runtime.
+// The manifest/expoConfig is the primary source for public config values.
+// Runtime env vars should only be used as a fallback if manifest is empty.
 const firebaseFromEnv = sanitizeFirebaseConfig({
-  apiKey:
-    runtimeEnv.EXPO_PUBLIC_FIREBASE_API_KEY || runtimeEnv.FIREBASE_API_KEY,
-  authDomain:
-    runtimeEnv.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ||
-    runtimeEnv.FIREBASE_AUTH_DOMAIN,
-  projectId:
-    runtimeEnv.EXPO_PUBLIC_FIREBASE_PROJECT_ID ||
-    runtimeEnv.FIREBASE_PROJECT_ID,
-  storageBucket:
-    runtimeEnv.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ||
-    runtimeEnv.FIREBASE_STORAGE_BUCKET,
-  messagingSenderId:
-    runtimeEnv.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ||
-    runtimeEnv.FIREBASE_MESSAGING_SENDER_ID,
-  appId: runtimeEnv.EXPO_PUBLIC_FIREBASE_APP_ID || runtimeEnv.FIREBASE_APP_ID,
+  apiKey: runtimeEnv.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: runtimeEnv.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: runtimeEnv.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: runtimeEnv.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: runtimeEnv.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: runtimeEnv.EXPO_PUBLIC_FIREBASE_APP_ID,
 });
 
 const firebaseConfig = requiredFirebaseKeys.reduce((acc, key) => {
@@ -118,10 +112,21 @@ const firebaseConfigError = isFirebaseConfigured
   : `Missing Firebase config keys: ${missingFirebaseKeys.join(", ")}`;
 
 if (!isFirebaseConfigured) {
-  console.error("Firebase config is missing or invalid:", {
+  console.error("❌ Firebase config is missing or invalid:", {
     firebaseConfig,
     missingFirebaseKeys,
+    firebaseFromManifest: {
+      ...firebaseFromManifest,
+      // Redact sensitive values in logs
+      apiKey: firebaseFromManifest.apiKey ? "***" : undefined,
+    },
+    firebaseFromEnv: {
+      ...firebaseFromEnv,
+      apiKey: firebaseFromEnv.apiKey ? "***" : undefined,
+    },
   });
+} else {
+  console.log("✅ Firebase config loaded successfully");
 }
 
 /**

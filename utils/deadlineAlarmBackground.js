@@ -32,26 +32,26 @@ import { getNext8AM } from "./alarmTimeHelpers.js";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
 import { warnIfDev } from "./logger";
 import {
-    cancelNativeAlarmByScheduledId,
-    ensureNativeAlarmPermissions,
-    forceStopNativeAlarm,
-    isNativeAlarmScheduledId,
-    isNativeAlarmSupported,
-    scheduleNativeAlarm,
-    stopActiveNativeAlarm,
-    toNativeAlarmScheduledId,
+  cancelNativeAlarmByScheduledId,
+  ensureNativeAlarmPermissions,
+  forceStopNativeAlarm,
+  isNativeAlarmScheduledId,
+  isNativeAlarmSupported,
+  scheduleNativeAlarm,
+  stopActiveNativeAlarm,
+  toNativeAlarmScheduledId,
 } from "./nativeAlarm";
 import {
-    buildManagedNotificationData,
-    buildNotificationId,
+  buildManagedNotificationData,
+  buildNotificationId,
 } from "./notificationIds";
 import { isPlannerTask } from "./taskFilters";
 import {
-    advanceCheckpoint,
-    getCheckpoint,
-    resolveCurrentOverdueStageInfo,
-    resolveIntendedTriggerAt,
-    setCheckpoint,
+  advanceCheckpoint,
+  getCheckpoint,
+  resolveCurrentOverdueStageInfo,
+  resolveIntendedTriggerAt,
+  setCheckpoint,
 } from "./taskOverdueState";
 
 let notifeeModule = null;
@@ -862,6 +862,7 @@ async function scheduleOverdueCheckpointAlarm({
               autoDismiss: false,
               sound: "ctu_alarm.wav",
               vibrationPattern: [0, 400, 200, 400, 200, 800],
+              channelId: DEADLINE_CHANNEL_ID,
             }
           : {}),
       },
@@ -870,7 +871,6 @@ async function scheduleOverdueCheckpointAlarm({
           ? {
               type: "date",
               date: new Date(resolvedTriggerAt),
-              channelId: DEADLINE_CHANNEL_ID,
             }
           : { date: new Date(resolvedTriggerAt) },
     });
@@ -891,72 +891,27 @@ async function scheduleOverdueCheckpointAlarm({
 }
 
 async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
-  if (Platform.OS !== "android") {
-    await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
-    return Notifications.scheduleNotificationAsync({
-      identifier: id,
-      content: { title, body, data, sound: false },
-      trigger: { date: new Date(triggerAt) },
-    });
-  }
-
-  if (isNativeAlarmSupported) {
-    try {
-      const permissionState =
-        typeof ensureNativeAlarmPermissions === "function"
-          ? await ensureNativeAlarmPermissions({
-              requireExactAlarm: true,
-              requireFullScreen: false,
-              prompt: false,
-              source: `lead:${id}`,
-            })
-          : null;
-      const exactGranted = permissionState?.exactAlarm?.value !== false;
-      data.deliveryPath = exactGranted
-        ? "native_exact_lead"
-        : "native_inexact_lead";
-      data.scheduledAtMs = Date.now();
-      const scheduledId = await scheduleNativeAlarm({
-        alarmId: id,
-        triggerAt,
-        title,
-        body,
-        payload: data,
-      });
-      if (scheduledId) {
-        logAlarmSchedulingPath("lead", id, data.deliveryPath, {
-          stage: data?.stage ?? null,
-          intendedTriggerAt: triggerAt,
-          triggerAt,
-        });
-        return scheduledId;
-      }
-      logAlarmSchedulingPath("lead", id, "native_schedule_failed", {
-        stage: data?.stage ?? null,
-        intendedTriggerAt: triggerAt,
-        triggerAt,
-      });
-    } catch (err) {
-      warnIfDev(`scheduleLeadNotification native [${id}] failed:`, err);
-    }
-  }
-
+  // Lead notifications are dismissible banners, never full-screen popups.
+  // Always use expo-notifications scheduled path on the lead channel.
   try {
     await notifee.cancelNotification(id).catch(() => {});
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
-    data.deliveryPath = "expo_fallback";
+    data.deliveryPath = "expo_scheduled_lead";
     data.scheduledAtMs = Date.now();
+
     return Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
         body,
         data,
+        ...(Platform.OS === "android"
+          ? { channelId: LEAD_CHANNEL_ID }
+          : {}),
       },
       trigger: {
         type: "date",
         date: new Date(triggerAt),
-        channelId: LEAD_CHANNEL_ID, // ← only here
       },
     });
   } catch (err) {
@@ -971,11 +926,24 @@ async function scheduleDueMomentNotification({
   body,
   data,
   triggerAt,
+  retryCount = 0,
+  maxRetries = 3,
 }) {
+  const now = Date.now();
+  const triggerMs = new Date(triggerAt).getTime();
+  const delayMs = Math.max(0, triggerMs - now);
+
+  warnIfDev(`[Due Alarm] Scheduling notification ${id}`, {
+    triggerAt: new Date(triggerAt).toISOString(),
+    delayMs,
+    retryAttempt: retryCount,
+  });
+
   try {
     await notifee.cancelNotification(id).catch(() => {});
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
-    return Notifications.scheduleNotificationAsync({
+
+    const result = await Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
@@ -989,6 +957,7 @@ async function scheduleDueMomentNotification({
               autoDismiss: false,
               sound: "ctu_alarm.wav",
               vibrationPattern: [0, 400, 200, 400, 200, 800],
+              channelId: DEADLINE_CHANNEL_ID,
             }
           : {}),
       },
@@ -997,12 +966,39 @@ async function scheduleDueMomentNotification({
           ? {
               type: "date",
               date: new Date(triggerAt),
-              channelId: DEADLINE_CHANNEL_ID,
             }
           : { date: new Date(triggerAt) },
     });
+
+    warnIfDev(`[Due Alarm] Successfully scheduled ${id}`, { result, delayMs });
+    return result;
   } catch (err) {
-    warnIfDev(`scheduleDueMomentNotification [${id}] failed:`, err);
+    warnIfDev(
+      `[Due Alarm] Scheduling failed [${id}] attempt ${retryCount + 1}/${maxRetries}:`,
+      err
+    );
+
+    // Retry with exponential backoff if we haven't exceeded max retries
+    if (retryCount < maxRetries) {
+      const backoffMs = Math.min(1000 * Math.pow(2, retryCount), 5000);
+      warnIfDev(`[Due Alarm] Retrying in ${backoffMs}ms...`);
+
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+
+      return scheduleDueMomentNotification({
+        id,
+        title,
+        body,
+        data,
+        triggerAt,
+        retryCount: retryCount + 1,
+        maxRetries,
+      });
+    }
+
+    warnIfDev(
+      `[Due Alarm] Failed to schedule ${id} after ${maxRetries} retries`
+    );
     return null;
   }
 }
@@ -1175,6 +1171,14 @@ export async function scheduleDeadlineAlarms(
     const dueTitle = `🔔 ${taskTitle} is due NOW`;
     const dueBody = `"${taskTitle}" (${subjectLabel}) — tap Done or Not Done. Alarm loops until you respond.`;
     const dueContent = { title: dueTitle, body: dueBody };
+    warnIfDev(
+      `[scheduleDeadlineAlarms] Scheduling due alarm for task ${task.id}`,
+      {
+        dueAtMs: new Date(dueAtMs).toISOString(),
+        taskTitle,
+        delayMs: dueAtMs - now,
+      }
+    );
     const dueData = buildDeadlineAlarmData(
       dueId,
       task,
@@ -1244,6 +1248,7 @@ export async function scheduleDeadlineAlarms(
     if (!scheduledDueId) {
       dueData.deliveryPath = "expo_fallback";
       dueData.scheduledAtMs = Date.now();
+      warnIfDev(`[Due Alarm] Native failed, trying Expo fallback for ${dueId}`);
       scheduledDueId = await scheduleDueMomentNotification({
         id: dueId,
         title: dueContent.title,
@@ -1252,14 +1257,24 @@ export async function scheduleDeadlineAlarms(
         triggerAt: dueAtMs,
       });
       if (scheduledDueId) {
+        warnIfDev(`[Due Alarm] Expo fallback succeeded for ${dueId}`);
         logAlarmSchedulingPath("due", dueId, "expo_fallback", {
           stage: "due",
           intendedTriggerAt: dueAtMs,
           triggerAt: dueAtMs,
         });
+      } else {
+        warnIfDev(
+          `[Due Alarm] Expo fallback FAILED for ${dueId} - this is a critical issue!`
+        );
       }
     }
     if (scheduledDueId) ids.push(scheduledDueId);
+    
+    // Only schedule seed if native due alarm was NOT successfully scheduled.
+    // Seed is a fallback bridge to +15m — if native alarm succeeded it owns
+    // the due moment and advancing the chain. Scheduling both causes the
+    // +15m alarm to be cancelled and rescheduled immediately, breaking the chain.
     if (!scheduledDueId || !isNativeAlarmScheduledId(scheduledDueId)) {
       const seedTriggerAt = resolveIntendedTriggerAt(
         OVERDUE_SEED_TARGET_STAGE,
@@ -1372,13 +1387,18 @@ export async function rescheduleAllDeadlineAlarms(
   if (!Array.isArray(tasks) || tasks.length === 0) return [];
   const now = Date.now();
 
-  const results = await Promise.all(
-    tasks
-      .filter(
-        (task) =>
-          !task.completed && !isPlannerTask(task) && resolveTaskDueDate(task)
-      )
-      .map(async (task) => {
+  const eligible = tasks.filter(
+    (task) =>
+      !task.completed && !isPlannerTask(task) && resolveTaskDueDate(task)
+  );
+
+  const BATCH_SIZE = 5;
+  const results = [];
+
+  for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
+    const batch = eligible.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (task) => {
         // Check if task is already overdue and has an active checkpoint
         const dueMs = resolveTaskDueDate(task)?.getTime();
         if (dueMs && dueMs <= now) {
@@ -1407,7 +1427,10 @@ export async function rescheduleAllDeadlineAlarms(
         }
         return scheduleDeadlineAlarms(task, soundSettings, { force: true });
       })
-  );
+    );
+    results.push(...batchResults);
+  }
+
   return results.flat().filter(Boolean);
 }
 

@@ -78,25 +78,43 @@ function shouldIncludeInProfileTaskStats(task) {
 
 async function prepareProfilePhotoData(uri) {
   const maxBytes = MAX_BASE64_KB * 1024;
-  const compressed = await compressImageToBase64DataUri(uri, maxBytes);
-  if (compressed?.dataUri) {
-    return compressed;
+
+  try {
+    // Try compression first
+    const compressed = await compressImageToBase64DataUri(uri, maxBytes);
+
+    // Validate the result
+    if (
+      compressed &&
+      typeof compressed.dataUri === "string" &&
+      compressed.dataUri.startsWith("data:")
+    ) {
+      return compressed;
+    }
+  } catch (compressionErr) {
+    console.warn("Compression failed, trying fallback:", compressionErr);
   }
 
-  const base64 = await FileSystem.readAsStringAsync(uri, {
-    encoding: EncodingType.Base64,
-  });
-  const sizeBytes = Math.round(base64.length * 0.75);
-  if (sizeBytes > maxBytes) {
+  // Fallback: manual base64 encoding
+  try {
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: EncodingType.Base64,
+    });
+
+    const sizeBytes = Math.round(base64.length * 0.75);
+    if (sizeBytes > maxBytes) {
+      throw new Error(
+        "Photo is still too large. Try a tighter crop before uploading."
+      );
+    }
+
+    const dataUri = `data:image/jpeg;base64,${base64}`;
+    return { dataUri, sizeBytes };
+  } catch (err) {
     throw new Error(
-      "Photo is still too large. Try a tighter crop before uploading."
+      `Failed to process photo: ${err.message || "Unknown error"}`
     );
   }
-
-  return {
-    dataUri: `data:image/jpeg;base64,${base64}`,
-    sizeBytes,
-  };
 }
 
 function resolvePhotoUploadError(err) {
@@ -310,25 +328,38 @@ export default function ProfileScreen() {
 
     try {
       setUploading(true);
-      const { dataUri } = await prepareProfilePhotoData(result.assets[0].uri);
+
+      // Prepare photo with full error handling
+      const photoData = await prepareProfilePhotoData(
+        result.assets[0].uri
+      );
+
+      // Validate before uploading
+      if (!photoData?.dataUri || typeof photoData.dataUri !== "string") {
+        throw new Error("Invalid photo data");
+      }
+
+      // Upload to Firestore
       await setDoc(
         doc(db, "users", user.uid),
-        { photoBase64: dataUri },
+        { photoBase64: photoData.dataUri },
         { merge: true }
       );
 
       // Update local state and cache
       setProfile((p) => {
-        const updated = { ...p, photoBase64: dataUri };
+        const updated = { ...p, photoBase64: photoData.dataUri };
         AsyncStorage.setItem(
           profileCacheKey(user.uid),
           JSON.stringify(updated)
-        );
+        ).catch((cacheErr) => {
+          console.warn("Failed to cache photo:", cacheErr);
+        });
         return updated;
       });
       Alert.alert("Photo Updated", "Your profile picture has been saved.");
     } catch (err) {
-      console.warn("Failed to save profile photo:", err);
+      console.error("Failed to save profile photo:", err);
       const errorInfo = resolvePhotoUploadError(err);
       Alert.alert(errorInfo.title, errorInfo.body);
     } finally {

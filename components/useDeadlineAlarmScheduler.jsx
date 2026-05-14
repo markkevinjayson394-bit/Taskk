@@ -50,8 +50,8 @@ const OVERDUE_STAGES = new Set([
 ]);
 
 const OVERDUE_THRESHOLDS = OVERDUE_CHAIN.filter(
-  ({ stage }) => stage !== "due" && stage !== "daily"
-).map(({ stage: key, delayMs: ms }) => ({
+  ({ key }) => key !== "due" && key !== "daily"
+).map(({ key, delayMs: ms }) => ({
   key,
   ms,
   window:

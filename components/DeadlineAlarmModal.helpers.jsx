@@ -24,31 +24,52 @@ export {
 // Sound
 // ---------------------------------------------------------------------------
 
-export async function playAlarmSound(soundRef) {
+export async function playAlarmSound(soundRef, cancelRef = null, retryCount = 0) {
   if (!Audio) return;
   try {
     await Audio.setAudioModeAsync({
       playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
+      staysActiveInBackground: true,      // keeps audio alive when screen locks
+      interruptionModeIOS: 1,             // DO_NOT_MIX
+      interruptionModeAndroid: 1,         // DO_NOT_MIX
+      shouldDuckAndroid: false,           // full volume, no ducking
+      playThroughEarpieceAndroid: false,
     });
-    // Stop and unload any previously playing sound first to prevent orphaning
+
     if (soundRef.current) {
       await soundRef.current.stopAsync().catch(() => {});
       await soundRef.current.unloadAsync().catch(() => {});
       soundRef.current = null;
     }
+
     const { sound } = await Audio.Sound.createAsync(
       require("../assets/sounds/ctu_alarm.wav"),
       { shouldPlay: true, isLooping: true, volume: 1.0 }
     );
+
+    // Stop was requested while sound was loading — don't assign
+    if (cancelRef?.current) {
+      await sound.stopAsync().catch(() => {});
+      await sound.unloadAsync().catch(() => {});
+      return;
+    }
+
     soundRef.current = sound;
   } catch (err) {
     soundRef.current = null;
     console.warn("DeadlineAlarmModal: audio unavailable", err);
+    if (retryCount < 2) {
+      await new Promise(r => setTimeout(r, 500 * (retryCount + 1)));
+      return playAlarmSound(soundRef, cancelRef, retryCount + 1);
+    }
   }
 }
 
-export async function stopAlarmSound(soundRef) {
+export async function stopAlarmSound(soundRef, cancelRef = null) {
+  // Signal cancellation so in-flight createAsync doesn't assign after stop
+  if (cancelRef) {
+    cancelRef.current = true;
+  }
   try {
     if (soundRef.current) {
       await soundRef.current.stopAsync();

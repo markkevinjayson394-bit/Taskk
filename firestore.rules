@@ -39,6 +39,14 @@ service cloud.firestore {
       );
     }
 
+    // Allow profile updates (photoBase64, fullName, etc.)
+    function validUserProfileUpdate(data) {
+      return (!("photoBase64" in data) || data.photoBase64 is string)
+        && (!("fullName" in data) || (data.fullName is string && data.fullName.size() > 0))
+        && (!("role" in data) || data.role is string)
+        && (!("studentInfo" in data) || data.studentInfo is map);
+    }
+
     function validTaskType(data) {
       return !("type" in data)
         || data.type in ["assignment", "quiz", "exam", "project", "review", "custom"];
@@ -145,7 +153,8 @@ service cloud.firestore {
         && validUserRoleOnCreate(request.resource.data);
       allow read: if isOwner(userId) || isAdmin();
       allow update: if (isOwner(userId)
-        && validUserRoleOnOwnerUpdate())
+        && validUserRoleOnOwnerUpdate()
+        && validUserProfileUpdate(request.resource.data))
         || isAdmin();
       allow delete: if isAdmin();
 

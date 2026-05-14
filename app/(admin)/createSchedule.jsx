@@ -135,24 +135,27 @@ export default function CreateSchedule() {
   );
 
   /* ---------- LOAD EDIT DATA ---------- */
-  const isLoaded = useRef(false);
+  const loadedIdRef = useRef(null);
 
   useEffect(() => {
-    if (existingData && !isLoaded.current) {
-      isLoaded.current = true;
-      const inferredCollege =
-        normalizeCollege(existingData.college) ||
-        findCollegeForCourse(existingData.course) ||
-        DEFAULT_COLLEGE;
-      setCollege(inferredCollege);
-      setCourse(existingData.course || DEFAULT_COURSE);
-      setYear(existingData.year || "1");
-      setSection(existingData.section || "A");
-      setSemester(existingData.semester || SEMESTERS[0] || "");
-      setAcademicYear(existingData.academicYear || DEFAULT_SCHOOL_YEAR);
-      setScheduleType(normalizeScheduleTypeValue(existingData.scheduleType));
-      setWeekClasses(existingData.weekSchedule || createEmptyWeek());
-    }
+    if (!existingData) return;
+    // Use the doc ID as the guard so it only loads once per unique schedule
+    const incomingId = existingData.id ?? JSON.stringify(existingData);
+    if (loadedIdRef.current === incomingId) return;
+    loadedIdRef.current = incomingId;
+
+    const inferredCollege =
+      normalizeCollege(existingData.college) ||
+      findCollegeForCourse(existingData.course) ||
+      DEFAULT_COLLEGE;
+    setCollege(inferredCollege);
+    setCourse(existingData.course || DEFAULT_COURSE);
+    setYear(existingData.year || "1");
+    setSection(existingData.section || "A");
+    setSemester(existingData.semester || SEMESTERS[0] || "");
+    setAcademicYear(existingData.academicYear || DEFAULT_SCHOOL_YEAR);
+    setScheduleType(normalizeScheduleTypeValue(existingData.scheduleType));
+    setWeekClasses(existingData.weekSchedule || createEmptyWeek());
   }, [existingData]);
 
   useEffect(() => {
@@ -408,12 +411,20 @@ export default function CreateSchedule() {
       await setDoc(ref, payload);
 
       const previousId =
-        typeof existingData?.id === "string" ? existingData.id : "";
+        typeof existingData?.id === "string" ? existingData.id.trim() : "";
+      // Only delete old doc if it's a genuinely different document
       if (previousId && previousId !== docId) {
+        // Double-check the new doc was written before deleting the old one
         try {
-          await deleteDoc(doc(db, "schedules", previousId));
+          const newDocSnap = await getDoc(doc(db, "schedules", docId));
+          if (newDocSnap.exists()) {
+            await deleteDoc(doc(db, "schedules", previousId));
+          } else {
+            console.warn("New doc not confirmed in Firestore, skipping old doc deletion.");
+          }
         } catch (cleanupError) {
           console.warn("Old schedule cleanup skipped:", cleanupError);
+          // Do NOT re-throw — save already succeeded
         }
       }
 

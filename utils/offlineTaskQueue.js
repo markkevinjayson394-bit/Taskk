@@ -14,17 +14,33 @@
     "customReminderAt",
   ];
 
+  function isFirestoreSentinel(value) {
+    // Firestore FieldValue sentinels have an internal _methodName property
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      typeof value._methodName === "string"
+    );
+  }
+
   function hydrateTaskDates(task = {}) {
     const hydrated = { ...task };
     TASK_DATE_FIELDS.forEach((field) => {
-      if (task[field] === null) {
+      const val = task[field];
+      if (isFirestoreSentinel(val)) {
+        // Replace sentinel with current time so the queue item isn't dropped
+        hydrated[field] = new Date();
+        warnIfDev(`offlineTaskQueue: replaced Firestore sentinel in field "${field}" with Date.now()`);
+        return;
+      }
+      if (val === null) {
         hydrated[field] = null;
         return;
       }
-      const parsed = normalizeTaskDateInput(task[field]);
+      const parsed = normalizeTaskDateInput(val);
       if (parsed) {
         hydrated[field] = parsed;
-      } else if (task[field] === undefined) {
+      } else if (val === undefined) {
         delete hydrated[field];
       } else {
         delete hydrated[field];

@@ -1968,7 +1968,7 @@ export function NotificationProvider({ children }) {
     }
   };
 
-  const rescheduleDeadlineAlarmsForTask = async (taskId) => {
+  const rescheduleDeadlineAlarmsForTask = async (taskId, providedTask) => {
     const user = auth.currentUser;
     if (!user || !taskId) return;
 
@@ -1987,6 +1987,17 @@ export function NotificationProvider({ children }) {
           return;
         }
         await scheduleDeadlineAlarms(offlineTask, {
+          taskAlarmSoundUri: settingsRef.current.taskAlarmSoundUri,
+          taskAlarmSoundLabel: settingsRef.current.taskAlarmSoundLabel,
+        });
+        completed = true;
+        return;
+      }
+
+      // For newly created tasks, if we have the task data available, use it directly
+      // to avoid race conditions with Firestore replication
+      if (providedTask && providedTask.id === taskId) {
+        await scheduleDeadlineAlarms(providedTask, {
           taskAlarmSoundUri: settingsRef.current.taskAlarmSoundUri,
           taskAlarmSoundLabel: settingsRef.current.taskAlarmSoundLabel,
         });

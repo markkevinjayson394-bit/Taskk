@@ -52,7 +52,7 @@
     "expo-task-manager": "~14.0.9",
     "expo-updates": "~29.0.16",
     "expo-web-browser": "~15.0.11",
-    "firebase": "^10.14.1",
+    "firebase": "^12.13.0",
     "jest-expo": "~54.0.17",
     "react": "19.1.0",
     "react-dom": "19.1.0",

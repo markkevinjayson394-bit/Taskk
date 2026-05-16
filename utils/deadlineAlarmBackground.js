@@ -2,56 +2,57 @@
  * utils/deadlineAlarmBackground.js
  *
  * CHANGES IN THIS VERSION:
- * - [NEW] Overdue alarms are now `ongoing: true` + `autoCancel: false` on Android
- *   so they cannot be swiped away from the shade — only Done / Not Done clears them.
- * - [NEW] Lead-time notifications now include:
- *      sound: "ctu_alarm" on the notifee channel
- *      smallIcon / largeIcon via notifee for Android
- *      vibration pattern
- * - [NEW] A separate "lead" notifee channel (LEAD_CHANNEL_ID) with lower importance
- *   so lead-time pings don't feel as intrusive as the due-moment alarm.
- * - [NEW] scheduleLeadNotification() uses notifee.displayNotification for the
- *   immediate display path and Notifications.scheduleNotificationAsync for the
- *   future-scheduled path — both carry icon + sound.
- * - [FIX] iOS DateTimePicker maximumDate guard already done in TaskEditorModal;
- *   no changes needed here for that.
- * - [NEW] Overdue checkpoint alarms now ALSO post an immediate notifee notification
- *   (persistent, with Done / Not Done action buttons, sound, and vibration) via
- *   displayAlarmNotification() whenever the alarm fires — covering both the
- *   native-alarm path (AlarmDisplayTask → displayAlarmNotification) and the
- *   expo-notifications fallback path. The fallback now calls
- *   displayAlarmNotification() directly for already-overdue tasks so the full
- *   alarm-grade notification appears in the shade immediately.
- * - [FIX 8] Handle "daily" stage in scheduleDeadlineAlarms — schedule next 8AM explicitly
+ * - [FIX] Removed LEAD_BUFFER_MS (1-min early trigger buffer) — lead notifications
+ *   now fire at exactly dueAtMs - lead.ms.
+ * - [FIX] Shade action buttons renamed: ACTION_MARK_DONE → "Open" (opens app to modal),
+ *   ACTION_NOT_DONE → "Not Done" (advances chain, reschedules silently).
+ *   Completion only happens inside the alarm modal, never from the shade.
+ * - [FIX] scheduleNextOverdueAlarm / scheduleOverdueCheckpointAlarm now cancels ALL
+ *   existing shade notifications for the task before posting the next one, so only
+ *   one shade notification exists at a time as the chain advances.
  */
 
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import { resolveTaskDueDate } from "./academicTaskModel";
+import {
+    logScheduleFailed,
+    logScheduleStart,
+    logScheduleSuccess,
+} from "./alarmDiagnostics";
 import { getNext8AM } from "./alarmTimeHelpers.js";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
 import { warnIfDev } from "./logger";
 import {
-  cancelNativeAlarmByScheduledId,
-  ensureNativeAlarmPermissions,
-  forceStopNativeAlarm,
-  isNativeAlarmScheduledId,
-  isNativeAlarmSupported,
-  scheduleNativeAlarm,
-  stopActiveNativeAlarm,
-  toNativeAlarmScheduledId,
+    cancelNativeAlarmByScheduledId,
+    ensureNativeAlarmPermissions,
+    forceStopNativeAlarm,
+    isNativeAlarmScheduledId,
+    isNativeAlarmSupported,
+    scheduleNativeAlarm,
+    stopActiveNativeAlarm,
+    toNativeAlarmScheduledId,
 } from "./nativeAlarm";
 import {
-  buildManagedNotificationData,
-  buildNotificationId,
+    buildManagedNotificationData,
+    buildNotificationId,
 } from "./notificationIds";
+import {
+    cancelDeadlineNotifications as cancelSharedDeadlineNotifications,
+    DEADLINE_ACTION_NOT_DONE,
+    DEADLINE_ACTION_OPEN,
+    DEADLINE_NOTIF_TYPE,
+    dismissDeadlinePresentations,
+    logDeadlineFlow,
+    normalizeDeadlineAlarmAction,
+} from "./deadlineNotifications";
 import { isPlannerTask } from "./taskFilters";
 import {
-  advanceCheckpoint,
-  getCheckpoint,
-  resolveCurrentOverdueStageInfo,
-  resolveIntendedTriggerAt,
-  setCheckpoint,
+    advanceCheckpoint,
+    getCheckpoint,
+    resolveCurrentOverdueStageInfo,
+    resolveIntendedTriggerAt,
+    setCheckpoint,
 } from "./taskOverdueState";
 
 let notifeeModule = null;
@@ -68,7 +69,6 @@ const notifee = notifeeModule?.default ?? {
   createChannel: async () => null,
   displayNotification: async () => null,
   cancelNotification: async () => null,
-  AndroidColor: { RED: "#ff0000" },
 };
 const AndroidCategory = notifeeModule?.AndroidCategory ?? {
   ALARM: "alarm",
@@ -80,14 +80,12 @@ const AndroidImportance = notifeeModule?.AndroidImportance ?? {
 const AndroidVisibility = notifeeModule?.AndroidVisibility ?? {
   PUBLIC: "public",
 };
+const AndroidColor = notifeeModule?.AndroidColor ?? { RED: "#ff0000" };
 const isNotifeeAvailable = Boolean(notifeeModule?.default);
 
-export const DEADLINE_NOTIF_TYPE = "deadline_alarm";
 export const DEADLINE_CHANNEL_ID = "ctu-deadline-alarms-v2";
 export const LEAD_CHANNEL_ID = "ctu-deadline-lead-v2";
 export const DEADLINE_CATEGORY_ID = "deadline_alarm_actions";
-export const ACTION_NOT_DONE = "not_done_deadline_alarm";
-export const ACTION_MARK_DONE = "mark_done_deadline_alarm";
 export const ALARM_KIND_LEAD_NOTICE = "lead_notice";
 export const ALARM_KIND_DUE_ALARM = "due_alarm";
 export const ALARM_KIND_OVERDUE_ALARM = "overdue_alarm";
@@ -99,6 +97,8 @@ const SMALL_ICON = "notification_icon";
 const LARGE_ICON = "ic_launcher_round";
 const IMMEDIATE_CATCHUP_DELAY_MS = 1500;
 const OVERDUE_SEED_TARGET_STAGE = "+15m";
+
+// [FIX] Removed LEAD_BUFFER_MS — lead notifications fire at exact threshold time.
 
 const LEAD_TIMES = [
   { key: "1d", ms: 24 * 60 * 60 * 1000, label: "1 day" },
@@ -182,6 +182,17 @@ async function cancelManagedNotificationId(id) {
 async function cancelOverdueSeedAlarm(taskId) {
   if (!taskId) return;
   await cancelManagedNotificationId(getOverdueSeedId(taskId));
+}
+
+/**
+ * [FIX] Cancel ALL shade notifications for a task across every overdue stage
+ * before posting a new one. This ensures only one shade notification exists
+ * at a time as the overdue chain advances.
+ */
+async function cancelAllShadeNotificationsForTask(taskId) {
+  if (!taskId) return;
+  await dismissDeadlinePresentations(taskId);
+  await cancelOverdueSeedAlarm(taskId);
 }
 
 function buildAlarmTimingMeta({
@@ -294,14 +305,16 @@ async function bootstrapDeadlineActionCategory() {
   try {
     await Notifications.setNotificationCategoryAsync(DEADLINE_CATEGORY_ID, [
       {
-        identifier: ACTION_MARK_DONE,
-        buttonTitle: "Done",
+        // [FIX] "Open" — just opens app to alarm modal, does NOT complete task
+        identifier: DEADLINE_ACTION_OPEN,
+        buttonTitle: "Open",
         options: { opensAppToForeground: true },
       },
       {
-        identifier: ACTION_NOT_DONE,
+        // "Not Done" — advances chain, reschedules
+        identifier: DEADLINE_ACTION_NOT_DONE,
         buttonTitle: "Not Done",
-        options: { opensAppToForeground: true },
+        options: { opensAppToForeground: false },
       },
     ]);
   } catch (err) {
@@ -328,7 +341,7 @@ export async function bootstrapDeadlineAlarmChannel() {
         description: "Urgent alerts for upcoming task deadlines",
         importance: Notifications.AndroidImportance?.MAX ?? 5,
         sound: "ctu_alarm.wav",
-        vibrationPattern: [0, 600, 900], // Pattern repeats indefinitely for alarm clock behavior
+        vibrationPattern: [0, 600, 900],
         lockscreenVisibility:
           Notifications.AndroidNotificationVisibility?.PUBLIC,
         bypassDnd: true,
@@ -353,9 +366,9 @@ export async function bootstrapDeadlineAlarmChannel() {
       importance: AndroidImportance.HIGH,
       sound: "ctu_alarm",
       vibration: true,
-      vibrationPattern: [0, 600, 900], // Pattern repeats indefinitely for alarm clock behavior
+      vibrationPattern: [600, 900],
       lights: true,
-      lightColor: notifee.AndroidColor.RED,
+      lightColor: AndroidColor.RED,
       visibility: AndroidVisibility.PUBLIC,
       bypassDnd: true,
     });
@@ -373,13 +386,6 @@ export async function bootstrapDeadlineAlarmChannel() {
   } catch (err) {
     warnIfDev("bootstrapDeadlineAlarmChannel failed:", err);
   }
-}
-
-function getDeadlineNotificationIds(taskId, thresholdKey) {
-  if (thresholdKey === "due") {
-    return [buildNotificationId("deadline-due", taskId, "due")];
-  }
-  return [buildNotificationId("deadline-lead", taskId, thresholdKey)];
 }
 
 function buildLeadTitle(label) {
@@ -458,6 +464,28 @@ function buildDeadlineAlarmData(
     ...(meta.alarmSoundUri ? { alarmSoundUri: meta.alarmSoundUri } : {}),
     ...extra,
   });
+}
+
+function normalizeNotificationData(data = {}) {
+  if (!data || typeof data !== "object") return {};
+
+  return Object.entries(data).reduce((normalized, [key, value]) => {
+    if (value === undefined || value === null) return normalized;
+    if (typeof value === "string") {
+      normalized[key] = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      normalized[key] = String(value);
+    } else if (value instanceof Date) {
+      normalized[key] = value.toISOString();
+    } else {
+      try {
+        normalized[key] = JSON.stringify(value);
+      } catch (_error) {
+        normalized[key] = String(value);
+      }
+    }
+    return normalized;
+  }, {});
 }
 
 function buildOverdueAlarmBody(taskTitle, subjectLabel, dueAtMs, stageKey) {
@@ -545,6 +573,11 @@ function buildTaskFromNotificationData(data = {}, dueAtMs) {
   };
 }
 
+/**
+ * [FIX] Shade notification android config.
+ * "Open" button (ACTION_MARK_DONE) just opens the app — opensAppToForeground handled
+ * by the category. "Not Done" advances chain without opening app.
+ */
 function buildOverdueNotifeeAndroid({
   isOngoing = true,
   allowFullScreen = true,
@@ -556,7 +589,7 @@ function buildOverdueNotifeeAndroid({
     smallIcon: SMALL_ICON,
     largeIcon: LARGE_ICON,
     sound: "ctu_alarm",
-    vibrationPattern: [0, 600, 900], // Pattern repeats indefinitely for alarm clock behavior
+    vibrationPattern: [600, 900],
     lights: ["#ef4444", 300, 300],
     bypassDnd: true,
     visibility: AndroidVisibility.PUBLIC,
@@ -574,12 +607,14 @@ function buildOverdueNotifeeAndroid({
     pressAction: { id: "default", launchActivity: "default" },
     actions: [
       {
-        title: "✅ Done",
-        pressAction: { id: ACTION_MARK_DONE, launchActivity: "default" },
+        // [FIX] "Open" — opens app to alarm modal, completion happens in modal only
+        title: "🔔 Open",
+        pressAction: { id: DEADLINE_ACTION_OPEN, launchActivity: "default" },
       },
       {
+        // "Not Done" — advances chain, reschedules, no app open
         title: "⏰ Not Done",
-        pressAction: { id: ACTION_NOT_DONE, launchActivity: "default" },
+        pressAction: { id: DEADLINE_ACTION_NOT_DONE, launchActivity: "default" },
       },
     ],
   };
@@ -651,13 +686,13 @@ export async function displayAlarmNotification({
     resolvedData?.deliveryPath
   );
 
-  if (!isNotifeeAvailable) {
+  if (!isNotifeeAvailable && Platform.OS !== "android") {
     await Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
         body,
-        data: resolvedData,
+        data: normalizeNotificationData(resolvedData),
         categoryIdentifier: DEADLINE_CATEGORY_ID,
         ...(Platform.OS === "android"
           ? {
@@ -665,7 +700,7 @@ export async function displayAlarmNotification({
               sticky: isOngoing !== false,
               autoDismiss: isOngoing === false,
               sound: "ctu_alarm.wav",
-              vibrationPattern: [0, 600, 900], // Pattern repeats indefinitely for alarm clock behavior
+              vibrationPattern: [0, 600, 900],
             }
           : {}),
       },
@@ -674,11 +709,16 @@ export async function displayAlarmNotification({
     return;
   }
 
+  if (!isNotifeeAvailable) {
+    warnIfDev(`[deadlineAlarm] Notifee unavailable for display ${id}`);
+    return;
+  }
+
   await notifee.displayNotification({
     id,
     title,
     body,
-    data: resolvedData,
+    data: normalizeNotificationData(resolvedData),
     android: buildOverdueNotifeeAndroid({
       isOngoing: isOngoing !== false,
       allowFullScreen,
@@ -687,23 +727,28 @@ export async function displayAlarmNotification({
 }
 
 export async function displayLeadNotification({ id, title, body, data }) {
-  if (!isNotifeeAvailable) {
+  if (!isNotifeeAvailable && Platform.OS !== "android") {
     await Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
         title,
         body,
-        data: {
+        data: normalizeNotificationData({
           ...data,
           type: DEADLINE_NOTIF_TYPE,
           notificationType: DEADLINE_NOTIF_TYPE,
           alarmKind: ALARM_KIND_LEAD_NOTICE,
           isLeadTime: true,
           acknowledgeRequired: false,
-        },
+        }),
       },
       trigger: null,
     });
+    return;
+  }
+
+  if (!isNotifeeAvailable) {
+    warnIfDev(`[deadlineAlarm] Notifee unavailable for lead display ${id}`);
     return;
   }
 
@@ -711,14 +756,14 @@ export async function displayLeadNotification({ id, title, body, data }) {
     id,
     title,
     body,
-    data: {
+    data: normalizeNotificationData({
       ...data,
       type: DEADLINE_NOTIF_TYPE,
       notificationType: DEADLINE_NOTIF_TYPE,
       alarmKind: ALARM_KIND_LEAD_NOTICE,
       isLeadTime: true,
       acknowledgeRequired: false,
-    },
+    }),
     android: buildLeadNotifeeAndroid(),
   });
 }
@@ -784,8 +829,15 @@ async function scheduleOverdueCheckpointAlarm({
     }),
   });
 
-  await cancelOverdueSeedAlarm(task.id);
+  // [FIX] Cancel ALL existing shade notifications for this task before posting
+  // the new overdue one — ensures only one shade notification exists at a time.
+  await cancelAllShadeNotificationsForTask(task.id);
   await setCheckpoint(task.id, resolvedCheckpoint.key, resolvedTriggerAt);
+
+  // Schedule BOTH native and Expo for redundancy — overdue alarms are critical
+  // and must ring reliably even if one system fails.
+  let nativeId = null;
+  let expoId = null;
 
   if (Platform.OS === "android" && isNativeAlarmSupported) {
     let permissionState = null;
@@ -808,91 +860,97 @@ async function scheduleOverdueCheckpointAlarm({
         );
         data.deliveryPath = nativePath;
         data.scheduledAtMs = Date.now();
-        const result = await scheduleNativeAlarm({
+        nativeId = await scheduleNativeAlarm({
           alarmId: id,
           triggerAt: resolvedTriggerAt,
           title: resolvedTitle,
           body,
           payload: data,
         });
-        if (result) {
+        if (nativeId) {
           logAlarmSchedulingPath("overdue", id, nativePath, {
             stage: resolvedCheckpoint.key,
             intendedTriggerAt: resolvedIntendedTriggerAtMs,
             triggerAt: resolvedTriggerAt,
           });
-          return result;
+        } else {
+          logAlarmSchedulingPath(
+            "overdue",
+            id,
+            buildDeliveryPath("native_schedule_failed", deliveryPathHint),
+            {
+              stage: resolvedCheckpoint.key,
+              intendedTriggerAt: resolvedIntendedTriggerAtMs,
+              triggerAt: resolvedTriggerAt,
+            }
+          );
         }
-        logAlarmSchedulingPath(
-          "overdue",
-          id,
-          buildDeliveryPath("native_schedule_failed", deliveryPathHint),
-          {
-            stage: resolvedCheckpoint.key,
-            intendedTriggerAt: resolvedIntendedTriggerAtMs,
-            triggerAt: resolvedTriggerAt,
-          }
-        );
       }
     } catch (err) {
       warnIfDev("scheduleOverdueCheckpointAlarm native failed:", err);
     }
+  }
+
+  if (!nativeId) {
+    try {
+      await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+      const expoDeliveryPath = buildDeliveryPath(
+        nativeId ? "expo_backup" : "expo_primary",
+        deliveryPathHint
+      );
+      data.deliveryPath = expoDeliveryPath;
+      data.scheduledAtMs = Date.now();
+
+      expoId = await Notifications.scheduleNotificationAsync({
+        identifier: id,
+        content: {
+          title: resolvedTitle,
+          body,
+          data,
+          categoryIdentifier: DEADLINE_CATEGORY_ID,
+          ...(Platform.OS === "android"
+            ? {
+                priority: "max",
+                sticky: true,
+                autoDismiss: false,
+                sound: "ctu_alarm.wav",
+                vibrationPattern: [0, 400, 200, 400, 200, 800],
+                channelId: DEADLINE_CHANNEL_ID,
+              }
+            : {}),
+        },
+        trigger:
+          Platform.OS === "android"
+            ? {
+                type: "date",
+                date: new Date(resolvedTriggerAt),
+              }
+            : { date: new Date(resolvedTriggerAt) },
+      });
+
+      if (expoId) {
+        logAlarmSchedulingPath("overdue", id, expoDeliveryPath, {
+          stage: resolvedCheckpoint.key,
+          intendedTriggerAt: resolvedIntendedTriggerAtMs,
+          triggerAt: resolvedTriggerAt,
+        });
+      }
+    } catch (err) {
+      warnIfDev("scheduleOverdueCheckpointAlarm Expo failed:", err);
+    }
+  }
+
+  const scheduledId = nativeId || expoId;
+  if (!scheduledId) {
     warnIfDev(
-      "scheduleOverdueCheckpointAlarm: falling back to expo-notifications for " +
-        resolvedCheckpoint.key
+      `scheduleOverdueCheckpointAlarm: CRITICAL - both native and Expo failed for ${id}`
     );
   }
 
-  try {
-    await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
-    data.deliveryPath = buildDeliveryPath("expo_fallback", deliveryPathHint);
-    data.scheduledAtMs = Date.now();
-
-    const scheduledId = await Notifications.scheduleNotificationAsync({
-      identifier: id,
-      content: {
-        title: resolvedTitle,
-        body,
-        data,
-        categoryIdentifier: DEADLINE_CATEGORY_ID,
-        ...(Platform.OS === "android"
-          ? {
-              priority: "max",
-              sticky: true,
-              autoDismiss: false,
-              sound: "ctu_alarm.wav",
-              vibrationPattern: [0, 400, 200, 400, 200, 800],
-              channelId: DEADLINE_CHANNEL_ID,
-            }
-          : {}),
-      },
-      trigger:
-        Platform.OS === "android"
-          ? {
-              type: "date",
-              date: new Date(resolvedTriggerAt),
-            }
-          : { date: new Date(resolvedTriggerAt) },
-    });
-
-    if (scheduledId) {
-      logAlarmSchedulingPath("overdue", id, data.deliveryPath, {
-        stage: resolvedCheckpoint.key,
-        intendedTriggerAt: resolvedIntendedTriggerAtMs,
-        triggerAt: resolvedTriggerAt,
-      });
-    }
-
-    return scheduledId;
-  } catch (err) {
-    warnIfDev("scheduleOverdueCheckpointAlarm failed:", err);
-    return null;
-  }
+  return scheduledId;
 }
 
 async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
-  // Lead notifications are dismissible banners, never full-screen popups.
-  // Always use expo-notifications scheduled path on the lead channel.
   try {
     await notifee.cancelNotification(id).catch(() => {});
     await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
@@ -905,9 +963,7 @@ async function scheduleLeadNotification({ id, title, body, data, triggerAt }) {
         title,
         body,
         data,
-        ...(Platform.OS === "android"
-          ? { channelId: LEAD_CHANNEL_ID }
-          : {}),
+        ...(Platform.OS === "android" ? { channelId: LEAD_CHANNEL_ID } : {}),
       },
       trigger: {
         type: "date",
@@ -978,13 +1034,10 @@ async function scheduleDueMomentNotification({
       err
     );
 
-    // Retry with exponential backoff if we haven't exceeded max retries
     if (retryCount < maxRetries) {
       const backoffMs = Math.min(1000 * Math.pow(2, retryCount), 5000);
       warnIfDev(`[Due Alarm] Retrying in ${backoffMs}ms...`);
-
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
-
       return scheduleDueMomentNotification({
         id,
         title,
@@ -1071,9 +1124,6 @@ async function scheduleOverdueSeedAlarm({
   }
 }
 
-/**
- * Schedule daily overdue alarm for specified trigger time (typically 8AM)
- */
 async function scheduleDailyOverdueAlarm(
   task,
   triggerAt,
@@ -1113,11 +1163,7 @@ export async function scheduleDeadlineAlarms(
     return [];
   }
 
-  // Guarantee channels exist before any scheduling
   await bootstrapDeadlineAlarmChannel();
-
-  // At the start of scheduleDeadlineAlarms, cancel any existing
-  // displayed notifications before scheduling new ones
 
   const due = resolveTaskDueDate(task);
   if (!due) return [];
@@ -1126,15 +1172,15 @@ export async function scheduleDeadlineAlarms(
   const ids = [];
   const dueAtMs = due.getTime();
 
+  await logScheduleStart(task.id, task.title, dueAtMs);
   await cancelDeadlineAlarms(task);
 
   const { taskTitle, subjectLabel } = getTaskAlarmMeta(task, soundSettings);
 
   // Layer 1: lead-time warnings
+  // [FIX] No LEAD_BUFFER_MS — fires at exactly dueAtMs - lead.ms
   for (const lead of LEAD_TIMES) {
-    const LEAD_BUFFER_MS = 1 * 60 * 1000; // 1-minute buffer to compensate for system notification delays
-    const triggerTime = dueAtMs - lead.ms - LEAD_BUFFER_MS;
-    // Skip if trigger is in the past (with a 5s grace for scheduling latency)
+    const triggerTime = dueAtMs - lead.ms;
     const GRACE_PERIOD_MS = 5_000;
     if (triggerTime <= now + GRACE_PERIOD_MS) {
       warnIfDev(
@@ -1154,13 +1200,27 @@ export async function scheduleDeadlineAlarms(
       acknowledgeRequired: false,
     });
 
-    const scheduledId = await scheduleLeadNotification({
-      id,
-      title: leadTitle,
-      body: leadBody,
-      data,
-      triggerAt: triggerTime,
-    });
+    let scheduledId = null;
+    if (Platform.OS === "android" && isNativeAlarmSupported) {
+      data.deliveryPath = "native_lead";
+      data.scheduledAtMs = Date.now();
+      scheduledId = await scheduleNativeAlarm({
+        alarmId: id,
+        triggerAt: triggerTime,
+        title: leadTitle,
+        body: leadBody,
+        payload: data,
+      });
+    }
+    if (!scheduledId) {
+      scheduledId = await scheduleLeadNotification({
+        id,
+        title: leadTitle,
+        body: leadBody,
+        data,
+        triggerAt: triggerTime,
+      });
+    }
     if (scheduledId) ids.push(scheduledId);
   }
 
@@ -1169,7 +1229,7 @@ export async function scheduleDeadlineAlarms(
   if (dueAtMs > now) {
     const dueId = buildNotificationId("deadline-due", task.id, "due");
     const dueTitle = `🔔 ${taskTitle} is due NOW`;
-    const dueBody = `"${taskTitle}" (${subjectLabel}) — tap Done or Not Done. Alarm loops until you respond.`;
+    const dueBody = `"${taskTitle}" (${subjectLabel}) — tap Open or Not Done.`;
     const dueContent = { title: dueTitle, body: dueBody };
     warnIfDev(
       `[scheduleDeadlineAlarms] Scheduling due alarm for task ${task.id}`,
@@ -1219,6 +1279,10 @@ export async function scheduleDeadlineAlarms(
           payload: dueData,
         });
         if (scheduledDueId) {
+          await logScheduleSuccess(task.id, dueId, "native_alarm", {
+            stage: "due",
+            delayMs: dueAtMs - now,
+          });
           logAlarmSchedulingPath("due", dueId, dueData.deliveryPath, {
             stage: "due",
             intendedTriggerAt: dueAtMs,
@@ -1246,7 +1310,8 @@ export async function scheduleDeadlineAlarms(
     }
 
     if (!scheduledDueId) {
-      dueData.deliveryPath = "expo_fallback";
+      dueData.deliveryPath =
+        Platform.OS === "android" ? "expo_fallback_android" : "expo_fallback";
       dueData.scheduledAtMs = Date.now();
       warnIfDev(`[Due Alarm] Native failed, trying Expo fallback for ${dueId}`);
       scheduledDueId = await scheduleDueMomentNotification({
@@ -1257,6 +1322,10 @@ export async function scheduleDeadlineAlarms(
         triggerAt: dueAtMs,
       });
       if (scheduledDueId) {
+        await logScheduleSuccess(task.id, dueId, "expo_fallback", {
+          stage: "due",
+          delayMs: dueAtMs - now,
+        });
         warnIfDev(`[Due Alarm] Expo fallback succeeded for ${dueId}`);
         logAlarmSchedulingPath("due", dueId, "expo_fallback", {
           stage: "due",
@@ -1264,17 +1333,18 @@ export async function scheduleDeadlineAlarms(
           triggerAt: dueAtMs,
         });
       } else {
+        await logScheduleFailed(
+          task.id,
+          "expo_fallback",
+          new Error("Expo scheduleNotificationAsync failed")
+        );
         warnIfDev(
           `[Due Alarm] Expo fallback FAILED for ${dueId} - this is a critical issue!`
         );
       }
     }
     if (scheduledDueId) ids.push(scheduledDueId);
-    
-    // Only schedule seed if native due alarm was NOT successfully scheduled.
-    // Seed is a fallback bridge to +15m — if native alarm succeeded it owns
-    // the due moment and advancing the chain. Scheduling both causes the
-    // +15m alarm to be cancelled and rescheduled immediately, breaking the chain.
+
     if (!scheduledDueId || !isNativeAlarmScheduledId(scheduledDueId)) {
       const seedTriggerAt = resolveIntendedTriggerAt(
         OVERDUE_SEED_TARGET_STAGE,
@@ -1293,9 +1363,7 @@ export async function scheduleDeadlineAlarms(
     return ids;
   }
 
-  // AFTER — schedule each checkpoint in the chain that is still relevant
-  // Track whether the due-moment alarm was scheduled natively, so we can
-  // avoid double-firing an immediate "overdue" at the due moment.
+  // AFTER due — schedule current overdue stage
   const currentStageInfo = resolveCurrentOverdueStageInfo(dueAtMs, now) ?? {
     key: "due",
     triggerAtMs: dueAtMs,
@@ -1322,62 +1390,9 @@ export async function scheduleDeadlineAlarms(
 
 export async function cancelDeadlineAlarms(task) {
   if (!task?.id) return;
-
-  const thresholdKeys = [...LEAD_TIMES.map((l) => l.key), "due"];
-  for (const key of thresholdKeys) {
-    for (const id of getDeadlineNotificationIds(task.id, key)) {
-      await cancelManagedNotificationId(id);
-    }
-  }
-
-  for (const checkpoint of OVERDUE_CHAIN.map((c) => c.key)) {
-    const overdueId = buildNotificationId(
-      "deadline-overdue",
-      task.id,
-      checkpoint
-    );
-    const overdueDisplayId = `${overdueId}-display`; // ← FIXED: cancel display variant too
-
-    for (const id of [overdueId, overdueDisplayId]) {
-      await cancelManagedNotificationId(id);
-    }
-  }
-
-  try {
-    const customId = buildNotificationId(
-      "deadline-custom-reminder",
-      task.id,
-      "user"
-    );
-    await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(customId));
-    await Notifications.cancelScheduledNotificationAsync(customId).catch(
-      () => {}
-    );
-    await notifee.cancelNotification(customId).catch(() => {});
-  } catch (err) {
-    warnIfDev("Failed to cancel custom reminder alarm:", err);
-  }
-
-  for (const suffix of ["60m", OVERDUE_SEED_TARGET_STAGE]) {
-    const followupId = buildNotificationId(
-      "deadline-followup",
-      task.id,
-      suffix
-    );
-    await cancelManagedNotificationId(followupId);
-  }
-
-  // Cancel auto-overdue alarms scheduled by overdueAutoLaunch.js
-  try {
-    const autoOverdueId = buildNotificationId("auto-overdue", task.id, "open");
-    await cancelNativeAlarmByScheduledId(
-      toNativeAlarmScheduledId(autoOverdueId)
-    );
-    await Notifications.cancelScheduledNotificationAsync(autoOverdueId).catch(
-      () => {}
-    );
-    await notifee.cancelNotification(autoOverdueId).catch(() => {});
-  } catch (_e) {}
+  await cancelSharedDeadlineNotifications(task.id, {
+    legacyExpoCompat: true,
+  });
 }
 
 export async function rescheduleAllDeadlineAlarms(
@@ -1399,7 +1414,6 @@ export async function rescheduleAllDeadlineAlarms(
     const batch = eligible.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(
       batch.map(async (task) => {
-        // Check if task is already overdue and has an active checkpoint
         const dueMs = resolveTaskDueDate(task)?.getTime();
         if (dueMs && dueMs <= now) {
           const checkpoint = await getCheckpoint(task.id);
@@ -1483,7 +1497,10 @@ export async function handleDeadlineAlarmResponse(response) {
   const notificationIdentifier =
     response.notification.request.identifier ?? null;
   const actionIdentifier = response.actionIdentifier ?? "default";
-  const isNotDoneAction = actionIdentifier === ACTION_NOT_DONE;
+  const normalizedAction = normalizeDeadlineAlarmAction(actionIdentifier);
+  const isNotDoneAction = normalizedAction === "notdone";
+  // [FIX] ACTION_MARK_DONE is now "Open" — just opens app, no task completion here.
+  // Treat it the same as a default tap (open app to modal).
 
   try {
     if (Platform.OS === "android") {
@@ -1535,6 +1552,13 @@ export async function handleDeadlineAlarmResponse(response) {
     );
   }
 
+  logDeadlineFlow("background_response", {
+    taskId,
+    notificationId: notificationIdentifier || null,
+    action: normalizedAction,
+    sourceId: notificationIdentifier || data?.alarmId || taskId,
+  });
+
   warnIfDev(`[deadlineAlarm] response ${notificationIdentifier || taskId}`, {
     stage: resolveNotificationStageKey(data),
     deliveryPath: data?.deliveryPath ?? "unknown",
@@ -1543,6 +1567,7 @@ export async function handleDeadlineAlarmResponse(response) {
       Date.now()
     ),
     actionIdentifier,
+    normalizedAction,
   });
 
   if (isNotDoneAction) {
@@ -1577,4 +1602,7 @@ export async function handleDeadlineAlarmResponse(response) {
       );
     }
   }
+  // For ACTION_MARK_DONE ("Open") and default tap — app opens naturally,
+  // TaskManagerScreen receives showAlarm params and opens the modal.
+  // No task completion here.
 }

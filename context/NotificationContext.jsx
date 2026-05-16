@@ -26,68 +26,69 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    setDoc,
-    where,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  setDoc,
+  where,
 } from "firebase/firestore";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
-import { auth, db } from "../config/firebase";
+import { auth, getDb } from "../config/firebase";
 import {
-    BACKGROUND_ALARM_TASK,
-    enableBackgroundAlarms,
+  BACKGROUND_ALARM_TASK,
+  enableBackgroundAlarms,
 } from "../utils/backgroundAlarmChecker";
 import {
-    loadLocalClassSchedule,
-    saveLocalClassSchedule,
+  loadLocalClassSchedule,
+  saveLocalClassSchedule,
 } from "../utils/classScheduleCache";
 import {
-    cancelDeadlineAlarms,
-    rescheduleAllDeadlineAlarms,
-    scheduleDeadlineAlarms,
+  cancelDeadlineAlarms,
+  rescheduleAllDeadlineAlarms,
+  scheduleDeadlineAlarms,
 } from "../utils/deadlineAlarmBackground";
+import {
+} from "../utils/deadlineNotifications";
 import { formatDeadlineCountdown } from "../utils/deadlineTime";
 import { reportError, reportWarning, warnIfDev } from "../utils/logger";
 import {
-    cancelNativeAlarmByScheduledId,
-    canPickNativeAlarmAudioFile,
-    canPickNativeAlarmTone,
-    canScheduleExactAlarms,
-    canUseFullScreenIntent,
-    ensureNativeAlarmPermissions,
-    isIgnoringBatteryOptimizations,
-    isNativeAlarmScheduledId,
-    isNativeAlarmSupported,
-    openExactAlarmSettings,
-    openFullScreenIntentSettings,
-    pickNativeAlarmAudioFile,
-    pickNativeAlarmTone,
-    requestIgnoreBatteryOptimizations,
-    scheduleNativeAlarm,
-    toNativeAlarmScheduledId,
+  cancelNativeAlarmByScheduledId,
+  canPickNativeAlarmAudioFile,
+  canPickNativeAlarmTone,
+  canScheduleExactAlarms,
+  canUseFullScreenIntent,
+  ensureNativeAlarmPermissions,
+  isIgnoringBatteryOptimizations,
+  isNativeAlarmScheduledId,
+  isNativeAlarmSupported,
+  openExactAlarmSettings,
+  openFullScreenIntentSettings,
+  pickNativeAlarmAudioFile,
+  pickNativeAlarmTone,
+  requestIgnoreBatteryOptimizations,
+  scheduleNativeAlarm,
 } from "../utils/nativeAlarm";
 import {
-    buildManagedNotificationData,
-    buildNotificationId,
+  buildManagedNotificationData,
+  buildNotificationId,
 } from "../utils/notificationIds";
 import {
-    clearPendingNotificationReschedule,
-    clearTaskRescheduleIntent,
-    clearTaskRescheduleIntents,
-    listTaskRescheduleIntents,
-    readPendingNotificationReschedule,
-    writePendingNotificationReschedule,
-    writeTaskRescheduleIntent,
+  clearPendingNotificationReschedule,
+  clearTaskRescheduleIntent,
+  clearTaskRescheduleIntents,
+  listTaskRescheduleIntents,
+  readPendingNotificationReschedule,
+  writePendingNotificationReschedule,
+  writeTaskRescheduleIntent,
 } from "../utils/notificationScheduleRecovery";
 import {
-    findOfflineQueuedTask,
-    isLocalOnlyTaskId,
+  findOfflineQueuedTask,
+  isLocalOnlyTaskId,
 } from "../utils/offlineTaskQueue";
 import { readSchedulablePendingTasks } from "../utils/pendingTaskSources";
 import { findBestScheduleDoc } from "../utils/scheduleMatcher";
@@ -131,12 +132,21 @@ const NOTIFICATIONS_AVAILABLE =
   typeof Notifications.setNotificationChannelAsync === "function";
 if (NOTIFICATIONS_AVAILABLE) {
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-    }),
+    handleNotification: async (notification) => {
+      const data = notification?.request?.content?.data ?? {};
+      const isAlarm =
+        data?.type === "deadline_alarm" ||
+        data?.notificationType === "deadline_alarm" ||
+        data?.acknowledgeRequired === true ||
+        data?.acknowledgeRequired === "true";
+
+      return {
+        shouldShowBanner: !isAlarm,
+        shouldShowList: true,
+        shouldPlaySound: !isAlarm,
+        shouldSetBadge: true,
+      };
+    },
   });
 }
 const keyForUser = (base, uid) => (uid ? `${base}_${uid}` : base);
@@ -552,6 +562,7 @@ function extractAckPayloadFromNotification(notification) {
       typeof request?.identifier === "string" ? request.identifier : null,
   };
 }
+
 export const DEFAULT_TIMES = {
   morningBriefing: { hour: 7, minute: 0 },
   dailyAudit: { hour: 21, minute: 0 },
@@ -926,101 +937,12 @@ export function NotificationProvider({ children }) {
     }
   };
 
-  const cancelAlarmNotificationsForTask = async (
-    taskId,
-    targetNotificationId = null
-  ) => {
-    if (!taskId) return 0;
-    if (!NOTIFICATIONS_AVAILABLE) return 0;
-    if (
-      typeof Notifications.getAllScheduledNotificationsAsync !== "function" ||
-      typeof Notifications.cancelScheduledNotificationAsync !== "function"
-    ) {
-      return 0;
-    }
-    try {
-      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-      const ids = [];
-      for (const item of Array.isArray(scheduled) ? scheduled : []) {
-        const request = item?.request || {};
-        const content = request?.content || item?.content || {};
-        const data = content?.data || {};
-        const id =
-          typeof request?.identifier === "string"
-            ? request.identifier
-            : typeof item?.identifier === "string"
-              ? item.identifier
-              : null;
-        if (!id) continue;
-        if (!data?.acknowledgeRequired) continue;
-        const dataTaskId =
-          typeof data.taskId === "string" ? data.taskId.trim() : "";
-        if (dataTaskId !== taskId) continue;
-        if (targetNotificationId && id !== targetNotificationId) continue;
-        ids.push(id);
-      }
-      // Cancel the specific native alarm for the acknowledged notification
-      if (targetNotificationId && isNativeAlarmSupported) {
-        try {
-          await cancelNativeAlarmByScheduledId(
-            toNativeAlarmScheduledId(targetNotificationId)
-          );
-        } catch (err) {
-          warnIfDev(
-            "NotificationContext: failed to cancel native alarm for acknowledged notification:",
-            err
-          );
-        }
-      }
-      await Promise.all(
-        ids.map((id) =>
-          Notifications.cancelScheduledNotificationAsync(id).catch(() => {})
-        )
-      );
-      // Also cancel the custom user-set reminder for this task
-      try {
-        const customId = buildNotificationId(
-          "deadline-custom-reminder",
-          taskId,
-          "user"
-        );
-        if (isNativeAlarmSupported) {
-          await cancelNativeAlarmByScheduledId(
-            toNativeAlarmScheduledId(customId)
-          ).catch(() => {});
-        }
-        if (NOTIFICATIONS_AVAILABLE) {
-          await Notifications.cancelScheduledNotificationAsync(customId).catch(
-            () => {}
-          );
-        }
-      } catch (err) {
-        warnIfDev(
-          "NotificationContext: failed to cancel custom reminder:",
-          err
-        );
-      }
-      debugNotif("ack.cancel.task.notifications", {
-        taskId,
-        cancelled: ids.length,
-        targetId: targetNotificationId,
-      });
-      return ids.length;
-    } catch (err) {
-      debugNotif("ack.cancel.task.notifications.error", {
-        taskId,
-        error: err?.message || String(err),
-      });
-      return 0;
-    }
-  };
-
   const checkAnnouncementNotifications = async (uid) => {
     if (!NOTIFICATIONS_AVAILABLE) return;
     if (settingsRef.current.announcementAlert === false) return;
     if (!permission) return;
     try {
-      const userSnap = await getDoc(doc(db, "users", uid));
+      const userSnap = await getDoc(doc(getDb(), "users", uid));
       if (!userSnap.exists()) return;
       const userData = userSnap.data();
       if ((userData.role || "student") === "admin") return;
@@ -1038,7 +960,7 @@ export function NotificationProvider({ children }) {
         .toLowerCase();
       const annSnap = await getDocs(
         query(
-          collection(db, "announcements"),
+          collection(getDb(), "announcements"),
           orderBy("createdAt", "desc"),
           limit(ANNOUNCEMENT_FETCH_LIMIT)
         )
@@ -1286,7 +1208,7 @@ export function NotificationProvider({ children }) {
         return;
       }
       try {
-        const userSnap = await getDoc(doc(db, "users", user.uid));
+        const userSnap = await getDoc(doc(getDb(), "users", user.uid));
         if (userSnap.exists()) {
           const studentInfo = userSnap.data()?.studentInfo || {};
           if (studentInfo.course) {
@@ -1361,12 +1283,7 @@ export function NotificationProvider({ children }) {
           typeof resolvedPayload.notificationType === "string"
             ? resolvedPayload.notificationType.toLowerCase()
             : "";
-        const isDeadlineAlarmPayload =
-          typeof payloadType === "string" && payloadType.startsWith("deadline");
-
-        if (isDeadlineAlarmPayload) {
-          return;
-        }
+        if (payloadType.startsWith("deadline")) return;
 
         await dismissPresentedNotification(notificationId);
       } finally {
@@ -1402,10 +1319,7 @@ export function NotificationProvider({ children }) {
             typeof payload?.notificationType === "string"
               ? payload.notificationType.toLowerCase()
               : "";
-          const isDeadlineAlarmPayload =
-            typeof payloadType === "string" &&
-            payloadType.startsWith("deadline");
-          if (isDeadlineAlarmPayload) return;
+          if (payloadType.startsWith("deadline")) return;
           const responseId = lastResponse?.notification?.request?.identifier;
           if (!responseId) return;
           const lastHandled = await AsyncStorage.getItem(
@@ -1435,9 +1349,13 @@ export function NotificationProvider({ children }) {
         ...settingsData,
         settings: stripLocalOnlyNotificationSettings(settingsData?.settings),
       };
-      await setDoc(doc(db, "users", uid, "settings", "notification"), payload, {
-        merge: true,
-      });
+      await setDoc(
+        doc(getDb(), "users", uid, "settings", "notification"),
+        payload,
+        {
+          merge: true,
+        }
+      );
     } catch (err) {
       reportWarning(err, {
         message: "Failed to sync notification settings to Firestore.",
@@ -1450,7 +1368,7 @@ export function NotificationProvider({ children }) {
   const loadSettingsFromFirestore = async (uid) => {
     try {
       const snap = await getDoc(
-        doc(db, "users", uid, "settings", "notification")
+        doc(getDb(), "users", uid, "settings", "notification")
       );
       if (snap.exists()) {
         const data = snap.data();
@@ -1860,7 +1778,7 @@ export function NotificationProvider({ children }) {
       }
       let studentInfo = {};
       try {
-        const userSnap = await getDoc(doc(db, "users", uid));
+        const userSnap = await getDoc(doc(getDb(), "users", uid));
         if (userSnap.exists()) {
           const userData = userSnap.data();
           studentInfo = userData.studentInfo || {};
@@ -1977,7 +1895,6 @@ export function NotificationProvider({ children }) {
       await writeTaskRescheduleIntent(user.uid, taskId, {
         reason: `task_update_${taskId}`,
       });
-      await cancelAlarmNotificationsForTask(taskId);
       await cancelDeadlineAlarms({ id: taskId });
 
       if (isLocalOnlyTaskId(taskId)) {
@@ -2109,7 +2026,7 @@ export function NotificationProvider({ children }) {
     if (!course || !year || !section) return false;
 
     try {
-      const scheduleMatch = await findBestScheduleDoc(db, {
+      const scheduleMatch = await findBestScheduleDoc(getDb(), {
         college,
         course,
         year,
@@ -2406,7 +2323,7 @@ export function NotificationProvider({ children }) {
       const horizonKey = toDayKey(horizon);
       const plannerSnap = await getDocs(
         query(
-          collection(db, "users", uid, "planner_days"),
+          collection(getDb(), "users", uid, "planner_days"),
           where("dayKey", ">=", todayKey),
           where("dayKey", "<=", horizonKey),
           orderBy("dayKey", "asc")
@@ -2877,7 +2794,7 @@ export function NotificationProvider({ children }) {
     if (!user) return;
 
     try {
-      const userSnap = await getDoc(doc(db, "users", user.uid));
+      const userSnap = await getDoc(doc(getDb(), "users", user.uid));
       if (userSnap.exists()) {
         const studentInfo = userSnap.data()?.studentInfo || {};
         if (studentInfo.course) {
@@ -3025,7 +2942,7 @@ export function NotificationProvider({ children }) {
         : null;
     if (user) {
       try {
-        const userSnap = await getDoc(doc(db, "users", user.uid));
+        const userSnap = await getDoc(doc(getDb(), "users", user.uid));
         if (userSnap.exists()) {
           const userData = userSnap.data();
           const studentInfo = userData?.studentInfo || {};

@@ -23,7 +23,10 @@
       "autoIncrement": true,
       "channel": "production",
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "env": {
+          "SENTRY_AUTH_TOKEN": "@SENTRY_AUTH_TOKEN"
+        }
       }
     }
   },

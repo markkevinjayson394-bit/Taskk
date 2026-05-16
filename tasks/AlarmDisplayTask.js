@@ -1,25 +1,26 @@
-import notifee from "@notifee/react-native";
-import { AppRegistry } from "react-native";
+import notifee, { EventType } from "@notifee/react-native";
+import { AppRegistry, AppState } from "react-native";
 import {
-    ACTION_MARK_DONE,
-    ACTION_NOT_DONE,
-    ALARM_KIND_LEAD_NOTICE,
-    bootstrapDeadlineAlarmChannel,
-    DEADLINE_NOTIF_TYPE,
-    displayAlarmNotification,
-    displayLeadNotification,
-    resolveNotificationAlarmKind,
-    scheduleNextOverdueAlarm,
+  ACTION_MARK_DONE,
+  ACTION_NOT_DONE,
+  ALARM_KIND_LEAD_NOTICE,
+  bootstrapDeadlineAlarmChannel,
+  DEADLINE_NOTIF_TYPE,
+  displayAlarmNotification,
+  displayLeadNotification,
+  resolveNotificationAlarmKind,
+  scheduleNextOverdueAlarm,
 } from "../utils/deadlineAlarmBackground";
 import { OVERDUE_CHAIN } from "../utils/deadlineConstants";
 import { warnIfDev } from "../utils/logger";
 import {
-    cancelNativeAlarmByAlarmId,
-    forceStopNativeAlarm,
-    stopActiveNativeAlarm,
-    writeAlarmAction,
+  cancelNativeAlarmByAlarmId,
+  clearPendingAlarmAction,
+  forceStopNativeAlarm,
+  stopActiveNativeAlarm,
+  writeAlarmAction,
 } from "../utils/nativeAlarm";
-import { advanceCheckpoint } from "../utils/taskOverdueState";
+import { advanceCheckpoint, setCheckpoint } from "../utils/taskOverdueState";
 
 function buildTaskFromNotificationData(data = {}, dueAtMs) {
   const subjectLabel =
@@ -88,7 +89,8 @@ function resolveAlarmBody(data = {}, payload = {}) {
   if (resolveNotificationAlarmKind(payload) === ALARM_KIND_LEAD_NOTICE) {
     return `"${taskTitle}" (${subjectLabel}) is coming up soon.`;
   }
-  return `"${taskTitle}" (${subjectLabel}) - tap Done or Not Done. Alarm loops until you respond.`;
+  // [FIX] Updated body to reflect new button labels
+  return `"${taskTitle}" (${subjectLabel}) — tap Open or Not Done.`;
 }
 
 function stripDisplaySuffix(id) {
@@ -177,12 +179,26 @@ AppRegistry.registerHeadlessTask(
               : alarmId,
         };
         const alarmKind = resolveNotificationAlarmKind(resolvedData);
+        const deliveryPath =
+          typeof payload?.deliveryPath === "string" ? payload.deliveryPath : "";
+        const foregroundServiceOwnsDisplay =
+          alarmKind !== ALARM_KIND_LEAD_NOTICE &&
+          (deliveryPath === "" ||
+            deliveryPath.includes("native_popup") ||
+            deliveryPath.includes("native_no_fullscreen_popup"));
 
         warnIfDev(
           `[AlarmDisplayTask] Running for alarm ${alarmId}, kind: ${alarmKind}, stage: ${payload?.stage}`
         );
 
         await bootstrapDeadlineAlarmChannel().catch(() => {});
+
+        if (foregroundServiceOwnsDisplay) {
+          warnIfDev(
+            `[AlarmDisplayTask] Skipping notifee shade for ${alarmId} - foreground service handles display`
+          );
+          return;
+        }
 
         if (alarmKind === ALARM_KIND_LEAD_NOTICE) {
           warnIfDev(
@@ -224,7 +240,7 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     return;
   }
 
-  if (!data.taskId || type !== notifee.EventType.ACTION_PRESS) return;
+  if (!data.taskId || type !== EventType.ACTION_PRESS) return;
 
   const payloadJson = JSON.stringify(data);
   const actionId = detail.pressAction?.id;
@@ -242,12 +258,18 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     return;
   }
 
+  // [FIX] ACTION_MARK_DONE is now "Open" — just cancel the shade notification
+  // and open the app. The modal handles completion. No writeAlarmAction("markdone").
   if (actionId === ACTION_MARK_DONE) {
+    await cancelVisibleAlarmNotifications(baseAlarmId, notificationId);
+    await stopNativeAlarmLoop();
+    // Cancel native alarm so it stops ringing while app opens to modal
     if (baseAlarmId) {
       await cancelNativeAlarmByAlarmId(baseAlarmId).catch(() => {});
-      await writeAlarmAction("markdone", baseAlarmId, payloadJson).catch(
-        () => {}
-      );
+    }
+    // Write "open" action so TaskManagerScreen knows to show the alarm modal
+    if (baseAlarmId) {
+      await writeAlarmAction("open", baseAlarmId, payloadJson).catch(() => {});
     }
     return;
   }
@@ -258,6 +280,10 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     if (baseAlarmId) {
       await cancelNativeAlarmByAlarmId(baseAlarmId).catch(() => {});
     }
+    // A missed-recovery notification may have already written an "open"
+    // startup handoff. Clear it before advancing so the old stage does not
+    // reopen after Not Done already moved the chain forward.
+    await clearPendingAlarmAction().catch(() => {});
 
     try {
       await bootstrapDeadlineAlarmChannel().catch(() => {});
@@ -267,10 +293,15 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
       const dueAtMs = Number(data.dueAtMs);
       if (!Number.isFinite(dueAtMs) || dueAtMs <= 0) return;
 
+      await setCheckpoint(data.taskId, stageKey, null, {
+        handledByShade: true,
+      });
+
       const nextCheckpoint = await advanceCheckpoint(
         data.taskId,
         stageKey,
-        dueAtMs
+        dueAtMs,
+        { handledByShade: true }
       );
       if (!nextCheckpoint?.key) {
         warnIfDev(
@@ -297,12 +328,25 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
         },
         triggerAt,
       });
+      await setCheckpoint(data.taskId, chainEntry.key, triggerAt, {
+        handledByShade: true,
+      });
+
+      // [FIX] If app is foreground, open the modal for the next stage
+      // by writing an "open" action that TaskManagerScreen will pick up.
+      // If backgrounded, the next alarm fires naturally — no need to foreground.
+      if (AppState.currentState === "active" && baseAlarmId) {
+        await writeAlarmAction("open", baseAlarmId, payloadJson).catch(
+          () => {}
+        );
+      }
     } catch (err) {
       warnIfDev("notifee background NOT_DONE chain advance failed:", err);
     }
     return;
   }
 
+  // Default tap — open app to modal
   if (baseAlarmId) {
     await writeAlarmAction("default", baseAlarmId, payloadJson).catch(() => {});
   }

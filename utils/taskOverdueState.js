@@ -208,7 +208,12 @@ export async function getCheckpoint(taskId) {
   }
 }
 
-export async function advanceCheckpoint(taskId, currentKey, dueAtMs = null) {
+export async function advanceCheckpoint(
+  taskId,
+  currentKey,
+  dueAtMs = null,
+  meta = {}
+) {
   const nextCheckpoint = resolveNextCheckpoint(currentKey, dueAtMs, Date.now());
   if (!nextCheckpoint?.key) return null;
   await setCheckpoint(
@@ -216,7 +221,8 @@ export async function advanceCheckpoint(taskId, currentKey, dueAtMs = null) {
     nextCheckpoint.key,
     Number.isFinite(nextCheckpoint.triggerAtMs)
       ? nextCheckpoint.triggerAtMs
-      : null
+      : null,
+    meta
   );
   return nextCheckpoint;
 }
@@ -230,7 +236,7 @@ export async function clearCheckpoint(taskId) {
   }
 }
 
-export async function setCheckpoint(taskId, key, triggerAtMs = null) {
+export async function setCheckpoint(taskId, key, triggerAtMs = null, meta = {}) {
   try {
     const storageKey = KEYS.checkpoint(taskId);
     await AsyncStorage.setItem(
@@ -239,6 +245,7 @@ export async function setCheckpoint(taskId, key, triggerAtMs = null) {
         key,
         scheduledAt: Date.now(),
         triggerAtMs: Number.isFinite(triggerAtMs) ? triggerAtMs : null,
+        ...(meta && typeof meta === "object" ? meta : {}),
       })
     );
   } catch (err) {

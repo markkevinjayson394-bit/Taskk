@@ -1,3 +1,5 @@
+/* eslint-env node */
+
 // Load local env files for local EAS Update/Build runs.
 // On EAS cloud, use `eas env` variables for each environment.
 try {
@@ -81,9 +83,9 @@ module.exports = ({ config }) => {
     normalizeFirebaseValue(baseExtra?.buildProfile) ||
     "development";
   const startupOtaEnabled = buildProfile === "production";
-  const easProjectId =
-    normalizeFirebaseValue(process.env.EAS_PROJECT_ID) ||
-    normalizeFirebaseValue(baseExtra?.eas?.projectId);
+
+  // Hardcoded EAS Project ID
+  const easProjectId = "033c1dc5-f79d-4291-ac6d-21a6fb1ce142";
 
   const firebase = {
     apiKey:
@@ -107,12 +109,12 @@ module.exports = ({ config }) => {
   return {
     ...base,
     name: "CTU Academic Task Manager",
-    slug: "taskmanagement",
+    slug: "ressseh",
     version: "1.0.3",
     orientation: "portrait",
     icon: "./assets/icon.png",
     scheme: "ctuacademictaskmanager",
-    owner: "ikema2004",
+    owner: "jasshhed",
     userInterfaceStyle: "automatic",
     androidStatusBar: {
       barStyle: "light-content",
@@ -177,12 +179,16 @@ module.exports = ({ config }) => {
         },
       ],
       "expo-task-manager",
+      // ✅ FIXED: Added missing audio/video plugin for alarm system
+      "expo-av",
+      // ✅ FIXED: Added missing background fetch plugin for background tasks
+      "expo-background-fetch",
       [
         "expo-build-properties",
         {
           android: {
-            compileSdkVersion: 36, // ✅ changed from 34
-            targetSdkVersion: 35, // ✅ changed from 34
+            compileSdkVersion: 36,
+            targetSdkVersion: 35,
             minSdkVersion: 24,
           },
         },

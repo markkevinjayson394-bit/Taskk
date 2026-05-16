@@ -1,124 +1,78 @@
 /**
- * components/DeadlineAlarmModal.jsx  (v5  full-fix)
+ * components/DeadlineAlarmModal.jsx  (v6 - auto-play sound)
  *
- * FIXES IN THIS VERSION:
- * - [FIX 5] cancelAllNotifeeIdsForTask() now called in BOTH handleNotDone and
- *   handleDone (replacing the old cancelNotifeeById calls). The old
- *   cancelNotifeeById helper is removed — cancelAllNotifeeIdsForTask covers
- *   every ID variant so the ongoing shade notification is always dismissed.
- * - [FIX 5] scheduleNextDeadlineCheckpoint: "due" is now included in
- *   overdueStages so pressing "Not Done" at the due moment correctly routes
- *   through scheduleNextOverdueAlarm and schedules the +15m checkpoint.
- * - [FIX LINT] shouldUseLocalAlarmLoop is now actually used inside the
- *   visibility useEffect (was dead code before). Added to dep array to
- *   satisfy react-hooks/exhaustive-deps.
+ * CHANGES IN THIS VERSION:
+ * - [NEW] Sound plays automatically when modal becomes visible (visible=true)
+ *   - soundCancelRef guards against race conditions during load
+ *   - No user interaction required to start alarm
+ * - [NEW] When nativeHandoff=true (native alarm already playing), modal
+ *   opens without starting a duplicate sound
+ * - [NEW] Sound continues/resumes when modal opens from notification tap
+ * - [FIX] shouldUseLocalAlarmLoop prevents double-playing when native
+ *   alarm activity is already ringing
  */
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Animated,
-  Modal,
-  Platform,
-  StyleSheet,
-  Text,
-  ToastAndroid,
-  TouchableOpacity,
-  View,
+    Animated,
+    Modal,
+    Platform,
+    StyleSheet,
+    Text,
+    ToastAndroid,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  cancelDeadlineAlarms,
-  DEADLINE_CATEGORY_ID,
-  DEADLINE_CHANNEL_ID,
-  DEADLINE_NOTIF_TYPE,
-  scheduleNextOverdueAlarm,
+    cancelDeadlineAlarms,
+    scheduleNextOverdueAlarm,
 } from "../utils/deadlineAlarmBackground";
 import { OVERDUE_CHAIN } from "../utils/deadlineConstants";
+import {
+    cancelDeadlineNotifications,
+} from "../utils/deadlineNotifications";
 import { getUrgencyMeta } from "../utils/deadlineTime";
 import { warnIfDev } from "../utils/logger";
 import {
-  forceStopNativeAlarm,
-  isNativeAlarmSupported,
-  scheduleNativeAlarm,
-  stopActiveNativeAlarm,
+    forceStopNativeAlarm,
+    stopActiveNativeAlarm,
 } from "../utils/nativeAlarm";
 import {
-  buildDeadlineNotificationId,
-  buildManagedNotificationData,
-  buildNotificationId,
-} from "../utils/notificationIds";
-import { advanceCheckpoint, clearCheckpoint, getCheckpoint } from "../utils/taskOverdueState";
+    advanceCheckpoint,
+    clearCheckpoint,
+    getCheckpoint,
+} from "../utils/taskOverdueState";
 import {
-  formatDeadlineCountdown,
-  playAlarmSound,
-  PRIORITY_COLOR,
-  resolveTaskDueDate,
-  startVibration,
-  stopAlarmSound,
-  stopVibration,
-  TYPE_META,
+    formatDeadlineCountdown,
+    playAlarmSound,
+    PRIORITY_COLOR,
+    resolveTaskDueDate,
+    startVibration,
+    stopAlarmSound,
+    stopVibration,
+    TYPE_META,
 } from "./DeadlineAlarmModal.helpers";
 import { useDeadlineAlarmScheduler } from "./useDeadlineAlarmScheduler";
-
-// Lazily import notifee so the modal doesn't crash in Expo Go or
-// builds that don't include @notifee/react-native.
-let notifee = null;
-try {
-  notifee = require("@notifee/react-native").default;
-} catch (_e) {}
 
 // Cancel ALL candidate notifee notification IDs for the current alarm so
 // "Mark Done" / "Not Done" reliably dismiss the shade notification regardless
 // of which ID builder was used when the alarm was posted.
-async function cancelAllNotifeeIdsForTask(taskId, thresholdKey, rawAlarmId = null) {
-  if (!notifee || !taskId) return;
-
-  const baseVariants = [
-    buildNotificationId("deadline-due", taskId, "due"),
-    buildNotificationId("deadline-overdue", taskId, thresholdKey || "due"),
-    buildNotificationId("deadline-overdue", taskId, "due"),
-    buildNotificationId("deadline-lead", taskId, thresholdKey || "due"),
-    buildNotificationId("auto-overdue", taskId, "open"), // from overdueAutoLaunch
-    thresholdKey ? buildDeadlineNotificationId(taskId, thresholdKey) : null,
-    buildDeadlineNotificationId(taskId, "due"),
-    rawAlarmId, // raw alarm ID from native module
-    taskId, // raw task ID as fallback
-  ].filter(Boolean);
-
-  const allIds = new Set([
-    ...baseVariants,
-    ...baseVariants.map((id) => `${id}-display`),
-  ]);
-
-  await Promise.all(
-    [...allIds].map((id) =>
-      notifee.cancelNotification(String(id)).catch(() => {})
-    )
-  );
-}
-
-const ANDROID_ALARM_CONTENT = {
-  // channelId removed — belongs only in trigger, not content
-  priority: "max",
-  sticky: true,
-  autoDismiss: false,
-  sound: "ctu_alarm.wav",
-  vibrationPattern: [0, 400, 200, 400, 200, 800],
-};
-const AUTO_MISS_TIMEOUT_MS = 5 * 60 * 1000;
-const AUTO_MISS_STAGE_KEYS = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
-
-function formatDeadlineDueMoment(date) {
-  return date.toLocaleString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
+async function cancelAllNotifeeIdsForTask(
+  taskId,
+  thresholdKey,
+  rawAlarmId = null
+) {
+  if (!taskId) return;
+  await cancelDeadlineNotifications(taskId, {
+    thresholdKey: thresholdKey || null,
+    extraIds: [rawAlarmId, taskId].filter(Boolean),
   });
 }
+
+const AUTO_MISS_TIMEOUT_MS = 5 * 60 * 1000;
+const AUTO_MISS_STAGE_KEYS = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
 
 function IOSMissedAlarmBanner({ message, onHide }) {
   const insets = useSafeAreaInsets();
@@ -178,182 +132,6 @@ function IOSMissedAlarmBanner({ message, onHide }) {
   );
 }
 
-function buildRescheduledDeadlineContent(
-  task,
-  dueDate,
-  thresholdKey,
-  isFollowup
-) {
-  const titleText =
-    typeof task?.title === "string" && task.title.trim()
-      ? task.title.trim()
-      : "Task";
-  const subject = task?.subject || task?.subjectName || "General";
-  const priority = (task?.priority || "medium").toUpperCase();
-  const dueLabel = formatDeadlineDueMoment(dueDate);
-
-  if (isFollowup) {
-    return {
-      title: "Deadline follow-up reminder",
-      body: `"${titleText}" (${subject}) is still pending. Due ${dueLabel} [${priority}]`,
-    };
-  }
-
-  switch (thresholdKey) {
-    case "1d":
-      return {
-        title: "Task due tomorrow",
-        body: `"${titleText}" (${subject}) is due tomorrow. Due ${dueLabel} [${priority}]`,
-      };
-    case "2h":
-      return {
-        title: "2 hours until deadline",
-        body: `"${titleText}" (${subject}) is due in 2 hours. Due ${dueLabel} [${priority}]`,
-      };
-    case "30m":
-      return {
-        title: "30 min until deadline",
-        body: `"${titleText}" (${subject}) is due in 30 minutes. Due ${dueLabel} [${priority}]`,
-      };
-    case "5m":
-      return {
-        title: "5 min until deadline",
-        body: `"${titleText}" (${subject}) is due in 5 minutes. Due ${dueLabel} [${priority}]`,
-      };
-    case "due":
-    default: {
-      const nowMs = Date.now();
-      const overdueMs = nowMs - dueDate.getTime();
-      const isOverdue = overdueMs > 0;
-      const overdueMins = Math.floor(overdueMs / 60000);
-      const od_days = Math.floor(overdueMins / (24 * 60));
-      const od_hours = Math.floor((overdueMins % (24 * 60)) / 60);
-      const od_mins = overdueMins % 60;
-      const parts = [];
-      if (od_days > 0) parts.push(`${od_days}d`);
-      if (od_hours > 0) parts.push(`${od_hours}h`);
-      if (od_mins > 0 || parts.length === 0) parts.push(`${od_mins}m`);
-      const overdueLabel = parts.slice(0, 2).join(" ");
-
-      return {
-        title: isOverdue
-          ? `Overdue by ${overdueLabel} — ${titleText}`
-          : `${titleText} is due NOW!`,
-        body: isOverdue
-          ? `"${titleText}" (${subject}) is overdue. Due ${dueLabel} [${priority}]`
-          : `"${titleText}" (${subject}) is due now. Due ${dueLabel} [${priority}]`,
-      };
-    }
-  }
-}
-
-async function scheduleNextDeadlineCheckpoint({
-  task,
-  dueDate,
-  thresholdKey,
-  triggerAt = null,
-  isFollowup = false,
-}) {
-  if (
-    !task?.id ||
-    !(dueDate instanceof Date) ||
-    Number.isNaN(dueDate.getTime())
-  ) {
-    return;
-  }
-
-  // [FIX 5] "due" is now included so pressing "Not Done" at the due moment
-  // correctly routes through scheduleNextOverdueAlarm and schedules +15m.
-  const overdueStages = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
-  if (overdueStages.has(thresholdKey) || isFollowup) {
-    return scheduleNextOverdueAlarm({
-      task,
-      checkpoint: {
-        key: thresholdKey,
-        delayMs:
-          OVERDUE_CHAIN.find((c) => c.key === thresholdKey)?.delayMs ?? null,
-      },
-      triggerAt,
-      intendedTriggerAtMs: triggerAt,
-      deliveryPathHint: isFollowup ? "followup" : "not_done",
-    });
-  }
-
-  const subject = task.subject || task.subjectName || "General";
-  const { title, body } = buildRescheduledDeadlineContent(
-    task,
-    dueDate,
-    thresholdKey,
-    isFollowup
-  );
-  const minutesAfterDue = Math.max(
-    0,
-    Math.round((triggerAt - dueDate.getTime()) / 60000)
-  );
-  const notificationId = isFollowup
-    ? buildNotificationId("deadline-followup", task.id, `${minutesAfterDue}m`)
-    : buildDeadlineNotificationId(task.id, thresholdKey);
-  const data = buildManagedNotificationData(notificationId, {
-    type: DEADLINE_NOTIF_TYPE,
-    notificationType: DEADLINE_NOTIF_TYPE,
-    taskId: task.id,
-    taskTitle:
-      typeof task.title === "string" && task.title.trim()
-        ? task.title.trim()
-        : "",
-    subject,
-    dueAt: dueDate.toISOString(),
-    dueAtMs: dueDate.getTime(),
-    acknowledgeRequired: true,
-    threshold: thresholdKey,
-    ...(isFollowup ? { minutesAfterDue } : {}),
-  });
-  const shouldPreferNative =
-    Platform.OS === "android" &&
-    isNativeAlarmSupported &&
-    (thresholdKey === "due" || isFollowup);
-
-  if (shouldPreferNative) {
-    try {
-      const nativeScheduledId = await scheduleNativeAlarm({
-        alarmId: notificationId,
-        triggerAt,
-        title,
-        body,
-        payload: data,
-      });
-      if (nativeScheduledId) return;
-    } catch (_e) {
-      warnIfDev(
-        "DeadlineAlarmModal: failed to schedule native checkpoint:",
-        _e
-      );
-    }
-  }
-
-  await Notifications.cancelScheduledNotificationAsync(notificationId).catch(
-    () => {}
-  );
-  await Notifications.scheduleNotificationAsync({
-    identifier: notificationId,
-    content: {
-      title,
-      body,
-      data,
-      categoryIdentifier: DEADLINE_CATEGORY_ID,
-      ...(Platform.OS === "android" ? ANDROID_ALARM_CONTENT : {}),
-    },
-    trigger:
-      Platform.OS === "android"
-        ? {
-            type: "date",
-            date: new Date(triggerAt),
-            channelId: DEADLINE_CHANNEL_ID,
-          }
-        : { type: "date", date: new Date(triggerAt) },
-  });
-}
-
 function DeadlineAlarmModal({
   visible,
   task,
@@ -381,6 +159,7 @@ function DeadlineAlarmModal({
   const loopRef = useRef(null);
   const userDismissedRef = useRef(false);
   const actionInFlightRef = useRef(false);
+  const handleNotDoneRef = useRef(null);
 
   const due = resolveTaskDueDate(task);
   const urgencyColor = getUrgencyMeta(due?.getTime(), now.getTime()).color;
@@ -390,9 +169,19 @@ function DeadlineAlarmModal({
   const notDoneSelected = pendingAction === "notdone";
   const doneSelected = pendingAction === "markdone";
   const isSilentConfirmMode = pendingAction === "markdone";
-  // [FIX LINT] Defined here and used inside the useEffect below instead of
-  // inlining the condition, so ESLint exhaustive-deps can track it properly.
+  // [NEW] Determine if we should play sound locally:
+  // - Don't play if nativeHandoff=true (native alarm already ringing)
+  // - Don't play if markdone mode (silent confirmation)
+  // - Otherwise, play sound when modal becomes visible
   const shouldUseLocalAlarmLoop = !isSilentConfirmMode && !nativeHandoff;
+
+  console.log("[DeadlineAlarmModal] Audio/Vibration Debug:", {
+    visible,
+    nativeHandoff,
+    pendingAction,
+    isSilentConfirmMode,
+    shouldUseLocalAlarmLoop,
+  });
 
   const isOverdue = due && due.getTime() < now.getTime();
   const effectiveThresholdKey = thresholdKey || (isOverdue ? "due" : null);
@@ -417,7 +206,20 @@ function DeadlineAlarmModal({
   };
   const overdueDuration = getOverdueDuration();
 
-  // Reset state when modal becomes visible or invisible.
+  // Cleanup on unmount only — preserve sound/vibration during background
+  useEffect(() => {
+    return () => {
+      loopRef.current?.stop();
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
+      stopVibration(vibRef);
+      void stopAlarmSound(soundRef, soundCancelRef);
+    };
+  }, []);
+
+  // Reset state and manage sound when modal becomes visible or invisible
   useEffect(() => {
     if (!visible) {
       setNotDonePressed(false);
@@ -437,6 +239,7 @@ function DeadlineAlarmModal({
     setMarkingDone(false);
     setSelfClosed(false);
     userDismissedRef.current = false;
+
     // Slide down from top
     Animated.spring(slideAnim, {
       toValue: 0,
@@ -444,6 +247,7 @@ function DeadlineAlarmModal({
       friction: 9,
       useNativeDriver: true,
     }).start();
+
     // Pulse alarm icon continuously
     loopRef.current = Animated.loop(
       Animated.sequence([
@@ -460,26 +264,27 @@ function DeadlineAlarmModal({
       ])
     );
     loopRef.current.start();
+
     // Per-second countdown
     tickRef.current = setInterval(() => setNow(new Date()), 1000);
-    // [FIX LINT] Use shouldUseLocalAlarmLoop instead of inlining the condition.
-    // This also satisfies react-hooks/exhaustive-deps since the variable is now
-    // listed in the dependency array below.
+
+    // AUTO-PLAY SOUND: Start sound and vibration when modal becomes visible
+    // (only if not using native alarm and not in silent confirm mode)
     if (shouldUseLocalAlarmLoop) {
-      // shouldUseLocalAlarmLoop is already false when nativeHandoff=true,
-      // so we never double-play when the native alarm activity is ringing.
-      // When triggered by the foreground checker, nativeHandoff=false so
-      // this branch correctly plays sound regardless of native alarm support.
       soundCancelRef.current = false;
       startVibration(vibRef);
       void playAlarmSound(soundRef, soundCancelRef);
+      console.log(
+        "[DeadlineAlarmModal] Sound & vibration started automatically"
+      );
     }
+
     return () => {
       loopRef.current?.stop();
-      clearInterval(tickRef.current);
-      tickRef.current = null;
-      stopVibration(vibRef);
-      void stopAlarmSound(soundRef, soundCancelRef); // pass cancelRef here
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
     };
   }, [visible, pulseAnim, shakeAnim, slideAnim, shouldUseLocalAlarmLoop]);
 
@@ -513,13 +318,17 @@ function DeadlineAlarmModal({
         // Use Promise.race with timeout to prevent waiting indefinitely
         const stopped = await Promise.race([
           stopActiveNativeAlarm(),
-          new Promise(resolve => setTimeout(() => resolve(false), STOP_TIMEOUT_MS))
+          new Promise((resolve) =>
+            setTimeout(() => resolve(false), STOP_TIMEOUT_MS)
+          ),
         ]).catch(() => false);
-        
+
         if (!stopped && typeof forceStopNativeAlarm === "function") {
           await Promise.race([
             forceStopNativeAlarm(),
-            new Promise(resolve => setTimeout(() => resolve(false), STOP_TIMEOUT_MS))
+            new Promise((resolve) =>
+              setTimeout(() => resolve(false), STOP_TIMEOUT_MS)
+            ),
           ]).catch(() => {});
         }
       }
@@ -527,7 +336,11 @@ function DeadlineAlarmModal({
 
     // Extract rawAlarmId from notification data if available
     const rawAlarmId = task?.data?.alarmId ?? null;
-    await cancelAllNotifeeIdsForTask(task?.id, effectiveThresholdKey, rawAlarmId);
+    await cancelAllNotifeeIdsForTask(
+      task?.id,
+      effectiveThresholdKey,
+      rawAlarmId
+    );
   }, [effectiveThresholdKey, task?.id, task?.data?.alarmId]);
 
   const handleNotDone = useCallback(
@@ -555,42 +368,52 @@ function DeadlineAlarmModal({
         await onNotDone?.();
         if (task?.id && dueDate) {
           try {
+            const stageKey = effectiveThresholdKey || "due";
             // Guard against double-advance: if shade action button AND modal button
             // both fire, the checkpoint may have already been advanced by the shade
-            // handler. Use a timestamp window to detect this reliably instead of
-            // a key comparison (which fails when both handlers run concurrently).
+            // handler.
             const existingCheckpoint = await getCheckpoint(task.id);
-            const checkpointAge = Number.isFinite(existingCheckpoint?.scheduledAt)
+            const checkpointAge = Number.isFinite(
+              existingCheckpoint?.scheduledAt
+            )
               ? Date.now() - existingCheckpoint.scheduledAt
               : Infinity;
 
-            // If checkpoint key differs from current stage AND was written within
-            // the last 10 seconds, the shade action button already advanced it.
-            // Avoid double-advancing which would skip an entire overdue stage.
             const alreadyAdvanced =
-              existingCheckpoint?.key &&
-              existingCheckpoint.key !== (effectiveThresholdKey || "due") &&
+              existingCheckpoint?.handledByShade === true &&
               checkpointAge < 10_000;
 
             if (alreadyAdvanced) {
               warnIfDev(
                 "[DeadlineAlarmModal] Checkpoint recently advanced by shade handler, skipping duplicate"
               );
-              nextCheckpoint = existingCheckpoint;
+              nextCheckpoint =
+                existingCheckpoint?.key && existingCheckpoint.key !== stageKey
+                  ? existingCheckpoint
+                  : null;
             } else {
               nextCheckpoint = await advanceCheckpoint(
                 task.id,
-                effectiveThresholdKey || "due",
+                stageKey,
                 dueDate.getTime()
               );
             }
 
             if (nextCheckpoint?.key) {
-              await scheduleNextDeadlineCheckpoint({
+              await scheduleNextOverdueAlarm({
                 task,
-                dueDate,
-                thresholdKey: nextCheckpoint.key,
+                checkpoint: {
+                  key: nextCheckpoint.key,
+                  delayMs:
+                    nextCheckpoint.delayMs ??
+                    OVERDUE_CHAIN.find(
+                      (entry) => entry.key === nextCheckpoint.key
+                    )?.delayMs ??
+                    null,
+                },
                 triggerAt: nextCheckpoint.triggerAtMs ?? null,
+                intendedTriggerAtMs: nextCheckpoint.triggerAtMs ?? null,
+                deliveryPathHint: "modal_not_done",
               });
             }
           } catch (err) {
@@ -632,6 +455,10 @@ function DeadlineAlarmModal({
       task,
     ]
   );
+
+  useEffect(() => {
+    handleNotDoneRef.current = handleNotDone;
+  }, [handleNotDone]);
 
   // "Done" — stop everything, cancel all alarms, mark task complete. Chain ends.
   const handleDone = useCallback(async () => {
@@ -715,18 +542,11 @@ function DeadlineAlarmModal({
     }
 
     const timer = setTimeout(() => {
-      void handleNotDone({ skipHaptic: true });
+      void handleNotDoneRef.current?.({ skipHaptic: true });
     }, AUTO_MISS_TIMEOUT_MS);
 
     return () => clearTimeout(timer);
-  }, [
-    effectiveThresholdKey,
-    handleNotDone,
-    markingDone,
-    notDonePressed,
-    selfClosed,
-    visible,
-  ]);
+  }, [effectiveThresholdKey, markingDone, notDonePressed, selfClosed, visible]);
 
   if (!task) {
     return null;

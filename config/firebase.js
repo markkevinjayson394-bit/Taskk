@@ -86,9 +86,6 @@ const firebaseFromManifest = pickBestFirebaseCandidate(
 
 const runtimeEnv = /** @type {any} */ (globalThis)?.process?.env || {};
 
-// In React Native/Expo, only EXPO_PUBLIC_* variables are available at runtime.
-// The manifest/expoConfig is the primary source for public config values.
-// Runtime env vars should only be used as a fallback if manifest is empty.
 const firebaseFromEnv = sanitizeFirebaseConfig({
   apiKey: runtimeEnv.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: runtimeEnv.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -117,7 +114,6 @@ if (!isFirebaseConfigured) {
     missingFirebaseKeys,
     firebaseFromManifest: {
       ...firebaseFromManifest,
-      // Redact sensitive values in logs
       apiKey: firebaseFromManifest.apiKey ? "***" : undefined,
     },
     firebaseFromEnv: {
@@ -129,12 +125,7 @@ if (!isFirebaseConfigured) {
   console.log("✅ Firebase config loaded successfully");
 }
 
-/**
- * Always initialize/export Firebase services so consumers don't crash on null.
- * `isFirebaseConfigured` should still be used to block auth/DB operations
- * when required keys are missing.
- * @type {FirebaseApp}
- */
+/** @type {FirebaseApp} */
 const app = getApps()[0] || initializeApp(firebaseConfig);
 
 /** @type {Auth} */
@@ -153,27 +144,16 @@ try {
 
 function buildFirestoreSettings() {
   const settings = {};
-
-  // React Native does not provide the browser IndexedDB + multi-tab APIs that
-  // Firestore's persistentLocalCache() relies on. Using it in release builds
-  // can fail during app startup and leave the app on a blank/gray screen.
   if (Platform.OS !== "web") {
     settings.experimentalForceLongPolling = true;
   }
-
   if (typeof memoryLocalCache === "function") {
     settings.localCache = memoryLocalCache();
   }
-
   return settings;
 }
 
-/**
- * Firestore for the React Native runtime. Avoid browser-only persistence
- * primitives and fall back to the default instance if custom initialization
- * fails so release builds can still boot.
- * @type {Firestore}
- */
+/** @type {Firestore} */
 let db;
 try {
   db = initializeFirestore(app, buildFirestoreSettings());
@@ -185,30 +165,85 @@ try {
   db = getFirestore(app);
 }
 
-let disableNetworkTimer = null;
+/**
+ * Always returns the current Firestore instance, even if it was
+ * reinitialized after a corruption. Use this instead of importing
+ * `db` directly in files that run after app state changes.
+ * @returns {Firestore}
+ */
+export const getDb = () => db;
 
-// Handle app state changes to avoid Firestore stream errors
-// when the app goes to background and comes back to foreground
-AppState.addEventListener("change", async (state) => {
+// Tracks whether we successfully disabled the network so we only
+// call enableNetwork() if disableNetwork() actually ran.
+let firestoreNetworkEnabled = true;
+let disableNetworkTimer = null;
+// Prevents concurrent enable/disable calls from overlapping.
+let networkToggleInProgress = false;
+
+AppState.addEventListener("change", async (nextState) => {
   try {
-    if (state === "background") {
-      // Wait 3s before disabling — avoids killing requests on brief interruptions
-      // (e.g. permission dialogs, system overlays, quick app switches)
-      disableNetworkTimer = setTimeout(async () => {
-        await disableNetwork(db);
-      }, 3000);
-    } else if (state === "active") {
+    if (nextState === "background") {
+      // Clear any previous pending disable timer
       if (disableNetworkTimer) {
         clearTimeout(disableNetworkTimer);
         disableNetworkTimer = null;
       }
-      await enableNetwork(db);
-      // Give Firestore ~500ms to re-establish streams before new requests land
-      await new Promise(res => setTimeout(res, 500));
+
+      // Wait 3s before disabling — avoids killing active requests during
+      // brief interruptions (permission dialogs, system overlays, quick switches)
+      disableNetworkTimer = setTimeout(async () => {
+        if (networkToggleInProgress || !firestoreNetworkEnabled) return;
+        networkToggleInProgress = true;
+        try {
+          await disableNetwork(db);
+          firestoreNetworkEnabled = false;
+          console.log("🔴 Firestore network disabled (background)");
+        } catch (e) {
+          console.warn("Firestore disableNetwork warning:", e);
+        } finally {
+          networkToggleInProgress = false;
+          disableNetworkTimer = null;
+        }
+      }, 3000);
+    } else if (nextState === "active") {
+      // Cancel the pending disable if the user came back before it fired
+      if (disableNetworkTimer) {
+        clearTimeout(disableNetworkTimer);
+        disableNetworkTimer = null;
+      }
+
+      // Nothing to re-enable if we never disabled
+      if (firestoreNetworkEnabled) return;
+      if (networkToggleInProgress) return;
+
+      networkToggleInProgress = true;
+      try {
+        await enableNetwork(db);
+        firestoreNetworkEnabled = true;
+        console.log("🟢 Firestore network enabled (foreground)");
+      } catch (e) {
+        console.warn(
+          "Firestore enableNetwork failed, reinitializing instance:",
+          e
+        );
+        // The Firestore instance is corrupted — reinitialize it so future
+        // calls (via getDb()) get a fresh, working instance.
+        try {
+          db = initializeFirestore(app, buildFirestoreSettings());
+          firestoreNetworkEnabled = true;
+          console.log("🔄 Firestore reinitialized after corruption");
+        } catch (reinitError) {
+          console.error("Firestore reinitialization failed:", reinitError);
+        }
+      } finally {
+        networkToggleInProgress = false;
+      }
     }
   } catch (e) {
-    console.warn("Firestore network toggle warning:", e);
+    console.warn("Firestore AppState handler error:", e);
+    networkToggleInProgress = false;
   }
 });
 
 export { app, auth, db, firebaseConfigError, isFirebaseConfigured };
+

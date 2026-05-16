@@ -1,6 +1,7 @@
 /**
- * profile.jsx
+ * profile.jsx - FIXED VERSION 2
  *
+ * CHANGE: Now imports FileSystem from "expo-file-system/legacy" to support deprecated readAsStringAsync
  * Photo upload stores a compressed base64 avatar in Firestore (Spark/free friendly).
  * Offline support: profile, stats, and schedule meta are cached in AsyncStorage.
  * On network error, the screen loads from cache instead of showing an error.
@@ -8,8 +9,7 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as FileSystem from "expo-file-system";
-import { EncodingType } from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy"; // ✅ FIX: Import from legacy API
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
@@ -41,9 +41,9 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import LoadingState from "../../components/LoadingState";
 import { auth, db } from "../../config/firebase";
 import { getCollegeLabel } from "../../constants/academics";
-import LoadingState from "../../components/LoadingState";
 import { CACHE_KEYS, loadFromCache } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
@@ -95,10 +95,11 @@ async function prepareProfilePhotoData(uri) {
     console.warn("Compression failed, trying fallback:", compressionErr);
   }
 
-  // Fallback: manual base64 encoding
+  // Fallback: manual base64 encoding using legacy API
   try {
+    // ✅ FIX: Using legacy API which supports readAsStringAsync
     const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: EncodingType.Base64,
+      encoding: "base64",
     });
 
     const sizeBytes = Math.round(base64.length * 0.75);
@@ -118,7 +119,8 @@ async function prepareProfilePhotoData(uri) {
 }
 
 function resolvePhotoUploadError(err) {
-  const code = typeof err?.code === "string" ? err.code.trim().toLowerCase() : "";
+  const code =
+    typeof err?.code === "string" ? err.code.trim().toLowerCase() : "";
   const message =
     typeof err?.message === "string" ? err.message.trim().toLowerCase() : "";
   if (code.includes("permission-denied")) {
@@ -330,9 +332,7 @@ export default function ProfileScreen() {
       setUploading(true);
 
       // Prepare photo with full error handling
-      const photoData = await prepareProfilePhotoData(
-        result.assets[0].uri
-      );
+      const photoData = await prepareProfilePhotoData(result.assets[0].uri);
 
       // Validate before uploading
       if (!photoData?.dataUri || typeof photoData.dataUri !== "string") {
@@ -744,7 +744,13 @@ export default function ProfileScreen() {
               <TouchableOpacity
                 onPress={() => router.push("/(tabs)/assignments")}
               >
-                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: "700" }}>
+                <Text
+                  style={{
+                    color: colors.primary,
+                    fontSize: 13,
+                    fontWeight: "700",
+                  }}
+                >
                   Open all
                 </Text>
               </TouchableOpacity>
@@ -1034,7 +1040,9 @@ function SectionHeader({ eyebrow, title, subtitle, colors }) {
           {eyebrow}
         </Text>
       ) : null}
-      <Text style={[styles.cardTitle, styles.sectionTitle, { color: colors.text }]}>
+      <Text
+        style={[styles.cardTitle, styles.sectionTitle, { color: colors.text }]}
+      >
         {title}
       </Text>
       {subtitle ? (

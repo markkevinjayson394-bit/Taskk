@@ -13,26 +13,33 @@ try {
 }
 
 export {
-  formatDeadlineCountdown,
-  parseDueDate,
-  resolveTaskDueDate,
-  PRIORITY_COLOR,
-  TYPE_META,
+    formatDeadlineCountdown,
+    parseDueDate,
+    PRIORITY_COLOR,
+    resolveTaskDueDate,
+    TYPE_META
 };
 
 // ---------------------------------------------------------------------------
 // Sound
 // ---------------------------------------------------------------------------
 
-export async function playAlarmSound(soundRef, cancelRef = null, retryCount = 0) {
+export async function playAlarmSound(
+  soundRef,
+  cancelRef = null,
+  retryCount = 0
+) {
   if (!Audio) return;
   try {
+    // Check cancel flag BEFORE creating sound to avoid orphaning
+    if (cancelRef?.current) return;
+
     await Audio.setAudioModeAsync({
       playsInSilentModeIOS: true,
-      staysActiveInBackground: true,      // keeps audio alive when screen locks
-      interruptionModeIOS: 1,             // DO_NOT_MIX
-      interruptionModeAndroid: 1,         // DO_NOT_MIX
-      shouldDuckAndroid: false,           // full volume, no ducking
+      staysActiveInBackground: true, // keeps audio alive when screen locks
+      interruptionModeIOS: 1, // DO_NOT_MIX
+      interruptionModeAndroid: 1, // DO_NOT_MIX
+      shouldDuckAndroid: false, // full volume, no ducking
       playThroughEarpieceAndroid: false,
     });
 
@@ -47,26 +54,19 @@ export async function playAlarmSound(soundRef, cancelRef = null, retryCount = 0)
       { shouldPlay: true, isLooping: true, volume: 1.0 }
     );
 
-    // Stop was requested while sound was loading — don't assign
-    if (cancelRef?.current) {
-      await sound.stopAsync().catch(() => {});
-      await sound.unloadAsync().catch(() => {});
-      return;
-    }
-
     soundRef.current = sound;
   } catch (err) {
     soundRef.current = null;
     console.warn("DeadlineAlarmModal: audio unavailable", err);
     if (retryCount < 2) {
-      await new Promise(r => setTimeout(r, 500 * (retryCount + 1)));
+      await new Promise((r) => setTimeout(r, 500 * (retryCount + 1)));
       return playAlarmSound(soundRef, cancelRef, retryCount + 1);
     }
   }
 }
 
 export async function stopAlarmSound(soundRef, cancelRef = null) {
-  // Signal cancellation so in-flight createAsync doesn't assign after stop
+  // Signal cancellation so in-flight createAsync doesn't assign or play after stop
   if (cancelRef) {
     cancelRef.current = true;
   }
@@ -76,6 +76,8 @@ export async function stopAlarmSound(soundRef, cancelRef = null) {
       await soundRef.current.unloadAsync();
       soundRef.current = null;
     }
+    // If soundRef.current is null, the cancelRef flag above is enough
+    // to stop the in-flight createAsync from assigning and playing
   } catch (err) {
     warnIfDev("DeadlineAlarmModal: failed to stop alarm sound", err);
   }

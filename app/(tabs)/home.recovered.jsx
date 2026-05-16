@@ -67,10 +67,6 @@ import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
 import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../../utils/deadlineTime";
 import { reportError, reportWarning } from "../../utils/logger";
-import {
-  clearPendingAlarmAction,
-  getPendingAlarmAction,
-} from "../../utils/nativeAlarm";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import {
   calculateDailyWorkload,
@@ -315,7 +311,7 @@ export default function HomeDashboard() {
     markDoneAlarm,
     showAlarmForTask,
   } = useDeadlineAlarmScheduler(stableUpcomingAssignments, {
-    foregroundModalEnabled: false,
+    foregroundModalEnabled: true,
   });
 
   const { focusTaskId, showAlarm } = useLocalSearchParams();
@@ -328,21 +324,6 @@ export default function HomeDashboard() {
       showAlarmForTask(task, null);
     }
   }, [showAlarm, focusTaskId, upcomingAssignments, showAlarmForTask]);
-
-  // Also handle native pending action on app cold launch:
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const pending = await getPendingAlarmAction();
-      if (!pending?.alarmId || cancelled) return;
-      const task = upcomingAssignments.find((t) => t.id === pending.alarmId);
-      if (task) showAlarmForTask(task, null);
-      await clearPendingAlarmAction();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [upcomingAssignments, showAlarmForTask]);
 
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);

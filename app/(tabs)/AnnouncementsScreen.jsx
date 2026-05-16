@@ -73,25 +73,37 @@ export default function AnnouncementsScreen() {
   const hasLoaded = useRef(false);
   // FIX: refresh announcements each time the screen is focused
   useFocusEffect(
-    useCallback(async () => {
-      if (!hasLoaded.current) {
-        if (readKey) {
-          try {
-            const raw = await AsyncStorage.getItem(readKey);
-            if (raw) setReadIds(new Set(JSON.parse(raw)));
-          } catch (_err) {}
+    useCallback(() => {
+      let cancelled = false;
+
+      const run = async () => {
+        if (!hasLoaded.current) {
+          if (readKey) {
+            try {
+              const raw = await AsyncStorage.getItem(readKey);
+              if (raw && !cancelled) setReadIds(new Set(JSON.parse(raw)));
+            } catch (_err) {}
+          }
+          if (!cancelled) {
+            await loadAnnouncements();
+            hasLoaded.current = true;
+          }
+        } else if (isOnline) {
+          if (readKey) {
+            try {
+              const raw = await AsyncStorage.getItem(readKey);
+              if (raw && !cancelled) setReadIds(new Set(JSON.parse(raw)));
+            } catch (_err) {}
+          }
+          if (!cancelled) loadAnnouncements(true); // silent refresh
         }
-        await loadAnnouncements();
-        hasLoaded.current = true;
-      } else if (isOnline) {
-        if (readKey) {
-          try {
-            const raw = await AsyncStorage.getItem(readKey);
-            if (raw) setReadIds(new Set(JSON.parse(raw)));
-          } catch (_err) {}
-        }
-        loadAnnouncements(true); // silent refresh
-      }
+      };
+
+      run();
+
+      return () => {
+        cancelled = true;
+      };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOnline])
   );

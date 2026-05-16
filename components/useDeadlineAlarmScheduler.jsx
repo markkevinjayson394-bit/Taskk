@@ -1,47 +1,41 @@
 /**
  * components/useDeadlineAlarmScheduler.js
  *
- * CHANGES:
- * - [FIX GAP-3] showAlarmForTask: when the task is already the active alarm,
- *   update its thresholdKey instead of silently no-oping. This ensures that
- *   when a native alarm restore path calls showAlarmForTask(task, stageKey),
- *   the correct stage propagates into alarmThresholdKey → DeadlineAlarmModal.
- * - [FIX] notifee.cancelNotification() called in notDoneAlarm/markDoneAlarm
- *   before advancing the queue so the ongoing shade notification is dismissed.
+ * CHANGES IN THIS VERSION:
+ * - [FIX] foregroundModalEnabled is now respected as true by default — when due
+ *   time hits while app is foreground, modal opens automatically.
+ * - [FIX] When modal opens from the interval checker (foreground), the shade
+ *   notification for that task is cancelled immediately — no duplicate surfaces.
+ * - [FIX] When modal opens for any alarm, all shade notifications for that task
+ *   are cancelled so only the modal shows.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import {
-    DEADLINE_NOTIF_TYPE,
-    displayAlarmNotification,
+  DEADLINE_NOTIF_TYPE,
+  displayAlarmNotification,
+  displayLeadNotification,
 } from "../utils/deadlineAlarmBackground";
 import {
-    FOREGROUND_THRESHOLDS,
-    OVERDUE_CHAIN,
+  FOREGROUND_THRESHOLDS,
+  OVERDUE_CHAIN,
 } from "../utils/deadlineConstants";
+import { dismissDeadlinePresentations } from "../utils/deadlineNotifications";
 import { warnIfDev } from "../utils/logger";
 import { buildDeadlineNotificationId } from "../utils/notificationIds";
 import {
-    resolveCurrentOverdueStageInfo,
-    resolveDailyAckBucket as resolveStoredDailyAckBucket,
+  resolveCurrentOverdueStageInfo,
+  resolveDailyAckBucket as resolveStoredDailyAckBucket,
 } from "../utils/taskOverdueState";
 import { parseDueDate, resolveTaskDueDate } from "./DeadlineAlarmModal.helpers";
-
-let notifee = null;
-try {
-  notifee = require("@notifee/react-native").default;
-} catch (_e) {}
 
 const ACK_STORE_KEY = "deadline_alarm_acks_v1";
 const ACK_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const CHECK_INTERVAL_MS = 3_000;
-const OVERDUE_STAGES = new Set([
-  "1d",
-  "2h",
-  "30m",
-  "5m",
+const LEAD_STAGE_KEYS = new Set(["1d", "2h", "30m", "5m"]);
+const PERSISTENT_ALARM_STAGE_KEYS = new Set([
   "due",
   "+15m",
   "+1h",
@@ -104,6 +98,41 @@ async function saveAcks(acks) {
 
 function buildAckKey(taskId, thresholdKey) {
   return `${taskId}:${thresholdKey}`;
+}
+
+function formatLeadLabel(thresholdKey) {
+  switch (thresholdKey) {
+    case "1d":
+      return "1 day";
+    case "2h":
+      return "2 hours";
+    case "30m":
+      return "30 min";
+    case "5m":
+      return "5 min";
+    default:
+      return "soon";
+  }
+}
+
+function buildForegroundLeadTitle(thresholdKey) {
+  return `\u23F0 Due in ${formatLeadLabel(thresholdKey)}`;
+}
+
+function buildForegroundLeadBody(task) {
+  const due = resolveTaskDueDate(task);
+  const taskTitle = task?.title ?? "Task";
+  const subjectLabel = task?.subject ?? task?.subjectName ?? "General";
+  if (!due) {
+    return `${taskTitle} • ${subjectLabel}`;
+  }
+
+  const dueStr = due.toLocaleString("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${taskTitle} • ${subjectLabel} — ${dueStr}`;
 }
 
 function getDailyAckBucket(dueMs, nowMs) {
@@ -185,42 +214,20 @@ function saveOverdueAckEntries(acks, taskId, dueAt, nowMs) {
 }
 
 /**
- * resolveNotifeeIdsForAlarm
- *
- * Returns all notifee notification IDs that could be posted for the given
- * alarm queue entry. We cancel all of them so the user's shade is cleared
- * regardless of which exact ID notifee used when the alarm fired.
+ * [FIX] Cancel ALL shade notifications for a task when modal opens —
+ * covers due, all overdue stages, and display variants.
+ * This prevents the modal + shade duplicate.
  */
-function resolveNotifeeIdsForAlarm(alarmEntry) {
-  if (!alarmEntry?.task?.id) return [];
-  const taskId = alarmEntry.task.id;
-  const thresholdKey = alarmEntry.thresholdKey;
-
-  const ids = new Set();
-
-  ids.add(buildDeadlineNotificationId(taskId, thresholdKey || "due"));
-
-  try {
-    ids.add(buildDeadlineNotificationId(taskId, "due"));
-    if (thresholdKey) {
-      ids.add(buildDeadlineNotificationId(taskId, thresholdKey));
-    }
-  } catch (_e) {
-    // no-op
-  }
-
-  return Array.from(ids);
+async function cancelAllShadeNotificationsForTask(taskId) {
+  if (!taskId) return;
+  await dismissDeadlinePresentations(taskId);
 }
 
-/**
- * cancelNotifeeAlarmNotifications
- */
 async function cancelNotifeeAlarmNotifications(alarmEntry) {
-  if (!notifee) return;
-  const ids = resolveNotifeeIdsForAlarm(alarmEntry);
-  await Promise.all(
-    ids.map((id) => notifee.cancelNotification(id).catch(() => {}))
-  );
+  if (!alarmEntry?.task?.id) return;
+  await dismissDeadlinePresentations(alarmEntry.task.id, {
+    thresholdKey: alarmEntry.thresholdKey || null,
+  });
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -243,6 +250,12 @@ export function useDeadlineAlarmScheduler(
     const next = alarmQueueRef.current.shift() || null;
     setActiveAlarm(next);
     setAlarmVisible(Boolean(next));
+
+    // [FIX] When a modal activates, cancel all shade notifications for that
+    // task immediately — no duplicate modal + shade surfaces.
+    if (next?.task?.id) {
+      cancelAllShadeNotificationsForTask(next.task.id).catch(() => {});
+    }
   }, []);
 
   const dismissAlarm = useCallback(() => {
@@ -271,9 +284,9 @@ export function useDeadlineAlarmScheduler(
   }, [deadlineWarningEnabled]);
 
   const checkAlarms = useCallback(() => {
-    // NOTE: pendingTasks reference is expected to be stable by the parent.
-    // If it changes on every render, this callback will be recreated and
-    // any interval logic may effectively reset.
+    if (!pendingTasks?.length) {
+      return;
+    }
 
     const nowMs = Date.now();
     const lastCheckedAt = lastCheckedAtRef.current || nowMs;
@@ -294,41 +307,81 @@ export function useDeadlineAlarmScheduler(
 
       const key = buildAckKey(task.id, triggered.ackKey);
       if (acksRef.current[key]) continue;
-      if (
-        AppState.currentState === "active" &&
-        Platform.OS === "android" &&
-        OVERDUE_STAGES.has(triggered.thresholdKey)
-      ) {
-        const due = resolveTaskDueDate(task);
-        const dueAtMs = due?.getTime() ?? null;
-        const notifId = buildDeadlineNotificationId(
-          task.id,
-          triggered.thresholdKey
-        );
-        displayAlarmNotification({
-          id: notifId,
-          title: `⏰ ${task.title ?? "Task"} is due NOW`,
-          body: `"${task.title}" (${task.subject ?? task.subjectName ?? "General"}) — tap Done or Not Done. Alarm loops until you respond.`,
-          data: {
+
+      // [FIX] foregroundModalEnabled is now true by default.
+      // When false: only post shade notification (background-only mode).
+      // When true: open modal AND cancel the shade notification.
+      if (foregroundModalEnabled === false) {
+        // Background-only mode: post shade notification, skip modal.
+        if (
+          AppState.currentState === "active" &&
+          Platform.OS === "android" &&
+          (LEAD_STAGE_KEYS.has(triggered.thresholdKey) ||
+            PERSISTENT_ALARM_STAGE_KEYS.has(triggered.thresholdKey))
+        ) {
+          const due = resolveTaskDueDate(task);
+          const dueAtMs = due?.getTime() ?? null;
+          const notifId = buildDeadlineNotificationId(
+            task.id,
+            triggered.thresholdKey
+          );
+          const subjectLabel = task.subject ?? task.subjectName ?? "General";
+          const baseData = {
             type: DEADLINE_NOTIF_TYPE,
             notificationType: DEADLINE_NOTIF_TYPE,
             taskId: task.id,
             taskTitle: task.title ?? "",
-            subject: task.subject ?? task.subjectName ?? "General",
+            subject: subjectLabel,
             dueAtMs,
-            acknowledgeRequired: true,
-            isLeadTime: false,
             stage: triggered.thresholdKey,
             intendedTriggerAtMs: triggered.intendedTriggerAtMs ?? null,
             scheduledAtMs: Date.now(),
             deliveryPath: "foreground_catchup",
-          },
-          isOngoing: true,
-        }).catch(() => {});
+          };
+          if (LEAD_STAGE_KEYS.has(triggered.thresholdKey)) {
+            displayLeadNotification({
+              id: notifId,
+              title: buildForegroundLeadTitle(triggered.thresholdKey),
+              body: buildForegroundLeadBody(task),
+              data: {
+                ...baseData,
+                acknowledgeRequired: false,
+                isLeadTime: true,
+                alarmKind: "lead_notice",
+              },
+            }).catch(() => {});
+          } else {
+            displayAlarmNotification({
+              id: notifId,
+              title: `⏰ ${task.title ?? "Task"} is due NOW`,
+              body: `"${task.title}" (${subjectLabel}) — tap Open or Not Done.`,
+              data: {
+                type: DEADLINE_NOTIF_TYPE,
+                notificationType: DEADLINE_NOTIF_TYPE,
+                taskId: task.id,
+                taskTitle: task.title ?? "",
+                subject: subjectLabel,
+                dueAtMs,
+                acknowledgeRequired: true,
+                isLeadTime: false,
+                stage: triggered.thresholdKey,
+                intendedTriggerAtMs: triggered.intendedTriggerAtMs ?? null,
+                scheduledAtMs: Date.now(),
+                deliveryPath: "foreground_catchup",
+              },
+              isOngoing: true,
+            }).catch(() => {});
+          }
+        }
+        pendingAcksRef.current.add(key);
+        continue;
       }
-      pendingAcksRef.current.add(key);
 
-      if (foregroundModalEnabled === false) continue;
+      // [FIX] foregroundModalEnabled === true:
+      // Modal opens. Shade notification is cancelled inside activateNextAlarm
+      // via cancelAllShadeNotificationsForTask. Do NOT post a duplicate shade
+      // notification here when the modal is going to open.
+      pendingAcksRef.current.add(key);
 
       if (
         alarmQueueRef.current.find(
@@ -485,6 +538,8 @@ export function useDeadlineAlarmScheduler(
           );
         }
         setAlarmVisible(true);
+        // [FIX] Cancel shade notifications when modal becomes visible
+        cancelAllShadeNotificationsForTask(task.id).catch(() => {});
         return;
       }
 

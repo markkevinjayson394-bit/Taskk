@@ -12,11 +12,13 @@ const mockNotifee = {
 const mockRegisterHeadlessTask = jest.fn();
 const mockWriteAlarmAction = jest.fn().mockResolvedValue(true);
 const mockCancelNativeAlarmByAlarmId = jest.fn().mockResolvedValue(true);
+const mockClearPendingAlarmAction = jest.fn().mockResolvedValue(true);
 const mockStopActiveNativeAlarm = jest.fn().mockResolvedValue(true);
 const mockForceStopNativeAlarm = jest.fn().mockResolvedValue({
   status: "success",
   value: true,
 });
+const mockSetCheckpoint = jest.fn().mockResolvedValue(undefined);
 const mockAdvanceCheckpoint = jest.fn().mockResolvedValue({
   key: "+15m",
   delayMs: 15 * 60 * 1000,
@@ -41,11 +43,15 @@ const mockResolveNotificationAlarmKind = jest.fn((data = {}) => {
 jest.mock("@notifee/react-native", () => ({
   __esModule: true,
   default: mockNotifee,
+  EventType: mockNotifee.EventType,
 }));
 
 jest.mock("react-native", () => ({
   AppRegistry: {
     registerHeadlessTask: mockRegisterHeadlessTask,
+  },
+  AppState: {
+    currentState: "background",
   },
   NativeModules: {},
   TurboModuleRegistry: null,
@@ -78,6 +84,7 @@ jest.mock("../../utils/logger", () => ({
 
 jest.mock("../../utils/nativeAlarm", () => ({
   cancelNativeAlarmByAlarmId: mockCancelNativeAlarmByAlarmId,
+  clearPendingAlarmAction: mockClearPendingAlarmAction,
   forceStopNativeAlarm: mockForceStopNativeAlarm,
   stopActiveNativeAlarm: mockStopActiveNativeAlarm,
   writeAlarmAction: mockWriteAlarmAction,
@@ -85,6 +92,7 @@ jest.mock("../../utils/nativeAlarm", () => ({
 
 jest.mock("../../utils/taskOverdueState", () => ({
   advanceCheckpoint: mockAdvanceCheckpoint,
+  setCheckpoint: mockSetCheckpoint,
 }));
 
 describe("tasks/AlarmDisplayTask background events", () => {
@@ -117,7 +125,7 @@ describe("tasks/AlarmDisplayTask background events", () => {
     );
   });
 
-  it("displays a deadline alarm from the headless task payload", async () => {
+  it("skips the duplicate notifee shade when the native foreground service owns display", async () => {
     const { headlessTask } = loadModule();
 
     await headlessTask({
@@ -135,19 +143,85 @@ describe("tasks/AlarmDisplayTask background events", () => {
         stage: "due",
         acknowledgeRequired: true,
         isLeadTime: false,
+        deliveryPath: "native_popup",
       }),
     });
 
     expect(mockBootstrapDeadlineAlarmChannel).toHaveBeenCalled();
+    expect(mockDisplayAlarmNotification).not.toHaveBeenCalled();
+    expect(mockDisplayLeadNotification).not.toHaveBeenCalled();
+  });
+
+  it("still displays a due alarm when the payload uses the expo fallback path", async () => {
+    const { headlessTask } = loadModule();
+
+    await headlessTask({
+      alarmId: "deadline-expo-1",
+      title: "Deadline Due Test",
+      body: "Test Task is due now.",
+      payloadJson: JSON.stringify({
+        type: "deadline_alarm",
+        notificationType: "deadline_alarm",
+        alarmKind: "due_alarm",
+        taskId: "task-1",
+        taskTitle: "Test Task",
+        subjectLabel: "General",
+        dueAtMs: Date.now(),
+        stage: "due",
+        acknowledgeRequired: true,
+        isLeadTime: false,
+        deliveryPath: "expo_fallback",
+      }),
+    });
+
     expect(mockDisplayAlarmNotification).toHaveBeenCalledWith({
-      id: "deadline-native-1-display",
+      id: "deadline-expo-1-display",
       title: "Deadline Due Test",
       body: "Test Task is due now.",
       data: expect.objectContaining({
-        alarmId: "deadline-native-1",
-        notificationId: "deadline-native-1",
+        alarmId: "deadline-expo-1",
+        notificationId: "deadline-expo-1",
         taskId: "task-1",
         stage: "due",
+        deliveryPath: "expo_fallback",
+      }),
+      isOngoing: true,
+    });
+    expect(mockDisplayLeadNotification).not.toHaveBeenCalled();
+  });
+
+  it("still displays a due alarm when the payload uses an inexact native fallback path", async () => {
+    const { headlessTask } = loadModule();
+
+    await headlessTask({
+      alarmId: "deadline-inexact-1",
+      title: "Deadline Due Test",
+      body: "Test Task is due now.",
+      payloadJson: JSON.stringify({
+        type: "deadline_alarm",
+        notificationType: "deadline_alarm",
+        alarmKind: "due_alarm",
+        taskId: "task-1",
+        taskTitle: "Test Task",
+        subjectLabel: "General",
+        dueAtMs: Date.now(),
+        stage: "due",
+        acknowledgeRequired: true,
+        isLeadTime: false,
+        deliveryPath: "native_inexact_popup",
+      }),
+    });
+
+    expect(mockDisplayAlarmNotification).toHaveBeenCalledWith({
+      id: "deadline-inexact-1-display",
+      title: "Deadline Due Test",
+      body: "Test Task is due now.",
+      data: expect.objectContaining({
+        alarmId: "deadline-inexact-1",
+        notificationId: "deadline-inexact-1",
+        taskId: "task-1",
+        stage: "due",
+        deliveryPath: "native_inexact_popup",
       }),
       isOngoing: true,
     });
@@ -216,7 +290,7 @@ describe("tasks/AlarmDisplayTask background events", () => {
     );
   });
 
-  it("writes the done action without scheduling another checkpoint", async () => {
+  it("writes the open action without scheduling another checkpoint", async () => {
     const { backgroundHandler } = loadModule();
 
     await backgroundHandler({
@@ -237,13 +311,16 @@ describe("tasks/AlarmDisplayTask background events", () => {
     });
 
     expect(mockWriteAlarmAction).toHaveBeenCalledWith(
-      "markdone",
+      "open",
       "deadline-1",
       expect.any(String)
     );
     expect(mockCancelNativeAlarmByAlarmId).toHaveBeenCalledWith("deadline-1");
-    expect(mockNotifee.cancelNotification).not.toHaveBeenCalled();
-    expect(mockStopActiveNativeAlarm).not.toHaveBeenCalled();
+    expect(mockNotifee.cancelNotification).toHaveBeenCalledWith("deadline-1");
+    expect(mockNotifee.cancelNotification).toHaveBeenCalledWith(
+      "deadline-1-display"
+    );
+    expect(mockStopActiveNativeAlarm).toHaveBeenCalled();
     expect(mockAdvanceCheckpoint).not.toHaveBeenCalled();
     expect(mockScheduleNextOverdueAlarm).not.toHaveBeenCalled();
   });
@@ -277,11 +354,16 @@ describe("tasks/AlarmDisplayTask background events", () => {
     expect(mockWriteAlarmAction).not.toHaveBeenCalled();
     expect(mockBootstrapDeadlineAlarmChannel).toHaveBeenCalled();
     expect(mockCancelNativeAlarmByAlarmId).toHaveBeenCalledWith("deadline-1");
+    expect(mockClearPendingAlarmAction).toHaveBeenCalled();
     expect(mockAdvanceCheckpoint).toHaveBeenCalledWith(
       "task-1",
       "due",
-      dueAtMs
+      dueAtMs,
+      { handledByShade: true }
     );
+    expect(mockSetCheckpoint).toHaveBeenCalledWith("task-1", "due", null, {
+      handledByShade: true,
+    });
     expect(mockScheduleNextOverdueAlarm).toHaveBeenCalledWith({
       task: expect.objectContaining({
         id: "task-1",

@@ -24,6 +24,7 @@ import { db } from "../config/firebase";
 import { DEADLINE_NOTIF_TYPE } from "./deadlineAlarmBackground";
 import { warnIfDev } from "./logger";
 import {
+    cancelNativeAlarmByAlarmId,
     canScheduleExactAlarms,
     isNativeAlarmSupported,
     scheduleNativeAlarm,
@@ -145,7 +146,10 @@ async function stampCooldown(userId) {
 export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
   if (Platform.OS !== "android") return;
   if (!isNativeAlarmSupported) return;
-  if (opts.hasPendingAction) return;
+  if (opts.hasPendingAction || opts.deadlineHandoffActive) {
+    warnIfDev("[overdueAutoLaunch] Skipping auto-launch: active deadline handoff");
+    return;
+  }
   if (!opts.skipCooldown && (await isInCooldown(userId))) return;
 
   // Stamp cooldown immediately to prevent concurrent calls from bypassing the check
@@ -191,6 +195,7 @@ export async function checkAndAutoLaunchOverdueAlarm(userId, opts = {}) {
     " min overdue. Mark it done or acknowledge.";
 
   const alarmId = buildNotificationId("auto-overdue", task.id, "open");
+  await cancelNativeAlarmByAlarmId(alarmId).catch(() => {});
   const payload = buildManagedNotificationData(alarmId, {
     type: DEADLINE_NOTIF_TYPE,
     notificationType: DEADLINE_NOTIF_TYPE,

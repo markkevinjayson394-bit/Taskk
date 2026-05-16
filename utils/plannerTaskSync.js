@@ -1,28 +1,28 @@
 import {
-  Timestamp,
-  collection,
-  doc,
-  getDocs,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where,
-  writeBatch,
+    Timestamp,
+    collection,
+    doc,
+    getDocs,
+    query,
+    serverTimestamp,
+    updateDoc,
+    where,
+    writeBatch,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { getDb } from "../config/firebase";
 import {
-  buildSubjectIdFromName,
-  buildTaskCreateData,
-  getTaskPriorityLevel,
-  isTaskCompleted,
-  normalizeSubjectName,
-  parseDueDate,
+    buildSubjectIdFromName,
+    buildTaskCreateData,
+    getTaskPriorityLevel,
+    isTaskCompleted,
+    normalizeSubjectName,
+    parseDueDate,
 } from "./academicTaskModel";
 import {
-  endOfLocalDay,
-  isSameLocalDay,
-  startOfLocalDay,
-  toLocalDayKey,
+    endOfLocalDay,
+    isSameLocalDay,
+    startOfLocalDay,
+    toLocalDayKey,
 } from "./dateHelpers";
 import { errorIfDev } from "./logger";
 import { clampText } from "./parsing";
@@ -154,7 +154,7 @@ function taskNeedsUpdate(existing, desired) {
 async function fetchAssignmentsByUser(uid) {
   try {
     const snap = await getDocs(
-      query(collection(db, "assignments"), where("userId", "==", uid))
+      query(collection(getDb(), "assignments"), where("userId", "==", uid))
     );
     return snap.docs.map((item) => ({ id: item.id, ...item.data() }));
   } catch (error) {
@@ -310,7 +310,7 @@ async function syncBucket(
   bucketKey,
   desiredTasks,
   existingAssignments,
-  dbRef = db
+  dbRef = getDb()
 ) {
   const plannerDocs = existingAssignments.filter(
     (item) => item.source === "planner" && item.plannerBucket === bucketKey

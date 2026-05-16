@@ -53,12 +53,16 @@ jest.mock("../../utils/academicTaskModel", () => ({
 }));
 
 jest.mock("../../utils/logger", () => ({
+  logIfDev: jest.fn(),
   warnIfDev: jest.fn(),
 }));
 
 jest.mock("../../utils/nativeAlarm", () => mockNativeAlarm);
 
 jest.mock("../../utils/notificationIds", () => ({
+  buildDeadlineNotificationId: jest.fn((taskId, stage) =>
+    `deadline-overdue:${taskId}:${stage}`
+  ),
   buildManagedNotificationData: jest.fn((id, data) => ({ id, ...data })),
   buildNotificationId: jest.fn((prefix, taskId, stage) =>
     `${prefix}:${taskId}:${stage}`
@@ -81,6 +85,13 @@ jest.mock("../../utils/taskOverdueState", () => ({
 }));
 
 jest.mock("../../utils/deadlineConstants", () => ({
+  FOREGROUND_THRESHOLDS: [
+    { key: "1d", ms: 24 * 60 * 60 * 1000 },
+    { key: "2h", ms: 2 * 60 * 60 * 1000 },
+    { key: "30m", ms: 30 * 60 * 1000 },
+    { key: "5m", ms: 5 * 60 * 1000 },
+    { key: "due", ms: 0 },
+  ],
   OVERDUE_CHAIN: [
     { key: "due", delayMs: 0 },
     { key: "+15m", delayMs: 15 * 60 * 1000 },
@@ -89,8 +100,6 @@ jest.mock("../../utils/deadlineConstants", () => ({
 }));
 
 const {
-  ACTION_MARK_DONE,
-  ACTION_NOT_DONE,
   DEADLINE_CATEGORY_ID,
   bootstrapDeadlineAlarmChannel,
   displayAlarmNotification,
@@ -117,14 +126,14 @@ describe("deadlineAlarmBackground", () => {
       DEADLINE_CATEGORY_ID,
       [
         {
-          identifier: ACTION_MARK_DONE,
-          buttonTitle: "Done",
+          identifier: "open_deadline_alarm",
+          buttonTitle: "Open",
           options: { opensAppToForeground: true },
         },
         {
-          identifier: ACTION_NOT_DONE,
+          identifier: "not_done_deadline_alarm",
           buttonTitle: "Not Done",
-          options: { opensAppToForeground: true },
+          options: { opensAppToForeground: false },
         },
       ]
     );
@@ -147,14 +156,14 @@ describe("deadlineAlarmBackground", () => {
       DEADLINE_CATEGORY_ID,
       [
         {
-          identifier: ACTION_MARK_DONE,
-          buttonTitle: "Done",
+          identifier: "open_deadline_alarm",
+          buttonTitle: "Open",
           options: { opensAppToForeground: true },
         },
         {
-          identifier: ACTION_NOT_DONE,
+          identifier: "not_done_deadline_alarm",
           buttonTitle: "Not Done",
-          options: { opensAppToForeground: true },
+          options: { opensAppToForeground: false },
         },
       ]
     );
@@ -228,6 +237,28 @@ describe("deadlineAlarmBackground", () => {
     );
   });
 
+  it("falls back to Expo scheduling for Android lead reminders when native scheduling fails", async () => {
+    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(async ({ alarmId }) => {
+      if (alarmId === "deadline-lead:task-1:30m") return null;
+      return `native-alarm:${alarmId}`;
+    });
+
+    await scheduleDeadlineAlarms({
+      id: "task-1",
+      title: "Essay",
+      subject: "English",
+    });
+
+    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identifier: "deadline-lead:task-1:30m",
+        content: expect.objectContaining({
+          channelId: "ctu-deadline-lead-v2",
+        }),
+      })
+    );
+  });
+
   it("marks the due native path as no-fullscreen fallback when popup permission is missing", async () => {
     mockNativeAlarm.ensureNativeAlarmPermissions.mockResolvedValue({
       exactAlarm: { status: "success", value: true },
@@ -298,6 +329,15 @@ describe("deadlineAlarmBackground", () => {
     });
 
     expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalled();
+    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.objectContaining({
+          sticky: true,
+          autoDismiss: false,
+          channelId: "ctu-deadline-alarms-v2",
+        }),
+      })
+    );
     expect(mockNotifee.displayNotification).not.toHaveBeenCalled();
   });
 });

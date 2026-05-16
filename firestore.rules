@@ -75,6 +75,7 @@ service cloud.firestore {
 
     function validReminderPolicy(data) {
       return !("reminderPolicy" in data)
+        || data.reminderPolicy == null
         || (
           data.reminderPolicy is map
           && (!("type" in data.reminderPolicy)

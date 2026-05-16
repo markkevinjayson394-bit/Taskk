@@ -8,52 +8,56 @@ import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { Component, useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    AppState,
-    InteractionManager,
-    NativeEventEmitter,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  AppState,
+  InteractionManager,
+  NativeEventEmitter,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { app, db } from "../config/firebase";
 import { ThemeProvider } from "../context/ThemeContext";
 import {
-    ACTION_MARK_DONE,
-    ACTION_NOT_DONE,
-    bootstrapDeadlineAlarmChannel,
-    DEADLINE_NOTIF_TYPE,
-    handleDeadlineAlarmResponse,
+  bootstrapDeadlineAlarmChannel,
+  handleDeadlineAlarmResponse,
 } from "../utils/deadlineAlarmBackground";
 import {
-    isDeadlineAlarmModalEligible,
-    resolveDeadlineAlarmStage,
-} from "../utils/deadlineAlarmStage";
+  buildDeadlineRouteParams,
+  isDeadlineNotificationData,
+  logDeadlineFlow,
+  normalizeDeadlineAlarmAction,
+  resolveDeadlineNotificationSourceId,
+} from "../utils/deadlineNotifications";
 import {
-    errorIfDev,
-    reportError,
-    reportWarning,
-    warnIfDev,
+  logStartupHandoffConsumed,
+  logStartupHandoffSkipped,
+} from "../utils/alarmDiagnostics";
+import {
+  errorIfDev,
+  reportError,
+  reportWarning,
+  warnIfDev,
 } from "../utils/logger";
 import {
-    ensureNativeAlarmPermissions,
-    isIgnoringBatteryOptimizations,
-    rawNativeAlarmModule,
-    requestIgnoreBatteryOptimizations,
+  ensureNativeAlarmPermissions,
+  isIgnoringBatteryOptimizations,
+  rawNativeAlarmModule,
+  requestIgnoreBatteryOptimizations,
 } from "../utils/nativeAlarm";
 import {
-    getPostOnboardingRoute,
-    getTutorialRoute,
-    hasCompletedOnboarding,
+  getPostOnboardingRoute,
+  getTutorialRoute,
+  hasCompletedOnboarding,
 } from "../utils/onboarding";
 import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
 import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
-const LAST_HANDLED_RESPONSE_KEY = "last_handled_notif_response_id";
-
+const LAST_HANDLED_DEADLINE_RESPONSE_KEY =
+  "last_handled_deadline_response_id";
 function buildSentryIntegrations() {
   const integrations = [];
 
@@ -338,9 +342,75 @@ function RootLayoutNav() {
     let appStateSubscription;
     let nativeAlarmTapSubscription;
 
-    // Guard prevents double-fire within the same app session
+    const deadlineSourceLock = { current: { sourceId: null, at: 0 } };
+    const startupDeadlineReconciled = { current: false };
     const alarmActionInFlight = { current: false };
     let isInitialOverdueCheck = true;
+
+    const wasDeadlineSourceHandled = async (sourceId) => {
+      if (!sourceId) return false;
+      const recent = deadlineSourceLock.current;
+      if (
+        recent?.sourceId === sourceId &&
+        Date.now() - (recent?.at || 0) < 15_000
+      ) {
+        return true;
+      }
+
+      const persisted = await AsyncStorage.getItem(
+        LAST_HANDLED_DEADLINE_RESPONSE_KEY
+      ).catch(() => null);
+      return persisted === sourceId;
+    };
+
+    const rememberDeadlineSource = async (sourceId) => {
+      if (!sourceId) return;
+      deadlineSourceLock.current = {
+        sourceId,
+        at: Date.now(),
+      };
+      await AsyncStorage.setItem(
+        LAST_HANDLED_DEADLINE_RESPONSE_KEY,
+        sourceId
+      ).catch(() => {});
+    };
+
+    const navigateDeadlineRoute = async (params, reason) => {
+      if (!params?.focusTaskId) return false;
+      const sourceId =
+        typeof params?.sourceId === "string" && params.sourceId.trim()
+          ? params.sourceId.trim()
+          : null;
+
+      if (sourceId && (await wasDeadlineSourceHandled(sourceId))) {
+        logDeadlineFlow("duplicate_ignored", {
+          reason,
+          sourceId,
+          taskId: params.focusTaskId,
+        });
+        return false;
+      }
+
+      if (sourceId) {
+        await rememberDeadlineSource(sourceId);
+      }
+
+      logDeadlineFlow("navigate", {
+        reason,
+        sourceId,
+        taskId: params.focusTaskId,
+        alarmAction: params.alarmAction ?? "open",
+      });
+
+      routerRef.current.push({
+        pathname: "/(tabs)/TaskManagerScreen",
+        params: {
+          ...params,
+          nativeHandoff: "1",
+        },
+      });
+      return true;
+    };
 
     const checkPendingAlarmAction = async () => {
       if (alarmActionInFlight.current) return false;
@@ -348,17 +418,27 @@ function RootLayoutNav() {
       try {
         const params = await consumePendingAlarmAction();
         if (!params) return false;
-        // Native alarm is still ringing when this fires.
-        // Pass nativeHandoff=1 so the modal owns stopping it via button press.
-        // Do NOT call stopActiveNativeAlarm here.
-        routerRef.current.push({
-          pathname: "/(tabs)/TaskManagerScreen",
-          params: {
-            ...params,
-            nativeHandoff: "1",
-          },
-        });
-        return true; // signal that a pending action was found
+        const navigated = await navigateDeadlineRoute(params, "native_pending");
+        if (navigated) {
+          await logStartupHandoffConsumed(params.focusTaskId, {
+            sourceId: params.sourceId ?? null,
+            alarmAction: params.alarmAction ?? "open",
+            alarmStage: params.displayStage ?? params.alarmStage ?? null,
+            recoveryReason: params.recoveryReason ?? null,
+          }).catch(() => {});
+        } else {
+          await logStartupHandoffSkipped(
+            params.focusTaskId,
+            "duplicate_or_unhandled",
+            {
+              sourceId: params.sourceId ?? null,
+              alarmAction: params.alarmAction ?? "open",
+              alarmStage: params.displayStage ?? params.alarmStage ?? null,
+              recoveryReason: params.recoveryReason ?? null,
+            }
+          ).catch(() => {});
+        }
+        return navigated;
       } catch (err) {
         warnIfDev("Failed to check pending native alarm action:", err);
         return false;
@@ -370,7 +450,10 @@ function RootLayoutNav() {
       }
     };
 
-    const checkForOverdueTaskOnOpen = async (hasPendingAction = false) => {
+    const checkForOverdueTaskOnOpen = async (
+      hasPendingAction = false,
+      deadlineHandoffActive = false
+    ) => {
       try {
         const runtimeAuth = getAuth(app);
         const user = runtimeAuth?.currentUser;
@@ -379,11 +462,112 @@ function RootLayoutNav() {
         isInitialOverdueCheck = false;
         await checkAndAutoLaunchOverdueAlarm(user.uid, {
           hasPendingAction,
+          deadlineHandoffActive,
           skipCooldown,
         });
       } catch (err) {
         warnIfDev("[layout] checkForOverdueTaskOnOpen failed:", err);
       }
+    };
+
+    const handleDeadlineNotificationResponse = async (
+      response,
+      source = "listener"
+    ) => {
+      const data = response?.notification?.request?.content?.data ?? {};
+      if (!isDeadlineNotificationData(data)) return false;
+
+      const notificationId = response?.notification?.request?.identifier ?? null;
+      const sourceId = resolveDeadlineNotificationSourceId({
+        notificationId,
+        data,
+      });
+
+      if (sourceId && (await wasDeadlineSourceHandled(sourceId))) {
+        logDeadlineFlow("duplicate_ignored", {
+          source,
+          sourceId,
+          taskId: data?.taskId ?? null,
+        });
+        return false;
+      }
+
+      const action = normalizeDeadlineAlarmAction(response?.actionIdentifier);
+      logDeadlineFlow("response", {
+        source,
+        sourceId,
+        action,
+        taskId: data?.taskId ?? null,
+        notificationId,
+      });
+
+      if (action === "notdone") {
+        if (sourceId) {
+          await rememberDeadlineSource(sourceId);
+        }
+        await handleDeadlineAlarmResponse(response);
+        return true;
+      }
+
+      const params = buildDeadlineRouteParams(data, {
+        action: "open",
+        nativeHandoff: true,
+        sourceId,
+      });
+      return navigateDeadlineRoute(params, source);
+    };
+
+    const reconcileStartupDeadlineFlow = async () => {
+      if (startupDeadlineReconciled.current) return;
+      startupDeadlineReconciled.current = true;
+
+      const hasPendingAction = await checkPendingAlarmAction();
+      let handledLastResponse = false;
+
+      if (
+        !hasPendingAction &&
+        typeof Notifications.getLastNotificationResponseAsync === "function"
+      ) {
+        try {
+          const lastResponse =
+            await Notifications.getLastNotificationResponseAsync();
+          if (lastResponse) {
+            const responseTimestamp = lastResponse.notification?.date;
+            if (responseTimestamp) {
+              const ageMs =
+                Date.now() - new Date(responseTimestamp * 1000).getTime();
+              if (ageMs <= 5 * 60 * 1000) {
+                handledLastResponse = await handleDeadlineNotificationResponse(
+                  lastResponse,
+                  "startup_last_response"
+                );
+              } else {
+                logDeadlineFlow("stale_last_response_ignored", {
+                  ageMs,
+                });
+              }
+            } else {
+              handledLastResponse = await handleDeadlineNotificationResponse(
+                lastResponse,
+                "startup_last_response"
+              );
+            }
+          }
+        } catch (err) {
+          warnIfDev(
+            "Failed to read last deadline notification response at startup:",
+            err
+          );
+        }
+      }
+
+      const deadlineHandoffActive = hasPendingAction || handledLastResponse;
+      InteractionManager.runAfterInteractions(() => {
+        void checkForOverdueTaskOnOpen(
+          hasPendingAction,
+          deadlineHandoffActive
+        );
+      });
     };
 
     const tryNavigate = () => {
@@ -395,23 +579,8 @@ function RootLayoutNav() {
       hasNavigated.current = true;
       routerRef.current.replace(pendingRoute.current);
       setShowOverlay(false);
-      void (async () => {
-        const params = await consumePendingAlarmAction();
-        const hasPendingAction = Boolean(params);
-        if (params) {
-          // Native alarm still ringing at startup — modal must own stopping it.
-          routerRef.current.push({
-            pathname: "/(tabs)/TaskManagerScreen",
-            params: {
-              ...params,
-              nativeHandoff: "1",
-            },
-          });
-        }
-        InteractionManager.runAfterInteractions(() => {
-          checkForOverdueTaskOnOpen(hasPendingAction);
-        });
-      })();
+      void reconcileStartupDeadlineFlow();
+      return;
     };
 
     const resolveRoute = (route) => {
@@ -569,7 +738,7 @@ function RootLayoutNav() {
           void (async () => {
             const hadPendingAction = await checkPendingAlarmAction();
             if (!hadPendingAction) {
-              await checkForOverdueTaskOnOpen(false);
+              await checkForOverdueTaskOnOpen(false, false);
             }
           })();
         }
@@ -578,112 +747,10 @@ function RootLayoutNav() {
 
     bootstrap();
 
-    const handleDeadlineNotificationResponse = async (response) => {
-      const data = response?.notification?.request?.content?.data ?? {};
-      const action = response?.actionIdentifier;
-      const notificationId = response?.notification?.request?.identifier;
-
-      const isDeadlineAlarm =
-        data?.type === DEADLINE_NOTIF_TYPE ||
-        data?.type === "deadline" ||
-        data?.notificationType === DEADLINE_NOTIF_TYPE;
-      if (!isDeadlineAlarm) return;
-
-      if (notificationId) {
-        const lastHandled = await AsyncStorage.getItem(
-          LAST_HANDLED_RESPONSE_KEY
-        ).catch(() => null);
-        if (lastHandled === notificationId) return;
-        await AsyncStorage.setItem(
-          LAST_HANDLED_RESPONSE_KEY,
-          notificationId
-        ).catch(() => {});
-      }
-
-      const parseDueAtMs = () => {
-        const raw = Number(data?.dueAtMs);
-        if (Number.isFinite(raw)) return raw;
-        const fallback =
-          typeof data?.dueAt === "string"
-            ? new Date(data.dueAt).getTime()
-            : NaN;
-        return Number.isFinite(fallback) ? fallback : null;
-      };
-
-      const shouldOpenAlarmModal = isDeadlineAlarmModalEligible(data);
-
-      const navigateTo = (
-        pendingAction,
-        { handoffToNativeAlarm = false } = {}
-      ) => {
-        const dueAtMs = parseDueAtMs();
-        const alarmStage = resolveDeadlineAlarmStage(data);
-
-        routerRef.current.push({
-          pathname: "/(tabs)/TaskManagerScreen",
-          params: {
-            focusTaskId: data.taskId,
-            ...(shouldOpenAlarmModal ? { showAlarm: "1" } : {}),
-            ...(pendingAction ? { pendingAction } : {}),
-            ...(handoffToNativeAlarm ? { nativeHandoff: "1" } : {}),
-            ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-            ...(alarmStage ? { alarmStage } : {}),
-          },
-        });
-      };
-
-      if (action === ACTION_NOT_DONE) {
-        // Shade "Not Done" button — stop alarm + advance chain, no modal needed
-        await handleDeadlineAlarmResponse(response);
-        return;
-      }
-
-      if (action === ACTION_MARK_DONE) {
-        // Shade "Done" button — stop alarm + open modal for task completion
-        await handleDeadlineAlarmResponse(response);
-        // nativeHandoff=true suppresses local JS sound loop in the modal
-        // since the alarm is already stopped — no double audio
-        navigateTo("markdone", { handoffToNativeAlarm: true });
-        return;
-      }
-
-      // Default tap (user tapped notification body, no action button pressed).
-      // Native alarm is STILL RINGING. Do not stop it here.
-      // nativeHandoff=true tells the modal to suppress local sound loop and
-      // stop the native alarm only when the user presses Done or Not Done.
-      navigateTo(null, { handoffToNativeAlarm: true });
-    };
-
     notificationSubscription =
       Notifications.addNotificationResponseReceivedListener((response) => {
-        void handleDeadlineNotificationResponse(response);
+        void handleDeadlineNotificationResponse(response, "listener");
       });
-
-    if (typeof Notifications.getLastNotificationResponseAsync === "function") {
-      Notifications.getLastNotificationResponseAsync()
-        .then(async (lastResponse) => {
-          if (!lastResponse) return;
-          
-          // Ignore responses older than 5 minutes — they are stale from
-          // a previous app session and should not re-trigger the modal
-          const responseTimestamp = lastResponse.notification?.date;
-          if (responseTimestamp) {
-            const ageMs = Date.now() - new Date(responseTimestamp * 1000).getTime();
-            if (ageMs > 5 * 60 * 1000) {
-              warnIfDev("[layout] Ignoring stale last notification response, age:", ageMs);
-              return;
-            }
-          }
-          
-          await handleDeadlineNotificationResponse(lastResponse);
-        })
-        .catch((err) => {
-          warnIfDev(
-            "Failed to read last deadline notification response at startup:",
-            err
-          );
-        });
-    }
 
     if (rawNativeAlarmModule) {
       try {
@@ -878,3 +945,5 @@ const styles = StyleSheet.create({
   errorBtnText: { color: "#fff", fontSize: 12, fontWeight: "700" },
   errorBtnGhostText: { color: "#e2e8f0" },
 });
+
+

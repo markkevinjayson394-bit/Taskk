@@ -6,6 +6,7 @@ const mockAsyncStorage = {
 const mockGetDocs = jest.fn();
 const mockResolveCurrentOverdueStageInfo = jest.fn();
 const mockScheduleNativeAlarm = jest.fn().mockResolvedValue("native-alarm:auto");
+const mockCancelNativeAlarmByAlarmId = jest.fn().mockResolvedValue(true);
 
 jest.mock("react-native", () => ({
   Platform: mockPlatform,
@@ -35,6 +36,8 @@ jest.mock("../../utils/logger", () => ({
 }));
 
 jest.mock("../../utils/nativeAlarm", () => ({
+  cancelNativeAlarmByAlarmId: (...args) =>
+    mockCancelNativeAlarmByAlarmId(...args),
   canScheduleExactAlarms: jest
     .fn()
     .mockResolvedValue({ status: "success", value: true }),
@@ -84,6 +87,7 @@ describe("overdueAutoLaunch", () => {
     mockPlatform.OS = "android";
     mockAsyncStorage.getItem.mockResolvedValue(null);
     mockScheduleNativeAlarm.mockResolvedValue("native-alarm:auto");
+    mockCancelNativeAlarmByAlarmId.mockResolvedValue(true);
   });
 
   it("skips app-open catchup for tasks that are only at the due stage", async () => {
@@ -114,6 +118,9 @@ describe("overdueAutoLaunch", () => {
 
     await checkAndAutoLaunchOverdueAlarm("user-1");
 
+    expect(mockCancelNativeAlarmByAlarmId).toHaveBeenCalledWith(
+      "auto-overdue:task-1:open"
+    );
     expect(mockScheduleNativeAlarm).toHaveBeenCalledWith(
       expect.objectContaining({
         alarmId: "auto-overdue:task-1:open",

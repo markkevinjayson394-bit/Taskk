@@ -10,6 +10,7 @@ const testState = {
 };
 
 const mockReplace = jest.fn();
+const mockPush = jest.fn();
 
 jest.mock("@sentry/react-native", () => ({
   init: jest.fn(),
@@ -103,7 +104,7 @@ jest.mock("expo-router", () => {
   };
 
   return {
-    useRouter: () => ({ replace: mockReplace }),
+    useRouter: () => ({ replace: mockReplace, push: mockPush }),
     Stack,
   };
 });
@@ -170,6 +171,15 @@ jest.mock("../../utils/nativeAlarm", () => ({
 jest.mock("../../utils/overdueAutoLaunch", () => ({
   checkAndAutoLaunchOverdueAlarm: jest.fn().mockResolvedValue(undefined),
 }));
+
+jest.mock("../../utils/pendingAlarmAction", () => ({
+  __esModule: true,
+  consumePendingAlarmAction: jest.fn().mockResolvedValue(null),
+}));
+
+const mockConsumePendingAlarmAction =
+  jest.requireMock("../../utils/pendingAlarmAction")
+    .consumePendingAlarmAction;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -307,5 +317,41 @@ describe("Auth flow", () => {
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/(auth)/login");
     });
+  });
+
+  test("startup pending handoff opens Task Manager from the launcher flow", async () => {
+    const dueAtMs = Date.now();
+    mockConsumePendingAlarmAction.mockResolvedValueOnce({
+      focusTaskId: "task-1",
+      showAlarm: "1",
+      alarmAction: "open",
+      family: "deadline",
+      nativeHandoff: "1",
+      dueAtMs: String(dueAtMs),
+      alarmStage: "due",
+      displayStage: "due",
+      recoveryReason: "missed",
+      sourceId: "alarm-1",
+    });
+
+    render(<RootLayout />);
+    await flushAsync();
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith({
+        pathname: "/(tabs)/TaskManagerScreen",
+        params: expect.objectContaining({
+          focusTaskId: "task-1",
+          showAlarm: "1",
+          alarmAction: "open",
+          sourceId: "alarm-1",
+          nativeHandoff: "1",
+          displayStage: "due",
+          recoveryReason: "missed",
+        }),
+      });
+    });
+
+    expect(mockConsumePendingAlarmAction).toHaveBeenCalled();
   });
 });

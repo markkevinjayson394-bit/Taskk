@@ -2,6 +2,11 @@ import {
     isDeadlineAlarmModalEligible,
     resolveDeadlineAlarmStage,
 } from "./deadlineAlarmStage";
+import { logStartupHandoffSkipped } from "./alarmDiagnostics";
+import {
+    buildDeadlineRouteParams,
+    normalizeDeadlineAlarmAction,
+} from "./deadlineNotifications";
 import { clearPendingAlarmAction, getPendingAlarmAction } from "./nativeAlarm";
 
 const MAX_AGE_MS = 25 * 60 * 1000; // 25 minutes
@@ -19,59 +24,110 @@ export async function consumePendingAlarmAction() {
     return null;
   }
 
+  const clearPending = async () => {
+    await clearPendingAlarmAction().catch(() => {});
+  };
+
+  let payload = null;
+  let payloadParseFailed = false;
+  if (typeof pending?.payloadJson === "string" && pending.payloadJson.trim()) {
+    try {
+      payload = JSON.parse(pending.payloadJson);
+    } catch {
+      payloadParseFailed = true;
+    }
+  }
+
+  const resolvedTaskId =
+    typeof payload?.taskId === "string" && payload.taskId.trim()
+      ? payload.taskId.trim()
+      : typeof pending?.alarmId === "string" && pending.alarmId.trim()
+        ? pending.alarmId.trim()
+        : null;
+
+  const logSkipped = async (reason, details = {}) => {
+    await logStartupHandoffSkipped(resolvedTaskId, reason, {
+      sourceId:
+        typeof pending?.alarmId === "string" && pending.alarmId.trim()
+          ? pending.alarmId.trim()
+          : null,
+      action:
+        typeof pending?.action === "string" && pending.action.trim()
+          ? pending.action.trim()
+          : null,
+      ...details,
+    }).catch(() => {});
+  };
+
   if (!pending?.action || !pending?.alarmId || !pending?.timestamp) {
+    if (pending) {
+      await clearPending();
+      await logSkipped("missing_fields");
+    }
     return null;
   }
 
   const pendingTimestamp = Number(pending.timestamp);
   if (!Number.isFinite(pendingTimestamp)) {
-    await clearPendingAlarmAction().catch(() => {});
+    await clearPending();
+    await logSkipped("invalid_timestamp");
     return null;
   }
 
   if (Date.now() - pendingTimestamp > MAX_AGE_MS) {
-    await clearPendingAlarmAction().catch(() => {});
+    await clearPending();
+    await logSkipped("expired", { ageMs: Date.now() - pendingTimestamp });
+    return null;
+  }
+
+  if (payloadParseFailed) {
+    await clearPending();
+    await logSkipped("invalid_payload_json");
     return null;
   }
 
   // Clear BEFORE returning so no second caller can consume it
-  await clearPendingAlarmAction().catch(() => {});
+  await clearPending();
 
   const action =
     pending.action === "done" || pending.action === "markdone"
-      ? "markdone"
-      : pending.action === "not_done" || pending.action === "notdone"
-        ? "__handled_directly__"
-        : pending.action === "default"
-          ? null
-          : undefined;
-
-  if (action === undefined) return null;
-  if (action === "__handled_directly__") return null;
+      ? "open"
+      : normalizeDeadlineAlarmAction(pending.action);
 
   let taskId = pending.alarmId;
   let alarmStage = null;
   let dueAtMs = null;
-  let payload = null;
 
-  try {
-    payload = JSON.parse(pending.payloadJson || "{}");
-    if (payload?.taskId) taskId = payload.taskId;
-    alarmStage = resolveDeadlineAlarmStage(payload);
-    const raw = Number(payload?.dueAtMs);
-    dueAtMs = Number.isFinite(raw) && raw > 0 ? raw : null;
-  } catch {}
+  payload = payload && typeof payload === "object" ? payload : {};
+  if (payload?.taskId) taskId = payload.taskId;
+  alarmStage = resolveDeadlineAlarmStage(payload);
+  const raw = Number(payload?.dueAtMs);
+  dueAtMs = Number.isFinite(raw) && raw > 0 ? raw : null;
 
   if (!isDeadlineAlarmModalEligible(payload ?? { stage: alarmStage })) {
+    await logSkipped("ineligible_stage", {
+      alarmStage,
+      displayStage:
+        typeof payload?.displayStage === "string" ? payload.displayStage : null,
+      recoveryReason:
+        typeof payload?.recoveryReason === "string"
+          ? payload.recoveryReason
+          : null,
+    });
     return null;
   }
 
-  return {
-    focusTaskId: taskId,
-    showAlarm: "1",
-    ...(action ? { pendingAction: action } : {}),
-    nativeHandoff: "1",
-    ...(dueAtMs !== null ? { dueAtMs: String(dueAtMs) } : {}),
-    ...(alarmStage ? { alarmStage } : {}),
-  };
+  return buildDeadlineRouteParams(
+    {
+      ...payload,
+      taskId,
+      ...(alarmStage ? { stage: alarmStage } : {}),
+      ...(dueAtMs !== null ? { dueAtMs } : {}),
+    },
+    {
+      action,
+      nativeHandoff: true,
+      sourceId: pending.alarmId,
+    }
+  );
 }

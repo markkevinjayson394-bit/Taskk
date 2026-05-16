@@ -307,7 +307,7 @@ export default function HomeDashboard() {
     acknowledgeAlarm,
     notDoneAlarm,
   } = useDeadlineAlarmScheduler(upcomingAssignments, {
-    foregroundModalEnabled: false,
+    foregroundModalEnabled: true,
   });
 
   const stripArchived = (items = []) =>

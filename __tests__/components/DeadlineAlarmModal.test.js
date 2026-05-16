@@ -1,10 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { act, fireEvent, waitFor } from "@testing-library/react-native";
-import { Modal, Text, TouchableOpacity } from "react-native";
+import { AppState, Modal, Platform, Text, TouchableOpacity } from "react-native";
 import DeadlineAlarmModal, {
   useDeadlineAlarmScheduler,
 } from "../../components/DeadlineAlarmModal";
 import { render } from "../../utils/test-utils";
+
+const ORIGINAL_PLATFORM_OS = Platform.OS;
+const ORIGINAL_APP_STATE = AppState.currentState;
 
 // â”€â”€â”€ Mock all dependencies that DeadlineAlarmModal imports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 jest.mock("../../components/DeadlineAlarmModal.helpers", () => ({
@@ -29,6 +32,7 @@ jest.mock("../../utils/deadlineAlarmBackground", () => ({
   DEADLINE_CHANNEL_ID: "deadline-channel",
   DEADLINE_NOTIF_TYPE: "deadline_alarm",
   displayAlarmNotification: jest.fn().mockResolvedValue(undefined),
+  displayLeadNotification: jest.fn().mockResolvedValue(undefined),
   scheduleNextOverdueAlarm: jest.fn().mockResolvedValue("native-alarm-1"),
 }));
 
@@ -76,6 +80,12 @@ jest.mock("../../utils/deadlineTime", () => ({
   getUrgencyMeta: () => ({ color: "#ef4444" }),
 }));
 
+jest.mock("../../utils/deadlineNotifications", () => ({
+  cancelDeadlineNotifications: jest.fn().mockResolvedValue([]),
+  dismissDeadlinePresentations: jest.fn().mockResolvedValue([]),
+  normalizeDeadlineAlarmAction: jest.fn((value) => value),
+}));
+
 jest.mock("../../utils/notificationIds", () => ({
   buildDeadlineNotificationId: jest.fn(() => "notif-id"),
   buildManagedNotificationData: jest.fn(() => ({})),
@@ -88,6 +98,7 @@ jest.mock("../../utils/taskOverdueState", () => ({
     delayMs: 15 * 60 * 1000,
   })),
   clearCheckpoint: jest.fn().mockResolvedValue(undefined),
+  getCheckpoint: jest.fn().mockResolvedValue(null),
   resolveCurrentOverdueStageInfo: jest.fn((dueAtMs, nowMs = Date.now()) => {
     const overdueMs = nowMs - dueAtMs;
     if (!Number.isFinite(overdueMs) || overdueMs < 0) return null;
@@ -128,10 +139,26 @@ function SchedulerHarness({
   );
 }
 
+function setPlatformOs(os) {
+  Object.defineProperty(Platform, "OS", {
+    configurable: true,
+    get: () => os,
+  });
+}
+
+function setAppStateCurrentState(state) {
+  Object.defineProperty(AppState, "currentState", {
+    configurable: true,
+    get: () => state,
+  });
+}
+
 // â”€â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 describe("Deadline alarm flow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setPlatformOs(ORIGINAL_PLATFORM_OS);
+    setAppStateCurrentState(ORIGINAL_APP_STATE ?? "active");
   });
 
   // â”€â”€ 1. Not Done callback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -372,6 +399,10 @@ describe("Deadline alarm flow", () => {
   });
 
   test("scheduler does not auto-open the modal when foreground modal support is disabled", async () => {
+    setPlatformOs("android");
+    setAppStateCurrentState("active");
+    const { displayAlarmNotification, displayLeadNotification } =
+      jest.requireMock("../../utils/deadlineAlarmBackground");
     const task = {
       id: "task-foreground-disabled",
       title: "Prepare oral report",
@@ -394,9 +425,30 @@ describe("Deadline alarm flow", () => {
       expect(getByText("No alarm")).toBeTruthy();
       expect(getByText("No threshold")).toBeTruthy();
     });
+
+    expect(displayLeadNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "notif-id",
+        title: "\u23F0 Due in 30 min",
+        body: expect.stringContaining("Prepare oral report"),
+        data: expect.objectContaining({
+          taskId: "task-foreground-disabled",
+          acknowledgeRequired: false,
+          isLeadTime: true,
+          alarmKind: "lead_notice",
+          stage: "30m",
+          deliveryPath: "foreground_catchup",
+        }),
+      })
+    );
+    expect(displayAlarmNotification).not.toHaveBeenCalled();
   });
 
   test("scheduler does not auto-open due alarms when foreground modal support is disabled", async () => {
+    setPlatformOs("android");
+    setAppStateCurrentState("active");
+    const { displayAlarmNotification, displayLeadNotification } =
+      jest.requireMock("../../utils/deadlineAlarmBackground");
     const task = {
       id: "task-due-foreground-disabled",
       title: "Join group meeting",
@@ -419,6 +471,21 @@ describe("Deadline alarm flow", () => {
       expect(getByText("No alarm")).toBeTruthy();
       expect(getByText("No threshold")).toBeTruthy();
     });
+
+    expect(displayAlarmNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "notif-id",
+        data: expect.objectContaining({
+          taskId: "task-due-foreground-disabled",
+          acknowledgeRequired: true,
+          isLeadTime: false,
+          stage: "due",
+          deliveryPath: "foreground_catchup",
+        }),
+        isOngoing: true,
+      })
+    );
+    expect(displayLeadNotification).not.toHaveBeenCalled();
   });
 
   test("scheduler uses explicit overdue checkpoints", async () => {

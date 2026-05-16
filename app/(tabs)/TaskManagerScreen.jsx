@@ -4,133 +4,152 @@ import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getDoc,
-    getDocs,
-    query,
-    serverTimestamp,
-    Timestamp,
-    updateDoc,
-    where,
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  serverTimestamp,
+  Timestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 import {
-    useCallback,
-    useDeferredValue,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
 } from "react";
 import {
-    Alert,
-    Animated,
-    Platform,
-    RefreshControl,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import DeadlineAlarmModal, {
-    useDeadlineAlarmScheduler,
+  useDeadlineAlarmScheduler,
 } from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import OfflineBanner from "../../components/OfflineBanner";
 import TaskEditorModal from "../../components/task-manager/TaskEditorModal";
-import { auth, db } from "../../config/firebase";
+import { auth, getDb } from "../../config/firebase";
 import { useNotifications } from "../../context/NotificationContext";
 import {
-    CACHE_KEYS,
-    loadFromCache,
-    OFFLINE_QUEUE_KEYS,
-    saveToCache,
-    useOffline,
+  CACHE_KEYS,
+  loadFromCache,
+  OFFLINE_QUEUE_KEYS,
+  saveToCache,
+  useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { loadAllPlans } from "../../features/tab-modules/CalendarPlannerScreen.helpers";
 import {
-    SubjectBreakdown,
-    TaskCard,
-    WorkloadBanner,
+  SubjectBreakdown,
+  TaskCard,
+  WorkloadBanner,
 } from "../../features/tab-modules/TaskManagerScreen.components";
 import {
-    AUTO_REFRESH_COOLDOWN_MS,
-    buildQuickDueOptions,
-    calculateWorkloadScore,
-    CREATE_PRIORITY_OPTIONS,
-    DAY_MS,
-    ensureGeneralSubjectOption,
-    extractScheduleSubjectNames,
-    extractStudentScheduleProfile,
-    FILTERS,
-    flushCreateQueue,
-    formatDurationMs,
-    formatEstimatedMinutes,
-    GENERAL_SUBJECT,
-    GENERAL_SUBJECT_ID,
-    GENERAL_SUBJECT_OPTION,
-    getDefaultDueAt,
-    getPreferredCreateSubject,
-    getQuickCreateDueAt,
-    getQuickSnoozePlan,
-    getSectionKey,
-    getTaskSubjectId,
-    normalizeDateToISO,
-    normalizeFilterParam,
-    normalizePendingUpdates,
-    normalizeRouteString,
-    normalizeSubjectOption,
-    PAGE_SIZE,
-    parseDueDate,
-    parsePlannerRef,
-    parseSubjectCatalogRaw,
-    PENDING_UPDATES_KEY,
-    readCreateQueue,
-    resolveTaskDueDate,
-    SCHEDULE_SUBJECT_SOURCES,
-    SORT_OPTIONS,
-    sortSubjectOptions,
-    SUBJECT_CATALOG_KEY,
-    SUBJECT_FILTER_ALL_ID,
-    TYPE_META,
-    TYPE_ROWS,
-    writeCreateQueue,
+  AUTO_REFRESH_COOLDOWN_MS,
+  buildQuickDueOptions,
+  calculateWorkloadScore,
+  CREATE_PRIORITY_OPTIONS,
+  DAY_MS,
+  ensureGeneralSubjectOption,
+  extractScheduleSubjectNames,
+  extractStudentScheduleProfile,
+  FILTERS,
+  flushCreateQueue,
+  formatDurationMs,
+  formatEstimatedMinutes,
+  GENERAL_SUBJECT,
+  GENERAL_SUBJECT_ID,
+  GENERAL_SUBJECT_OPTION,
+  getDefaultDueAt,
+  getPreferredCreateSubject,
+  getQuickCreateDueAt,
+  getQuickSnoozePlan,
+  getSectionKey,
+  getTaskSubjectId,
+  normalizeDateToISO,
+  normalizeFilterParam,
+  normalizePendingUpdates,
+  normalizeRouteString,
+  normalizeSubjectOption,
+  PAGE_SIZE,
+  parseDueDate,
+  parsePlannerRef,
+  parseSubjectCatalogRaw,
+  PENDING_UPDATES_KEY,
+  readCreateQueue,
+  resolveTaskDueDate,
+  SCHEDULE_SUBJECT_SOURCES,
+  SORT_OPTIONS,
+  sortSubjectOptions,
+  SUBJECT_CATALOG_KEY,
+  SUBJECT_FILTER_ALL_ID,
+  TYPE_META,
+  TYPE_ROWS,
+  writeCreateQueue,
 } from "../../features/tab-modules/TaskManagerScreen.helpers";
 import {
-    buildSubjectIdFromName,
-    buildTaskCompletionUpdate,
-    buildTaskCreateData,
-    getTaskPriorityLevel,
-    isTaskCompleted,
-    normalizeSubjectName,
-    normalizeTaskDateInput,
-    normalizeTaskPriority,
-    normalizeTaskType,
+  buildSubjectIdFromName,
+  buildTaskCompletionUpdate,
+  buildTaskCreateData,
+  getTaskPriorityLevel,
+  isTaskCompleted,
+  normalizeSubjectName,
+  normalizeTaskDateInput,
+  normalizeTaskPriority,
+  normalizeTaskType,
 } from "../../utils/academicTaskModel";
 import { toLocalDayKey } from "../../utils/dateHelpers";
 import {
-    cancelDeadlineAlarms,
-    scheduleDeadlineAlarms,
+  cancelDeadlineAlarms,
+  scheduleDeadlineAlarms,
+  scheduleNextOverdueAlarm,
 } from "../../utils/deadlineAlarmBackground";
 import { isDeadlineAlarmModalEligible } from "../../utils/deadlineAlarmStage";
+import { normalizeDeadlineAlarmAction } from "../../utils/deadlineNotifications";
 import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
 import {
-    findOfflineQueuedTask,
-    isLocalOnlyTaskId,
-    mergePendingTasksWithOfflineQueue,
-    removeOfflineQueuedTask,
+  findOfflineQueuedTask,
+  isLocalOnlyTaskId,
+  mergePendingTasksWithOfflineQueue,
+  removeOfflineQueuedTask,
 } from "../../utils/offlineTaskQueue";
 import { syncCalendarDayPlans } from "../../utils/plannerTaskSync";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
-import { clearCheckpoint } from "../../utils/taskOverdueState";
+import {
+  advanceCheckpoint,
+  clearCheckpoint,
+} from "../../utils/taskOverdueState";
+
+const INITIAL_LOAD_SIZE = 50; // Load first 50 tasks immediately, lazy-load rest
+
+// OPTIMIZATION 2: Parallel cache loader
+async function loadCachesInParallel(uid) {
+  const [assignmentsCache, profileCache, scheduleCache] = await Promise.all([
+    loadFromCache(CACHE_KEYS.assignments(uid)),
+    loadFromCache(CACHE_KEYS.profile(uid)),
+    loadFromCache(CACHE_KEYS.schedule(uid) + "_week"),
+  ]);
+  return { assignmentsCache, profileCache, scheduleCache };
+}
 
 function buildTaskSubjectFields(subjectValue, subjectIdValue) {
   const subjectName = normalizeSubjectName(subjectValue || GENERAL_SUBJECT);
@@ -205,14 +224,127 @@ function mergeLocalOnlyHistory(doneItems = [], cachedDoneItems = []) {
   });
 }
 
+// OPTIMIZATION 3: Lazy subject loader (runs in background, non-blocking)
+async function loadSubjectOptionsAsync(
+  uid,
+  assignmentItems = [],
+  isOnline = false
+) {
+  if (!uid) return [GENERAL_SUBJECT_OPTION];
+
+  const byName = new Map();
+  const sourcePriority = {
+    default: 0,
+    task: 1,
+    schedule: 2,
+    catalog: 3,
+    schedule_admin: 4,
+  };
+
+  const addOption = (value, source = "other", idValue = "") => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return;
+    const name = normalizeSubjectName(raw);
+    const key = name.toLowerCase();
+    if (!name || !key) return;
+    const id = String(idValue || buildSubjectIdFromName(name)).trim();
+    const next = { id: id || buildSubjectIdFromName(name), name, source };
+    const prev = byName.get(key);
+    if (!prev) {
+      byName.set(key, next);
+      return;
+    }
+    const prevPriority = sourcePriority[prev.source] ?? 0;
+    const nextPriority = sourcePriority[source] ?? 0;
+    const prefersSource = nextPriority > prevPriority;
+    const prefersKnownId =
+      (!prev.id || prev.id.startsWith("subject_")) && Boolean(idValue);
+    if (prefersSource || prefersKnownId) byName.set(key, next);
+  };
+
+  addOption(GENERAL_SUBJECT, "default", GENERAL_SUBJECT_ID);
+  assignmentItems.forEach((item) =>
+    addOption(item?.subjectName || item?.subject, "task", item?.subjectId)
+  );
+
+  // Load schedule subjects in parallel with catalog
+  const [adminScheduleSubjects, localCatalog] = await Promise.all([
+    isOnline
+      ? (async () => {
+          try {
+            const userSnap = await getDoc(doc(getDb(), "users", uid));
+            const profile = extractStudentScheduleProfile(
+              userSnap.data() || {}
+            );
+            if (!profile) return [];
+            const scheduleMatch = await findBestScheduleDoc(getDb(), profile);
+            if (!scheduleMatch?.doc) return [];
+            const weekSchedule = scheduleMatch.doc.data()?.weekSchedule || {};
+            return extractScheduleSubjectNames(weekSchedule);
+          } catch (err) {
+            warnIfDev("Failed to load admin schedule subjects:", err);
+            return [];
+          }
+        })()
+      : Promise.resolve([]),
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(SUBJECT_CATALOG_KEY(uid));
+        return parseSubjectCatalogRaw(raw);
+      } catch (err) {
+        warnIfDev("Failed to load local subject catalog:", err);
+        return [];
+      }
+    })(),
+  ]);
+
+  adminScheduleSubjects.forEach((name) => addOption(name, "schedule_admin"));
+  localCatalog.forEach((item) =>
+    addOption(item.name, item.source || "catalog", item.id)
+  );
+
+  // Load remote catalog if online
+  if (isOnline) {
+    try {
+      const snap = await getDocs(collection(getDb(), "users", uid, "subjects"));
+      snap.forEach((subjectDoc) => {
+        const data = subjectDoc.data() || {};
+        addOption(data?.name || data?.subject, "catalog", subjectDoc.id);
+      });
+    } catch (err) {
+      warnIfDev("Failed to load remote subject catalog:", err);
+    }
+  }
+
+  // Load cached schedule subjects
+  try {
+    const scheduleCache = await loadFromCache(
+      CACHE_KEYS.schedule(uid) + "_week"
+    );
+    const scheduleNames = extractScheduleSubjectNames(
+      scheduleCache?.data || {}
+    );
+    scheduleNames.forEach((name) => addOption(name, "schedule"));
+  } catch (err) {
+    warnIfDev("Failed to load cached schedule subjects:", err);
+  }
+
+  const nextOptions = sortSubjectOptions(Array.from(byName.values()));
+  return ensureGeneralSubjectOption(nextOptions);
+}
+
 export default function TaskManagerScreen() {
   const router = useRouter();
   const {
     focusTaskId,
     showAlarm,
+    alarmAction: alarmActionParam,
     pendingAction,
+    sourceId: sourceIdParam,
     dueAtMs,
     alarmStage,
+    displayStage: displayStageParam,
+    recoveryReason: recoveryReasonParam,
     nativeHandoff: nativeHandoffParam,
     filter: filterParam,
     subject: subjectParam,
@@ -224,7 +356,14 @@ export default function TaskManagerScreen() {
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
   })();
+  const routeAlarmAction = normalizeDeadlineAlarmAction(
+    normalizeRouteString(alarmActionParam) || normalizeRouteString(pendingAction)
+  );
+  const routeSourceId = normalizeRouteString(sourceIdParam);
   const routeAlarmStage = normalizeRouteString(alarmStage);
+  const routeDisplayStage = normalizeRouteString(displayStageParam);
+  const routeRecoveryReason = normalizeRouteString(recoveryReasonParam);
+  const effectiveRouteAlarmStage = routeDisplayStage || routeAlarmStage;
   const routeNativeHandoff = (() => {
     const raw = normalizeRouteString(nativeHandoffParam);
     return raw === "1" || raw === "true";
@@ -255,7 +394,7 @@ export default function TaskManagerScreen() {
     showAlarmForTask,
   } = useDeadlineAlarmScheduler(tasks, {
     deadlineWarningEnabled: notificationSettings?.deadlineWarning !== false,
-    foregroundModalEnabled: false,
+    foregroundModalEnabled: true,
   });
   const [filter, setFilter] = useState(() => normalizeFilterParam(filterParam));
   const [searchQuery, setSearchQuery] = useState("");
@@ -267,6 +406,7 @@ export default function TaskManagerScreen() {
   const [visiblePending, setVisiblePending] = useState(PAGE_SIZE);
   const [visibleHistory, setVisibleHistory] = useState(PAGE_SIZE);
   const [showHistory, setShowHistory] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -328,9 +468,9 @@ export default function TaskManagerScreen() {
     key: "",
     names: [],
   });
-  const alarmHandleCounterRef = useRef(0);
   const handledParamRef = useRef("");
   const subjectsPreloadedRef = useRef(false);
+  const subjectLoadingRef = useRef(null); // OPTIMIZATION 5: Prevent duplicate async loads
 
   const highlightedTaskId =
     typeof focusTaskId === "string" && focusTaskId ? focusTaskId : "";
@@ -491,9 +631,12 @@ export default function TaskManagerScreen() {
     console.log("[DEBUG Alarm] useEffect fired", {
       showAlarm,
       focusTaskId,
-      pendingAction,
+      alarmAction: routeAlarmAction,
       routeDueAtMs,
       routeAlarmStage,
+      routeDisplayStage,
+      routeRecoveryReason,
+      routeSourceId,
       routeNativeHandoff,
       tasksCount: tasks?.length,
       hasShowAlarmFn: typeof showAlarmForTask === "function",
@@ -505,17 +648,21 @@ export default function TaskManagerScreen() {
       );
       return;
     }
-    if (!isDeadlineAlarmModalEligible({ stage: routeAlarmStage })) {
+    if (!isDeadlineAlarmModalEligible({ stage: effectiveRouteAlarmStage })) {
       setPendingAction(null);
       setNativeHandoff(false);
       setTimeout(() => {
         router.setParams({
-          showAlarm: undefined,
-          focusTaskId: undefined,
-          pendingAction: undefined,
-          nativeHandoff: undefined,
-          dueAtMs: undefined,
-          alarmStage: undefined,
+          showAlarm: "",
+          focusTaskId: "",
+          alarmAction: "",
+          pendingAction: "",
+          nativeHandoff: "",
+          dueAtMs: "",
+          alarmStage: "",
+          displayStage: "",
+          recoveryReason: "",
+          sourceId: "",
         });
       }, 0);
       return;
@@ -526,25 +673,65 @@ export default function TaskManagerScreen() {
       console.log("[DEBUG Alarm] Clearing alarm params");
       setTimeout(() => {
         router.setParams({
-          showAlarm: undefined,
-          focusTaskId: undefined,
-          pendingAction: undefined,
-          nativeHandoff: undefined,
-          dueAtMs: undefined,
-          alarmStage: undefined,
+          showAlarm: "",
+          focusTaskId: "",
+          alarmAction: "",
+          pendingAction: "",
+          nativeHandoff: "",
+          dueAtMs: "",
+          alarmStage: "",
+          displayStage: "",
+          recoveryReason: "",
+          sourceId: "",
         });
       }, 0);
     };
 
     const fetchAndShow = async () => {
       console.log("[DEBUG Alarm] fetchAndShow started", {
-        pendingAction,
+        alarmAction: routeAlarmAction,
         focusTaskId,
       });
-      if (pendingAction === "notdone") {
+      if (routeAlarmAction === "notdone") {
         console.log(
           "[DEBUG Alarm] Suppressing modal reopen for direct not-done action"
         );
+        if (focusTaskId) {
+          try {
+            const task =
+              tasks?.find((candidate) => candidate.id === focusTaskId) || null;
+            const resolvedDueAtMs = task
+              ? (resolveTaskDueDate(task)?.getTime?.() ?? null)
+              : null;
+            const dueAtMs =
+              Number.isFinite(resolvedDueAtMs) && resolvedDueAtMs > 0
+                ? resolvedDueAtMs
+                : routeDueAtMs;
+
+            if (task && Number.isFinite(dueAtMs) && dueAtMs > 0) {
+              const next = await advanceCheckpoint(
+                focusTaskId,
+                effectiveRouteAlarmStage || "due",
+                dueAtMs
+              );
+
+              if (next?.key) {
+                await scheduleNextOverdueAlarm({
+                  task,
+                  checkpoint: {
+                    key: next.key,
+                    delayMs: next.delayMs ?? null,
+                  },
+                  triggerAt: next.triggerAtMs ?? null,
+                  intendedTriggerAtMs: next.triggerAtMs ?? null,
+                  deliveryPathHint: "notdone_fallback",
+                });
+              }
+            }
+          } catch (err) {
+            warnIfDev("notdone fallback chain advance failed:", err);
+          }
+        }
         if (active) {
           setPendingAction(null);
           setNativeHandoff(false);
@@ -552,9 +739,7 @@ export default function TaskManagerScreen() {
         }
         return;
       }
-      alarmHandleCounterRef.current += 1;
-      const thisHandle = alarmHandleCounterRef.current;
-      const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${routeAlarmStage ?? "none"}:${routeNativeHandoff ? "native" : "local"}:${thisHandle}`;
+      const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${effectiveRouteAlarmStage ?? "none"}:${routeAlarmAction}:${routeSourceId ?? "none"}:${routeRecoveryReason ?? "none"}:${routeNativeHandoff ? "native" : "local"}`;
       console.log("[DEBUG Alarm] Proceeding to check handledKey", {
         handledKey,
         handledParamRef: handledParamRef.current,
@@ -566,9 +751,11 @@ export default function TaskManagerScreen() {
 
       // [FIX GAP-3] Use setPendingAction so both ref and state are updated.
       const resolvedPendingAction =
-        pendingAction === "acknowledge" || pendingAction === "markdone"
-          ? pendingAction
-          : null;
+        routeAlarmAction === "markdone"
+          ? "markdone"
+          : routeAlarmAction === "notdone"
+            ? "notdone"
+            : null;
 
       try {
         if (!active) return;
@@ -590,7 +777,7 @@ export default function TaskManagerScreen() {
           console.log(
             "[DEBUG Alarm] Task not in local state, fetching from Firestore"
           );
-          const snap = await getDoc(doc(db, "assignments", focusTaskId));
+          const snap = await getDoc(doc(getDb(), "assignments", focusTaskId));
           if (!active) return;
           if (!snap.exists()) {
             console.log("[DEBUG Alarm] Task does not exist in Firestore");
@@ -653,7 +840,7 @@ export default function TaskManagerScreen() {
         setNativeHandoff(routeNativeHandoff);
 
         if (typeof showAlarmForTask === "function") {
-          showAlarmForTask(resolvedDue, routeAlarmStage || null);
+          showAlarmForTask(resolvedDue, effectiveRouteAlarmStage || null);
           console.log("[DEBUG Alarm] showAlarmForTask called successfully");
         }
 
@@ -680,10 +867,14 @@ export default function TaskManagerScreen() {
   }, [
     showAlarm,
     focusTaskId,
-    pendingAction,
+    routeAlarmAction,
     routeDueAtMs,
     routeAlarmStage,
+    routeDisplayStage,
+    routeRecoveryReason,
+    routeSourceId,
     routeNativeHandoff,
+    effectiveRouteAlarmStage,
     tasks,
     showAlarmForTask,
     router,
@@ -712,7 +903,7 @@ export default function TaskManagerScreen() {
             currentUser.uid,
             async (item) => {
               const docRef = await addDoc(
-                collection(db, "assignments"),
+                collection(getDb(), "assignments"),
                 item.payload
               );
               return docRef;
@@ -816,22 +1007,11 @@ export default function TaskManagerScreen() {
     setPendingCount(next.length);
   };
 
-  // FIX: Pre-load subjects in background when screen is focused to avoid blocking modal open
-  useFocusEffect(
-    useCallback(() => {
-      const user = auth.currentUser;
-      if (!user || subjectsPreloadedRef.current) return;
-      subjectsPreloadedRef.current = true;
-      loadSubjectOptions(user.uid, [...tasks, ...history]).catch(() => {});
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [tasks, history])
-  );
-
   const loadAdminScheduleSubjects = useCallback(
     async (uid) => {
       if (!uid || !isOnline) return [];
       try {
-        const userSnap = await getDoc(doc(db, "users", uid));
+        const userSnap = await getDoc(doc(getDb(), "users", uid));
         if (!userSnap.exists()) return [];
         const profile = extractStudentScheduleProfile(userSnap.data() || {});
         if (!profile) return [];
@@ -849,7 +1029,7 @@ export default function TaskManagerScreen() {
           return scheduleSubjectsRef.current.names;
         }
 
-        const scheduleMatch = await findBestScheduleDoc(db, profile);
+        const scheduleMatch = await findBestScheduleDoc(getDb(), profile);
         if (!scheduleMatch?.doc) {
           scheduleSubjectsRef.current = { key: profileKey, names: [] };
           return [];
@@ -931,7 +1111,9 @@ export default function TaskManagerScreen() {
 
       if (isOnline) {
         try {
-          const snap = await getDocs(collection(db, "users", uid, "subjects"));
+          const snap = await getDocs(
+            collection(getDb(), "users", uid, "subjects")
+          );
           snap.forEach((subjectDoc) => {
             const data = subjectDoc.data() || {};
             addOption(data?.name || data?.subject, "catalog", subjectDoc.id);
@@ -965,6 +1147,35 @@ export default function TaskManagerScreen() {
     [isOnline, loadAdminScheduleSubjects]
   );
 
+  // OPTIMIZATION 6: Lazy load subjects without blocking initial render
+  const loadSubjectOptionsAsync_Memoized = useCallback(async () => {
+    const user = auth.currentUser;
+    if (!user || subjectLoadingRef.current) return;
+
+    subjectLoadingRef.current = Promise.resolve();
+
+    try {
+      const options = await loadSubjectOptionsAsync(
+        user.uid,
+        [...tasks, ...history],
+        isOnline
+      );
+      setSubjectOptions(ensureGeneralSubjectOption(options));
+    } catch (err) {
+      warnIfDev("Failed to load subject options:", err);
+    } finally {
+      subjectLoadingRef.current = null;
+    }
+  }, [tasks, history, isOnline]);
+
+  useEffect(() => {
+    if (!initialLoadDone) return;
+    if (subjectsPreloadedRef.current) return;
+    subjectsPreloadedRef.current = true;
+
+    void loadSubjectOptionsAsync_Memoized();
+  }, [initialLoadDone, loadSubjectOptionsAsync_Memoized]);
+
   const syncTodayCalendarPlannerTasks = useCallback(
     async (uid, baseDate = new Date()) => {
       if (!uid || !isOnline) return null;
@@ -992,53 +1203,112 @@ export default function TaskManagerScreen() {
     await refreshPendingCount(user.uid);
 
     if (!isOnline) {
-      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
-      const queuedCreates = await readCreateQueue(user.uid);
-      if (cached?.data) {
-        const cachedPending = stripArchived(cached.data.pending || []);
-        const cachedDone = stripArchived(cached.data.done || []);
+      const [queue, caches, queuedCreates] = await Promise.all([
+        (async () => {
+          try {
+            const raw = await AsyncStorage.getItem(
+              PENDING_UPDATES_KEY(user.uid)
+            );
+            return raw ? normalizePendingUpdates(JSON.parse(raw)) : [];
+          } catch {
+            return [];
+          }
+        })(),
+        loadCachesInParallel(user.uid),
+        readCreateQueue(user.uid),
+      ]);
+
+      setPendingCount(queue.length);
+
+      if (caches.assignmentsCache?.data) {
+        const cachedPending = stripArchived(
+          caches.assignmentsCache.data.pending || []
+        );
+        const cachedDone = stripArchived(
+          caches.assignmentsCache.data.done || []
+        );
         const mergedPending = sortPendingTasks(
           mergePendingTasksWithOfflineQueue(cachedPending, queuedCreates)
         );
         setTasks(mergedPending);
         setHistory(cachedDone);
-        await loadSubjectOptions(user.uid, [...mergedPending, ...cachedDone]);
+        setInitialLoadDone(true);
       } else {
         const mergedPending = sortPendingTasks(
           mergePendingTasksWithOfflineQueue([], queuedCreates)
         );
         setTasks(mergedPending);
         setHistory([]);
-        await loadSubjectOptions(user.uid, mergedPending);
+        setInitialLoadDone(true);
       }
       setRefreshing(false);
       animateIn();
-      // setTasksLoaded(true);
       return;
     }
 
     try {
       await syncTodayCalendarPlannerTasks(user.uid, new Date());
-      const snap = await getDocs(
-        query(collection(db, "assignments"), where("userId", "==", user.uid))
-      );
-      const all = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-        dueAt: normalizeDateToISO(d.data().dueAt),
-        createdAt: normalizeDateToISO(d.data().createdAt),
-        completedAt: normalizeDateToISO(d.data().completedAt),
-      }));
+      // OPTIMIZATION 8: Parallel Firestore queries
+      const [queue, pendingSnap, doneSnap, cachedPrev, queuedCreates] =
+        await Promise.all([
+          (async () => {
+            try {
+              const raw = await AsyncStorage.getItem(
+                PENDING_UPDATES_KEY(user.uid)
+              );
+              return raw ? normalizePendingUpdates(JSON.parse(raw)) : [];
+            } catch {
+              return [];
+            }
+          })(),
+          getDocs(
+            query(
+              collection(getDb(), "assignments"),
+              where("userId", "==", user.uid),
+              where("completed", "==", false),
+              limit(INITIAL_LOAD_SIZE) // OPTIMIZATION 10: Paginate initial load
+            )
+          ),
+          getDocs(
+            query(
+              collection(getDb(), "assignments"),
+              where("userId", "==", user.uid),
+              where("completed", "==", true),
+              limit(INITIAL_LOAD_SIZE)
+            )
+          ),
+          loadFromCache(CACHE_KEYS.assignments(user.uid)),
+          readCreateQueue(user.uid),
+        ]);
+
+      setPendingCount(queue.length);
+
+      // Normalize docs (inline to avoid extra function call)
+      const all = [
+        ...pendingSnap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+          dueAt: normalizeDateToISO(d.data().dueAt),
+          createdAt: normalizeDateToISO(d.data().createdAt),
+          completedAt: normalizeDateToISO(d.data().completedAt),
+        })),
+      ];
+
       const visible = stripArchived(all);
       const pending = sortPendingTasks(
         visible.filter((a) => !isTaskCompleted(a))
       );
-      const done = visible
+      const done = doneSnap.docs
+        .map((d) => ({
+          id: d.id,
+          ...d.data(),
+          dueAt: normalizeDateToISO(d.data().dueAt),
+          createdAt: normalizeDateToISO(d.data().createdAt),
+          completedAt: normalizeDateToISO(d.data().completedAt),
+        }))
         .filter((a) => isTaskCompleted(a))
         .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
 
-      const cachedPrev = await loadFromCache(CACHE_KEYS.assignments(user.uid));
-      const queuedCreates = await readCreateQueue(user.uid);
       const mergedPending = sortPendingTasks(
         mergePendingTasksWithOfflineQueue(pending, queuedCreates)
       );
@@ -1051,7 +1321,6 @@ export default function TaskManagerScreen() {
       setHistory(mergedDone);
       setVisiblePending(PAGE_SIZE);
       setVisibleHistory(PAGE_SIZE);
-      await loadSubjectOptions(user.uid, [...mergedPending, ...mergedDone]);
 
       await saveToCache(CACHE_KEYS.assignments(user.uid), {
         ...(cachedPrev?.data || {}),
@@ -1063,26 +1332,31 @@ export default function TaskManagerScreen() {
         "TaskManagerScreen: failed to load assignments from Firestore:",
         err
       );
-      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
-      const queuedCreates = await readCreateQueue(user.uid);
-      if (cached?.data) {
-        const cachedPending = stripArchived(cached.data.pending || []);
-        const cachedDone = stripArchived(cached.data.done || []);
+      const [caches, queuedCreates] = await Promise.all([
+        loadCachesInParallel(user.uid),
+        readCreateQueue(user.uid),
+      ]);
+      if (caches.assignmentsCache?.data) {
+        const cachedPending = stripArchived(
+          caches.assignmentsCache.data.pending || []
+        );
+        const cachedDone = stripArchived(
+          caches.assignmentsCache.data.done || []
+        );
         const mergedPending = sortPendingTasks(
           mergePendingTasksWithOfflineQueue(cachedPending, queuedCreates)
         );
         setTasks(mergedPending);
         setHistory(cachedDone);
-        await loadSubjectOptions(user.uid, [...mergedPending, ...cachedDone]);
       } else {
         const mergedPending = sortPendingTasks(
           mergePendingTasksWithOfflineQueue([], queuedCreates)
         );
         setTasks(mergedPending);
         setHistory([]);
-        await loadSubjectOptions(user.uid, mergedPending);
       }
     } finally {
+      setInitialLoadDone(true);
       setRefreshing(false);
       animateIn();
       //  setTasksLoaded(true);
@@ -1157,7 +1431,9 @@ export default function TaskManagerScreen() {
       priorityLevel: getTaskPriorityLevel(priority),
       source,
       createdAt: createdAt?.toISOString?.() || new Date().toISOString(),
-      ...(customReminderAt ? { customReminderAt: customReminderAt.toISOString() } : {}),
+      ...(customReminderAt
+        ? { customReminderAt: customReminderAt.toISOString() }
+        : {}),
       ...(estimatedMinutes !== null ? { estimatedMinutes } : {}),
       ...(reminderPolicy ? { reminderPolicy } : {}),
     };
@@ -1178,12 +1454,14 @@ export default function TaskManagerScreen() {
     });
 
     if (typeof rescheduleDeadlineAlarmsForTask === "function" && taskId) {
-      void rescheduleDeadlineAlarmsForTask(taskId, optimisticTask).catch((err) => {
-        warnIfDev(
-          "TaskManagerScreen: background reminder refresh after save failed:",
-          err
-        );
-      });
+      void rescheduleDeadlineAlarmsForTask(taskId, optimisticTask).catch(
+        (err) => {
+          warnIfDev(
+            "TaskManagerScreen: background reminder refresh after save failed:",
+            err
+          );
+        }
+      );
     }
   }
 
@@ -1621,7 +1899,10 @@ export default function TaskManagerScreen() {
         if (editingTask && typeof cancelDeadlineAlarms === "function") {
           await cancelDeadlineAlarms(editingTask);
         }
-        await updateDoc(doc(db, "assignments", editingTaskId), updatePayload);
+        await updateDoc(
+          doc(getDb(), "assignments", editingTaskId),
+          updatePayload
+        );
       } else {
         const createPayload = buildTaskCreateData(
           {
@@ -1638,7 +1919,7 @@ export default function TaskManagerScreen() {
           { createdAt: serverTimestamp() }
         );
         const docRef = await addDoc(
-          collection(db, "assignments"),
+          collection(getDb(), "assignments"),
           createPayload
         );
         newTaskId = docRef.id;
@@ -1710,7 +1991,7 @@ export default function TaskManagerScreen() {
     );
 
     try {
-      await updateDoc(doc(db, "assignments", task.id), {
+      await updateDoc(doc(getDb(), "assignments", task.id), {
         dueAt: Timestamp.fromDate(snoozePlan.dueAt),
         updatedAt: serverTimestamp(),
       });
@@ -1815,7 +2096,7 @@ export default function TaskManagerScreen() {
 
     if (isOnline) {
       try {
-        await updateDoc(doc(db, "assignments", id), update);
+        await updateDoc(doc(getDb(), "assignments", id), update);
         if (typeof markSynced === "function") {
           await markSynced(user.uid);
         }
@@ -1876,7 +2157,7 @@ export default function TaskManagerScreen() {
               await cancelDeadlineAlarms(task);
               await clearCheckpoint(task.id);
             }
-            await deleteDoc(doc(db, "assignments", task.id));
+            await deleteDoc(doc(getDb(), "assignments", task.id));
             setTasks((prev) => prev.filter((item) => item.id !== task.id));
             setHistory((prev) => prev.filter((item) => item.id !== task.id));
             setSelectedIds((prev) => {
@@ -1953,7 +2234,7 @@ export default function TaskManagerScreen() {
               }
               if (isOnline) {
                 try {
-                  await updateDoc(doc(db, "assignments", t.id), update);
+                  await updateDoc(doc(getDb(), "assignments", t.id), update);
                 } catch (err) {
                   warnIfDev(
                     "TaskManagerScreen: failed to bulk-complete task online; queueing:",
@@ -2003,7 +2284,7 @@ export default function TaskManagerScreen() {
         try {
           if (item.action === "complete") {
             await updateDoc(
-              doc(db, "assignments", item.id),
+              doc(getDb(), "assignments", item.id),
               buildTaskCompletionUpdate(new Date(item.queuedAt))
             );
           } else {
@@ -2288,6 +2569,23 @@ export default function TaskManagerScreen() {
 
     return { overdue, high, planner, bySubject };
   }, [tasks, nowTick]);
+
+  // Show cached state immediately while loading online data
+  if (!initialLoadDone && isOnline) {
+    return (
+      <View style={[styles.root, { backgroundColor: colors.background }]}>
+        <StatusBar barStyle="light-content" backgroundColor="#f59e0b" />
+        <View
+          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+        >
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={{ color: colors.muted, marginTop: 12 }}>
+            Loading tasks...
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   // Render
   return (

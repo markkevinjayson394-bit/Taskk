@@ -3,23 +3,23 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import {
-  collection,
-  getDocs,
-  query,
-  where,
-  writeBatch,
+    collection,
+    getDocs,
+    query,
+    where,
+    writeBatch,
 } from "firebase/firestore";
 import { useCallback, useRef, useState } from "react";
 import {
-  Alert,
-  Animated,
-  RefreshControl,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    Alert,
+    Animated,
+    RefreshControl,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, db } from "../../config/firebase";
@@ -41,14 +41,6 @@ const MENU = [
     color: "#0ea5e9",
     bg: "#0ea5e918",
     desc: "Manage all course schedules",
-  },
-  {
-    icon: "calendar-outline",
-    label: "Weekly Schedule Builder",
-    route: "/(admin)/WeeklySchedule",
-    color: "#ec4899",
-    bg: "#ec489918",
-    desc: "Visual drag-and-drop schedule builder",
   },
   {
     icon: "people",
@@ -190,7 +182,9 @@ export default function AdminHome() {
             onPress: async () => {
               try {
                 // Re-fetch fresh snapshot at the moment of confirm, not before the dialog
-                const freshSnap = await getDocs(collection(db, "announcements"));
+                const freshSnap = await getDocs(
+                  collection(db, "announcements")
+                );
                 if (freshSnap.empty) {
                   Alert.alert("Done", "No announcements to delete.");
                   return;
@@ -198,7 +192,9 @@ export default function AdminHome() {
                 const BATCH_SIZE = 500;
                 for (let i = 0; i < freshSnap.docs.length; i += BATCH_SIZE) {
                   const batch = writeBatch(db);
-                  freshSnap.docs.slice(i, i + BATCH_SIZE).forEach((d) => batch.delete(d.ref));
+                  freshSnap.docs
+                    .slice(i, i + BATCH_SIZE)
+                    .forEach((d) => batch.delete(d.ref));
                   await batch.commit();
                 }
                 Alert.alert("Done", "All announcements cleared.");
@@ -714,5 +710,3 @@ const styles = StyleSheet.create({
   },
   footerText: { fontSize: 11, fontWeight: "500" },
 });
-
-

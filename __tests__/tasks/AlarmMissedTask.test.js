@@ -21,6 +21,16 @@ const mockCompareOverdueStageOrder = jest.fn((a, b) => {
 const mockScheduleNextOverdueAlarm = jest
   .fn()
   .mockResolvedValue("next-overdue-id");
+const mockDisplayAlarmNotification = jest.fn().mockResolvedValue(undefined);
+const mockWriteAlarmAction = jest.fn().mockResolvedValue(true);
+const mockLogCheckpointAdvance = jest.fn().mockResolvedValue(undefined);
+const mockLogMissedAlarmDetected = jest.fn().mockResolvedValue(undefined);
+const mockLogMissedRecoveryNotificationPosted = jest
+  .fn()
+  .mockResolvedValue(undefined);
+const mockLogMissedRecoveryOpenHandoffWritten = jest
+  .fn()
+  .mockResolvedValue(undefined);
 
 jest.mock("@notifee/react-native", () => ({
   __esModule: true,
@@ -39,6 +49,7 @@ jest.mock("../../utils/deadlineAlarmBackground", () => ({
   ALARM_KIND_OVERDUE_SEED: "overdue_seed",
   bootstrapDeadlineAlarmChannel: jest.fn().mockResolvedValue(undefined),
   DEADLINE_NOTIF_TYPE: "deadline_alarm",
+  displayAlarmNotification: mockDisplayAlarmNotification,
   resolveNotificationAlarmKind: jest.fn((payload = {}) => {
     if (typeof payload?.alarmKind === "string" && payload.alarmKind) {
       return payload.alarmKind;
@@ -65,6 +76,19 @@ jest.mock("../../utils/taskOverdueState", () => ({
 
 jest.mock("../../utils/logger", () => ({
   warnIfDev: jest.fn(),
+}));
+
+jest.mock("../../utils/alarmDiagnostics", () => ({
+  logCheckpointAdvance: mockLogCheckpointAdvance,
+  logMissedAlarmDetected: mockLogMissedAlarmDetected,
+  logMissedRecoveryNotificationPosted:
+    mockLogMissedRecoveryNotificationPosted,
+  logMissedRecoveryOpenHandoffWritten:
+    mockLogMissedRecoveryOpenHandoffWritten,
+}));
+
+jest.mock("../../utils/nativeAlarm", () => ({
+  writeAlarmAction: mockWriteAlarmAction,
 }));
 
 describe("tasks/AlarmMissedTask", () => {
@@ -97,6 +121,7 @@ describe("tasks/AlarmMissedTask", () => {
       alarmId,
       title: "Overdue task",
       payloadJson: JSON.stringify({
+        type: "deadline_alarm",
         notificationType: "deadline_alarm",
         taskId: "task-1",
         taskTitle: "Submit practicum log",
@@ -115,6 +140,47 @@ describe("tasks/AlarmMissedTask", () => {
     expect(mockNotifee.cancelNotification).toHaveBeenCalledWith(alarmId);
     expect(mockNotifee.cancelNotification).toHaveBeenCalledWith(
       `${alarmId}-display`
+    );
+    expect(mockDisplayAlarmNotification).toHaveBeenCalledWith({
+      id: `${alarmId}-display`,
+      title: "Submit practicum log is due NOW",
+      body: '"Submit practicum log" (Internship) - tap Open or Not Done.',
+      data: expect.objectContaining({
+        alarmId,
+        notificationId: `${alarmId}-display`,
+        taskId: "task-1",
+        stage: "due",
+        displayStage: "due",
+        recoveryReason: "missed",
+        deliveryPath: "missed_alarm_recovery_no_fullscreen",
+      }),
+      isOngoing: true,
+    });
+    expect(mockWriteAlarmAction).toHaveBeenCalledWith(
+      "open",
+      alarmId,
+      expect.any(String)
+    );
+    expect(
+      mockLogMissedRecoveryNotificationPosted
+    ).toHaveBeenCalledWith(
+      "task-1",
+      "due",
+      alarmId,
+      expect.objectContaining({
+        displayAlarmId: `${alarmId}-display`,
+      })
+    );
+    expect(
+      mockLogMissedRecoveryOpenHandoffWritten
+    ).toHaveBeenCalledWith(
+      "task-1",
+      "due",
+      alarmId,
+      expect.objectContaining({
+        displayAlarmId: `${alarmId}-display`,
+        success: true,
+      })
     );
     expect(mockAdvanceCheckpoint).toHaveBeenCalledWith("task-1", "due", dueAtMs);
     expect(mockScheduleNextOverdueAlarm).toHaveBeenCalledWith({
@@ -145,6 +211,7 @@ describe("tasks/AlarmMissedTask", () => {
       alarmId,
       title: "Overdue follow-up",
       payloadJson: JSON.stringify({
+        type: "deadline_alarm",
         notificationType: "deadline_alarm",
         taskId: "task-1",
         taskTitle: "Submit practicum log",
@@ -191,6 +258,7 @@ describe("tasks/AlarmMissedTask", () => {
       alarmId: "deadline-followup:task-1:+15m",
       title: "Overdue follow-up",
       payloadJson: JSON.stringify({
+        type: "deadline_alarm",
         notificationType: "deadline_alarm",
         taskId: "task-1",
         taskTitle: "Submit practicum log",

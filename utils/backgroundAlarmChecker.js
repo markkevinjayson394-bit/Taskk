@@ -221,12 +221,6 @@ try {
           ) {
             continue;
           }
-          if (
-            Number.isFinite(checkpoint?.triggerAtMs) &&
-            Math.abs(now - checkpoint.triggerAtMs) < TRIGGER_GRACE_MS
-          ) {
-            continue;
-          }
           // REMOVED: REPAIR_COOLDOWN_MS check — it blocked repairs for 10 minutes
           // even when the alarm definitively did not fire
 

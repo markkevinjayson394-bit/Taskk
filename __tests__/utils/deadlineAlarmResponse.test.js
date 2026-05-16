@@ -54,8 +54,8 @@ jest.mock("../../utils/nativeAlarm", () => mockNativeAlarm);
 
 jest.mock("../../utils/notificationIds", () => ({
   buildManagedNotificationData: jest.fn((id, data) => ({ id, ...data })),
-  buildNotificationId: jest.fn((prefix, taskId, stage) =>
-    `${prefix}:${taskId}:${stage}`
+  buildNotificationId: jest.fn(
+    (prefix, taskId, stage) => `${prefix}:${taskId}:${stage}`
   ),
 }));
 
@@ -77,6 +77,13 @@ jest.mock("../../utils/taskOverdueState", () => ({
 }));
 
 jest.mock("../../utils/deadlineConstants", () => ({
+  FOREGROUND_THRESHOLDS: [
+    { key: "1d", ms: 24 * 60 * 60 * 1000 },
+    { key: "2h", ms: 2 * 60 * 60 * 1000 },
+    { key: "30m", ms: 30 * 60 * 1000 },
+    { key: "5m", ms: 5 * 60 * 1000 },
+    { key: "due", ms: 0 },
+  ],
   OVERDUE_CHAIN: [
     { key: "due", delayMs: 0 },
     { key: "+15m", delayMs: 15 * 60 * 1000 },
@@ -85,9 +92,9 @@ jest.mock("../../utils/deadlineConstants", () => ({
 }));
 
 const {
-  ACTION_NOT_DONE,
   handleDeadlineAlarmResponse,
 } = require("../../utils/deadlineAlarmBackground");
+const ACTION_NOT_DONE = "not_done_deadline_alarm";
 
 describe("handleDeadlineAlarmResponse", () => {
   beforeEach(() => {

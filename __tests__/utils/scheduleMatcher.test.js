@@ -1,6 +1,4 @@
-import {
-  findBestScheduleDoc,
-} from "../../utils/scheduleMatcher";
+import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 
 const mockGetDocs = jest.fn();
 const mockQuery = jest.fn();
@@ -36,33 +34,54 @@ describe("scheduleMatcher", () => {
 
   describe("findBestScheduleDoc", () => {
     it("returns null when course is missing", async () => {
-      const result = await findBestScheduleDoc({}, { college: "ENG", course: "", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "ENG", course: "", year: "1", section: "A" }
+      );
       expect(result).toBeNull();
     });
 
     it("returns null when year is missing", async () => {
-      const result = await findBestScheduleDoc({}, { college: "ENG", course: "BSIT", year: "", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "ENG", course: "BSIT", year: "", section: "A" }
+      );
       expect(result).toBeNull();
     });
 
     it("returns null when section is missing", async () => {
-      const result = await findBestScheduleDoc({}, { college: "ENG", course: "BSIT", year: "1", section: "" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "ENG", course: "BSIT", year: "1", section: "" }
+      );
       expect(result).toBeNull();
     });
 
     it("queries with college when college is provided", async () => {
       mockGetDocs.mockResolvedValue({ empty: true, docs: [] });
 
-      await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "A" });
+      await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "BSIT", year: "1", section: "A" }
+      );
 
       expect(mockWhere).toHaveBeenCalledWith("college", "==", "COE");
     });
 
     it("returns exact match with college when found", async () => {
-      const doc = makeDoc("sched1", { course: "BSIT", year: "1", section: "A", college: "COE", scheduleType: "day" });
+      const doc = makeDoc("sched1", {
+        course: "BSIT",
+        year: "1",
+        section: "A",
+        college: "COE",
+        scheduleType: "day",
+      });
       mockGetDocs.mockResolvedValueOnce({ empty: false, docs: [doc] });
 
-      const result = await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "BSIT", year: "1", section: "A" }
+      );
 
       expect(result).not.toBeNull();
       expect(result.doc).toBe(doc);
@@ -70,10 +89,18 @@ describe("scheduleMatcher", () => {
     });
 
     it("returns exact match without college when college not provided", async () => {
-      const doc = makeDoc("sched1", { course: "BSIT", year: "1", section: "A", scheduleType: "day" });
+      const doc = makeDoc("sched1", {
+        course: "BSIT",
+        year: "1",
+        section: "A",
+        scheduleType: "day",
+      });
       mockGetDocs.mockResolvedValueOnce({ empty: false, docs: [doc] });
 
-      const result = await findBestScheduleDoc({}, { college: "", course: "BSIT", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "", course: "BSIT", year: "1", section: "A" }
+      );
 
       expect(result).not.toBeNull();
       expect(result.source).toBe("exact");
@@ -84,9 +111,23 @@ describe("scheduleMatcher", () => {
       mockGetDocs
         .mockResolvedValueOnce({ empty: true, docs: [] }) // exact with college
         .mockResolvedValueOnce({ empty: true, docs: [] }) // exact without college
-        .mockResolvedValueOnce({ empty: false, docs: [makeDoc("sched2", { course: "BSIT", year: "1", section: "A", college: "COE", scheduleType: "day" })] }); // by course
+        .mockResolvedValueOnce({
+          empty: false,
+          docs: [
+            makeDoc("sched2", {
+              course: "BSIT",
+              year: "1",
+              section: "A",
+              college: "COE",
+              scheduleType: "day",
+            }),
+          ],
+        }); // by course
 
-      const result = await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "BSIT", year: "1", section: "A" }
+      );
 
       expect(result).not.toBeNull();
     });
@@ -94,16 +135,28 @@ describe("scheduleMatcher", () => {
     it("returns null when no matching schedules found", async () => {
       mockGetDocs.mockResolvedValue({ empty: true, docs: [] });
 
-      const result = await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "Z" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "BSIT", year: "1", section: "Z" }
+      );
 
       expect(result).toBeNull();
     });
 
     it("normalizes raw course name before querying", async () => {
-      const doc = makeDoc("sched1", { course: "Bachelor of Science in Information Technology", year: "1", section: "A", college: "COE", scheduleType: "day" });
+      const doc = makeDoc("sched1", {
+        course: "Bachelor of Science in Information Technology",
+        year: "1",
+        section: "A",
+        college: "COE",
+        scheduleType: "day",
+      });
       mockGetDocs.mockResolvedValue({ empty: false, docs: [doc] });
 
-      const result = await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "BSIT", year: "1", section: "A" }
+      );
 
       expect(result).not.toBeNull();
     });
@@ -114,7 +167,15 @@ describe("scheduleMatcher", () => {
         .mockResolvedValueOnce({ empty: true, docs: [] }) // raw course name exact lookup
         .mockResolvedValueOnce({ empty: false, docs: [] }); // by course fallback
 
-      await findBestScheduleDoc({}, { college: "COE", course: "BS Information Technology", year: "1", section: "A" });
+      await findBestScheduleDoc(
+        {},
+        {
+          college: "COE",
+          course: "BS Information Technology",
+          year: "1",
+          section: "A",
+        }
+      );
 
       // Both candidates should have been tried
       expect(mockWhere).toHaveBeenCalled();
@@ -123,7 +184,15 @@ describe("scheduleMatcher", () => {
     it("logs warning when exact lookup with college fails", async () => {
       mockGetDocs.mockRejectedValueOnce(new Error("Firestore error"));
 
-      await findBestScheduleDoc({}, { college: "COE", course: "BSIT", year: "1", section: "A" });
+      await findBestScheduleDoc(
+        {},
+        {
+          college: "COE",
+          course: "BSIT-FALLBACK",
+          year: "1",
+          section: "B",
+        }
+      );
 
       expect(mockWarnIfDev).toHaveBeenCalled();
     });
@@ -131,7 +200,10 @@ describe("scheduleMatcher", () => {
     it("returns null when courseCandidates array exhausted without match", async () => {
       mockGetDocs.mockResolvedValue({ empty: true, docs: [] });
 
-      const result = await findBestScheduleDoc({}, { college: "COE", course: "UnknownCourse", year: "1", section: "A" });
+      const result = await findBestScheduleDoc(
+        {},
+        { college: "COE", course: "UnknownCourse", year: "1", section: "A" }
+      );
 
       expect(result).toBeNull();
     });

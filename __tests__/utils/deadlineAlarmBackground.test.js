@@ -24,7 +24,9 @@ const mockNativeAlarm = {
   ),
   isNativeAlarmSupported: true,
   openExactAlarmSettings: jest.fn(),
-  scheduleNativeAlarm: jest.fn(async ({ alarmId }) => `native-alarm:${alarmId}`),
+  scheduleNativeAlarm: jest.fn(
+    async ({ alarmId }) => `native-alarm:${alarmId}`
+  ),
   stopActiveNativeAlarm: jest.fn(),
   toNativeAlarmScheduledId: jest.fn((id) => id),
   writeAlarmAction: jest.fn(),
@@ -50,6 +52,7 @@ jest.mock("@notifee/react-native", () => ({
 
 jest.mock("../../utils/academicTaskModel", () => ({
   resolveTaskDueDate: mockResolveTaskDueDate,
+  isTaskCompleted: jest.fn(() => false),
 }));
 
 jest.mock("../../utils/logger", () => ({
@@ -60,12 +63,12 @@ jest.mock("../../utils/logger", () => ({
 jest.mock("../../utils/nativeAlarm", () => mockNativeAlarm);
 
 jest.mock("../../utils/notificationIds", () => ({
-  buildDeadlineNotificationId: jest.fn((taskId, stage) =>
-    `deadline-overdue:${taskId}:${stage}`
+  buildDeadlineNotificationId: jest.fn(
+    (taskId, stage) => `deadline-overdue:${taskId}:${stage}`
   ),
   buildManagedNotificationData: jest.fn((id, data) => ({ id, ...data })),
-  buildNotificationId: jest.fn((prefix, taskId, stage) =>
-    `${prefix}:${taskId}:${stage}`
+  buildNotificationId: jest.fn(
+    (prefix, taskId, stage) => `${prefix}:${taskId}:${stage}`
   ),
 }));
 
@@ -177,9 +180,10 @@ describe("deadlineAlarmBackground", () => {
       subject: "English",
     });
 
-    const scheduledAlarmIds = mockNativeAlarm.scheduleNativeAlarm.mock.calls.map(
-      ([payload]) => payload.alarmId
-    );
+    const scheduledAlarmIds =
+      mockNativeAlarm.scheduleNativeAlarm.mock.calls.map(
+        ([payload]) => payload.alarmId
+      );
 
     expect(scheduledAlarmIds).toEqual(
       expect.arrayContaining([
@@ -207,14 +211,18 @@ describe("deadlineAlarmBackground", () => {
     });
 
     expect(mockNativeAlarm.scheduleNativeAlarm).not.toHaveBeenCalled();
-    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledTimes(5);
+    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledTimes(
+      5
+    );
   });
 
   it("creates the +15m overdue seed when the due alarm falls back to expo", async () => {
-    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(async ({ alarmId }) => {
-      if (alarmId === "deadline-due:task-1:due") return null;
-      return `native-alarm:${alarmId}`;
-    });
+    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(
+      async ({ alarmId }) => {
+        if (alarmId === "deadline-due:task-1:due") return null;
+        return `native-alarm:${alarmId}`;
+      }
+    );
 
     const ids = await scheduleDeadlineAlarms({
       id: "task-1",
@@ -222,13 +230,16 @@ describe("deadlineAlarmBackground", () => {
       subject: "English",
     });
 
-    const scheduledAlarmIds = mockNativeAlarm.scheduleNativeAlarm.mock.calls.map(
-      ([payload]) => payload.alarmId
-    );
+    const scheduledAlarmIds =
+      mockNativeAlarm.scheduleNativeAlarm.mock.calls.map(
+        ([payload]) => payload.alarmId
+      );
 
     expect(scheduledAlarmIds).toContain("deadline-due:task-1:due");
     expect(scheduledAlarmIds).toContain("deadline-followup:task-1:+15m");
-    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledTimes(
+      1
+    );
     expect(ids).toEqual(
       expect.arrayContaining([
         "scheduled-id",
@@ -238,10 +249,12 @@ describe("deadlineAlarmBackground", () => {
   });
 
   it("falls back to Expo scheduling for Android lead reminders when native scheduling fails", async () => {
-    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(async ({ alarmId }) => {
-      if (alarmId === "deadline-lead:task-1:30m") return null;
-      return `native-alarm:${alarmId}`;
-    });
+    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(
+      async ({ alarmId }) => {
+        if (alarmId === "deadline-lead:task-1:30m") return null;
+        return `native-alarm:${alarmId}`;
+      }
+    );
 
     await scheduleDeadlineAlarms({
       id: "task-1",

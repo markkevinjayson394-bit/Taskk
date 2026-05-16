@@ -4,13 +4,13 @@
 
 import { parseDueDate } from "../../utils/academicTaskModel";
 import {
-  buildCalendarPlanTasks,
-  buildDayPlannerRef,
-  computePlannerAnalytics,
-  fetchPlannerAssignments,
-  syncCalendarDayPlans,
-  syncDayPlannerTasks,
-  syncMonthPlannerTasks,
+    buildCalendarPlanTasks,
+    buildDayPlannerRef,
+    computePlannerAnalytics,
+    fetchPlannerAssignments,
+    syncCalendarDayPlans,
+    syncDayPlannerTasks,
+    syncMonthPlannerTasks,
 } from "../../utils/plannerTaskSync";
 
 const mockGetDocs = jest.fn();
@@ -26,6 +26,7 @@ const mockWarnIfDev = jest.fn();
 
 jest.mock("../../config/firebase", () => ({
   db: {},
+  getDb: () => ({}),
 }));
 
 jest.mock("firebase/firestore", () => ({

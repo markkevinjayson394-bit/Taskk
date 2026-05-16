@@ -2,14 +2,19 @@ import {
     isDeadlineAlarmModalEligible,
     resolveDeadlineAlarmStage,
 } from "./deadlineAlarmStage";
-import { logStartupHandoffSkipped } from "./alarmDiagnostics";
+import {
+  logStartupHandoffAccepted,
+  logStartupHandoffRead,
+  logStartupHandoffSkipped,
+} from "./alarmDiagnostics";
 import {
     buildDeadlineRouteParams,
     normalizeDeadlineAlarmAction,
 } from "./deadlineNotifications";
 import { clearPendingAlarmAction, getPendingAlarmAction } from "./nativeAlarm";
 
-const MAX_AGE_MS = 25 * 60 * 1000; // 25 minutes
+const SHORT_MAX_AGE_MS = 25 * 60 * 1000; // 25 minutes
+const DEADLINE_OPEN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Reads the native pending alarm action, validates it, clears it,
@@ -45,16 +50,18 @@ export async function consumePendingAlarmAction() {
         ? pending.alarmId.trim()
         : null;
 
+  const pendingAction =
+    typeof pending?.action === "string" && pending.action.trim()
+      ? pending.action.trim()
+      : null;
+
   const logSkipped = async (reason, details = {}) => {
     await logStartupHandoffSkipped(resolvedTaskId, reason, {
       sourceId:
         typeof pending?.alarmId === "string" && pending.alarmId.trim()
           ? pending.alarmId.trim()
           : null,
-      action:
-        typeof pending?.action === "string" && pending.action.trim()
-          ? pending.action.trim()
-          : null,
+      action: pendingAction,
       ...details,
     }).catch(() => {});
   };
@@ -74,9 +81,51 @@ export async function consumePendingAlarmAction() {
     return null;
   }
 
-  if (Date.now() - pendingTimestamp > MAX_AGE_MS) {
+  await logStartupHandoffRead(resolvedTaskId, {
+    sourceId:
+      typeof pending?.alarmId === "string" && pending.alarmId.trim()
+        ? pending.alarmId.trim()
+        : null,
+    action: pendingAction,
+    ageMs: Date.now() - pendingTimestamp,
+  }).catch(() => {});
+
+  if (pendingAction === "notdone") {
     await clearPending();
-    await logSkipped("expired", { ageMs: Date.now() - pendingTimestamp });
+    await logSkipped("notdone_already_handled", {
+      ageMs: Date.now() - pendingTimestamp,
+    });
+    return null;
+  }
+
+  const normalizedPendingAction =
+    pendingAction === "done" || pendingAction === "markdone"
+      ? "open"
+      : normalizeDeadlineAlarmAction(pendingAction);
+  const maxAgeMs =
+    normalizedPendingAction === "open"
+      ? DEADLINE_OPEN_MAX_AGE_MS
+      : SHORT_MAX_AGE_MS;
+
+  if (Date.now() - pendingTimestamp > maxAgeMs) {
+    await clearPending();
+    await logSkipped("expired", {
+      ageMs: Date.now() - pendingTimestamp,
+      maxAgeMs,
+      alarmStage:
+        typeof payload?.stage === "string" && payload.stage.trim()
+          ? payload.stage.trim()
+          : null,
+      displayStage:
+        typeof payload?.displayStage === "string" && payload.displayStage.trim()
+          ? payload.displayStage.trim()
+          : null,
+      recoveryReason:
+        typeof payload?.recoveryReason === "string" &&
+        payload.recoveryReason.trim()
+          ? payload.recoveryReason.trim()
+          : null,
+    });
     return null;
   }
 
@@ -89,10 +138,7 @@ export async function consumePendingAlarmAction() {
   // Clear BEFORE returning so no second caller can consume it
   await clearPending();
 
-  const action =
-    pending.action === "done" || pending.action === "markdone"
-      ? "open"
-      : normalizeDeadlineAlarmAction(pending.action);
+  const action = normalizedPendingAction;
 
   let taskId = pending.alarmId;
   let alarmStage = null;
@@ -117,7 +163,7 @@ export async function consumePendingAlarmAction() {
     return null;
   }
 
-  return buildDeadlineRouteParams(
+  const routeParams = buildDeadlineRouteParams(
     {
       ...payload,
       taskId,
@@ -130,4 +176,17 @@ export async function consumePendingAlarmAction() {
       sourceId: pending.alarmId,
     }
   );
+  await logStartupHandoffAccepted(taskId, {
+    sourceId: pending.alarmId,
+    action,
+    alarmStage,
+    displayStage:
+      typeof payload?.displayStage === "string" ? payload.displayStage : null,
+    recoveryReason:
+      typeof payload?.recoveryReason === "string"
+        ? payload.recoveryReason
+        : null,
+    ageMs: Date.now() - pendingTimestamp,
+  }).catch(() => {});
+  return routeParams;
 }

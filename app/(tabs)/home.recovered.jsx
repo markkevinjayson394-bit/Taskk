@@ -7,15 +7,10 @@
  * - Larger, bolder labels and section headers
  * - Card text no longer clipped or invisible on dark backgrounds
  * - Pull-to-refresh still works as before
- *
- * FIX: stableUpcomingAssignments memoization key is now computed inside
- *      the useMemo callback (not in the dependency array) to prevent
- *      "Cannot read property 'map' of undefined" when upcomingAssignments
- *      is transiently undefined between async state updates.
  */
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import {
   collection,
   doc,
@@ -39,9 +34,6 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import DeadlineAlarmModal, {
-  useDeadlineAlarmScheduler,
-} from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import LoadingState from "../../components/LoadingState";
 import { auth, db } from "../../config/firebase";
@@ -287,43 +279,6 @@ export default function HomeDashboard() {
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
-
-  // FIX: compute the memoization key safely inside the callback instead of
-  // calling .map() directly in the dependency array.  If upcomingAssignments
-  // is ever transiently undefined the previous code threw
-  // "Cannot read property 'map' of undefined" and crashed the component.
-  const assignmentsKey = (upcomingAssignments ?? [])
-    .map((t) => `${t.id}:${t.completed}`)
-    .join(",");
-
-  const stableUpcomingAssignments = useMemo(
-    () => upcomingAssignments ?? [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [assignmentsKey]
-  );
-
-  const {
-    alarmVisible,
-    alarmTask,
-    alarmThresholdKey,
-    acknowledgeAlarm,
-    notDoneAlarm,
-    markDoneAlarm,
-    showAlarmForTask,
-  } = useDeadlineAlarmScheduler(stableUpcomingAssignments, {
-    foregroundModalEnabled: true,
-  });
-
-  const { focusTaskId, showAlarm } = useLocalSearchParams();
-
-  useEffect(() => {
-    if (showAlarm !== "1" || !focusTaskId) return;
-
-    const task = upcomingAssignments.find((t) => t.id === focusTaskId);
-    if (task) {
-      showAlarmForTask(task, null);
-    }
-  }, [showAlarm, focusTaskId, upcomingAssignments, showAlarmForTask]);
 
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
@@ -1573,19 +1528,6 @@ export default function HomeDashboard() {
           )}
         </Animated.View>
       </ScrollView>
-      <DeadlineAlarmModal
-        visible={alarmVisible}
-        task={alarmTask}
-        thresholdKey={alarmThresholdKey}
-        onNotDone={notDoneAlarm}
-        onMarkDone={async () => {
-          if (alarmTask?.id) {
-            await markDone(alarmTask);
-          }
-          await markDoneAlarm();
-        }}
-        onAcknowledge={acknowledgeAlarm}
-      />
     </View>
   );
 }

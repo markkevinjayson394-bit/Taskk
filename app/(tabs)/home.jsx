@@ -34,9 +34,6 @@ import {
     View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import DeadlineAlarmModal, {
-    useDeadlineAlarmScheduler,
-} from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import LoadingState from "../../components/LoadingState";
 import { auth, db } from "../../config/firebase";
@@ -299,16 +296,6 @@ export default function HomeDashboard() {
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
-
-  const {
-    alarmVisible,
-    alarmTask,
-    alarmThresholdKey,
-    acknowledgeAlarm,
-    notDoneAlarm,
-  } = useDeadlineAlarmScheduler(upcomingAssignments, {
-    foregroundModalEnabled: true,
-  });
 
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
@@ -1740,31 +1727,6 @@ export default function HomeDashboard() {
         </Animated.View>
       </ScrollView>
 
-      <DeadlineAlarmModal
-        visible={alarmVisible}
-        task={alarmTask}
-        thresholdKey={alarmThresholdKey}
-        onNotDone={async () => {
-          try {
-            await notDoneAlarm();
-            fetchDashboardData(false, { forceRefresh: true });
-          } catch (err) {
-            warnIfDev("Failed to mark as not done:", err);
-          }
-        }}
-        onMarkDone={async () => {
-          try {
-            // acknowledgeAlarm first so the modal closes immediately
-            // even if the Firestore write is slow
-            await acknowledgeAlarm();
-            if (alarmTask?.id) {
-              await markDone(alarmTask);
-            }
-          } catch (err) {
-            warnIfDev("Failed to mark as done:", err);
-          }
-        }}
-      />
     </View>
   );
 }

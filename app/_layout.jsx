@@ -33,6 +33,7 @@ import {
 } from "../utils/deadlineNotifications";
 import {
   logStartupHandoffConsumed,
+  logStartupHandoffPublished,
   logStartupHandoffSkipped,
 } from "../utils/alarmDiagnostics";
 import {
@@ -54,6 +55,7 @@ import {
 } from "../utils/onboarding";
 import { checkAndAutoLaunchOverdueAlarm } from "../utils/overdueAutoLaunch";
 import { consumePendingAlarmAction } from "../utils/pendingAlarmAction";
+import { publishDeadlineAlarmOpenRequest } from "../utils/deadlineAlarmBridge";
 
 const sentryDsn = Constants.expoConfig?.extra?.sentryDsn || "";
 const LAST_HANDLED_DEADLINE_RESPONSE_KEY =
@@ -401,6 +403,18 @@ function RootLayoutNav() {
         taskId: params.focusTaskId,
         alarmAction: params.alarmAction ?? "open",
       });
+
+      publishDeadlineAlarmOpenRequest({
+        ...params,
+        nativeHandoff: params.nativeHandoff ?? true,
+      });
+      await logStartupHandoffPublished(params.focusTaskId, {
+        reason,
+        sourceId,
+        alarmAction: params.alarmAction ?? "open",
+        alarmStage: params.displayStage ?? params.alarmStage ?? null,
+        recoveryReason: params.recoveryReason ?? null,
+      }).catch(() => {});
 
       routerRef.current.push({
         pathname: "/(tabs)/TaskManagerScreen",

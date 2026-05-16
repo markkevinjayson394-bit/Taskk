@@ -40,9 +40,6 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import DeadlineAlarmModal, {
-  useDeadlineAlarmScheduler,
-} from "../../components/DeadlineAlarmModal";
 import EmptyStateCard from "../../components/EmptyStateCard";
 import OfflineBanner from "../../components/OfflineBanner";
 import TaskEditorModal from "../../components/task-manager/TaskEditorModal";
@@ -120,13 +117,9 @@ import { toLocalDayKey } from "../../utils/dateHelpers";
 import {
   cancelDeadlineAlarms,
   scheduleDeadlineAlarms,
-  scheduleNextOverdueAlarm,
 } from "../../utils/deadlineAlarmBackground";
-import { isDeadlineAlarmModalEligible } from "../../utils/deadlineAlarmStage";
-import { normalizeDeadlineAlarmAction } from "../../utils/deadlineNotifications";
 import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
 import {
-  findOfflineQueuedTask,
   isLocalOnlyTaskId,
   mergePendingTasksWithOfflineQueue,
   removeOfflineQueuedTask,
@@ -134,10 +127,7 @@ import {
 import { syncCalendarDayPlans } from "../../utils/plannerTaskSync";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
-import {
-  advanceCheckpoint,
-  clearCheckpoint,
-} from "../../utils/taskOverdueState";
+import { clearCheckpoint } from "../../utils/taskOverdueState";
 
 const INITIAL_LOAD_SIZE = 50; // Load first 50 tasks immediately, lazy-load rest
 
@@ -337,37 +327,10 @@ export default function TaskManagerScreen() {
   const router = useRouter();
   const {
     focusTaskId,
-    showAlarm,
-    alarmAction: alarmActionParam,
-    pendingAction,
-    sourceId: sourceIdParam,
-    dueAtMs,
-    alarmStage,
-    displayStage: displayStageParam,
-    recoveryReason: recoveryReasonParam,
-    nativeHandoff: nativeHandoffParam,
     filter: filterParam,
     subject: subjectParam,
     subjectId: subjectIdParam,
   } = useLocalSearchParams();
-  const routeDueAtMs = (() => {
-    const raw = normalizeRouteString(dueAtMs);
-    if (!raw) return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : null;
-  })();
-  const routeAlarmAction = normalizeDeadlineAlarmAction(
-    normalizeRouteString(alarmActionParam) || normalizeRouteString(pendingAction)
-  );
-  const routeSourceId = normalizeRouteString(sourceIdParam);
-  const routeAlarmStage = normalizeRouteString(alarmStage);
-  const routeDisplayStage = normalizeRouteString(displayStageParam);
-  const routeRecoveryReason = normalizeRouteString(recoveryReasonParam);
-  const effectiveRouteAlarmStage = routeDisplayStage || routeAlarmStage;
-  const routeNativeHandoff = (() => {
-    const raw = normalizeRouteString(nativeHandoffParam);
-    return raw === "1" || raw === "true";
-  })();
   const { colors, isDark } = useTheme();
   const { isOnline, markSynced, refreshPendingSyncSummary } = useOffline();
 
@@ -375,7 +338,6 @@ export default function TaskManagerScreen() {
     settings: notificationSettings,
     rescheduleAll,
     rescheduleDeadlineAlarmsForTask,
-    clearTaskAlarmSuppression,
     cancelTodayDigestIfNoPendingTasks,
   } = useNotifications() ?? {};
 
@@ -384,18 +346,6 @@ export default function TaskManagerScreen() {
   const [tasks, setTasks] = useState([]);
   const [history, setHistory] = useState([]);
   //const [tasksLoaded, setTasksLoaded] = useState(false);
-  const {
-    alarmVisible,
-    alarmTask,
-    alarmThresholdKey,
-    notDoneAlarm,
-    dismissAlarm,
-    markDoneAlarm,
-    showAlarmForTask,
-  } = useDeadlineAlarmScheduler(tasks, {
-    deadlineWarningEnabled: notificationSettings?.deadlineWarning !== false,
-    foregroundModalEnabled: true,
-  });
   const [filter, setFilter] = useState(() => normalizeFilterParam(filterParam));
   const [searchQuery, setSearchQuery] = useState("");
   const [subjectFilterId, setSubjectFilterId] = useState(SUBJECT_FILTER_ALL_ID);
@@ -439,25 +389,6 @@ export default function TaskManagerScreen() {
   const [deletingId, setDeletingId] = useState("");
   const [snoozingId, setSnoozingId] = useState("");
 
-  // [FIX GAP-3] pendingAction needs to be BOTH a ref (for sync writes) AND
-  // a state (so DeadlineAlarmModal re-renders when it changes). The ref alone
-  // means the modal never sees updates that happen after its initial render.
-  const pendingActionRef = useRef(null);
-  const [pendingActionState, setPendingActionState] = useState(null);
-  const nativeHandoffRef = useRef(false);
-  const [nativeHandoffState, setNativeHandoffState] = useState(false);
-
-  // Helper: set both ref and state together so they stay in sync.
-  const setPendingAction = useCallback((value) => {
-    pendingActionRef.current = value;
-    setPendingActionState(value);
-  }, []);
-  const setNativeHandoff = useCallback((value) => {
-    const resolvedValue = Boolean(value);
-    nativeHandoffRef.current = resolvedValue;
-    setNativeHandoffState(resolvedValue);
-  }, []);
-
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const flushingRef = useRef(false);
   const flushingCreatesRef = useRef(false);
@@ -468,7 +399,6 @@ export default function TaskManagerScreen() {
     key: "",
     names: [],
   });
-  const handledParamRef = useRef("");
   const subjectsPreloadedRef = useRef(false);
   const subjectLoadingRef = useRef(null); // OPTIMIZATION 5: Prevent duplicate async loads
 
@@ -625,262 +555,6 @@ export default function TaskManagerScreen() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOnline])
   );
-
-  // Handle opened-from-notification:
-  useEffect(() => {
-    console.log("[DEBUG Alarm] useEffect fired", {
-      showAlarm,
-      focusTaskId,
-      alarmAction: routeAlarmAction,
-      routeDueAtMs,
-      routeAlarmStage,
-      routeDisplayStage,
-      routeRecoveryReason,
-      routeSourceId,
-      routeNativeHandoff,
-      tasksCount: tasks?.length,
-      hasShowAlarmFn: typeof showAlarmForTask === "function",
-    });
-    if (showAlarm !== "1" || !focusTaskId) {
-      console.log(
-        "[DEBUG Alarm] Early return: showAlarm !== '1' or no focusTaskId",
-        { showAlarm, focusTaskId }
-      );
-      return;
-    }
-    if (!isDeadlineAlarmModalEligible({ stage: effectiveRouteAlarmStage })) {
-      setPendingAction(null);
-      setNativeHandoff(false);
-      setTimeout(() => {
-        router.setParams({
-          showAlarm: "",
-          focusTaskId: "",
-          alarmAction: "",
-          pendingAction: "",
-          nativeHandoff: "",
-          dueAtMs: "",
-          alarmStage: "",
-          displayStage: "",
-          recoveryReason: "",
-          sourceId: "",
-        });
-      }, 0);
-      return;
-    }
-
-    let active = true;
-    const clearAlarmParams = () => {
-      console.log("[DEBUG Alarm] Clearing alarm params");
-      setTimeout(() => {
-        router.setParams({
-          showAlarm: "",
-          focusTaskId: "",
-          alarmAction: "",
-          pendingAction: "",
-          nativeHandoff: "",
-          dueAtMs: "",
-          alarmStage: "",
-          displayStage: "",
-          recoveryReason: "",
-          sourceId: "",
-        });
-      }, 0);
-    };
-
-    const fetchAndShow = async () => {
-      console.log("[DEBUG Alarm] fetchAndShow started", {
-        alarmAction: routeAlarmAction,
-        focusTaskId,
-      });
-      if (routeAlarmAction === "notdone") {
-        console.log(
-          "[DEBUG Alarm] Suppressing modal reopen for direct not-done action"
-        );
-        if (focusTaskId) {
-          try {
-            const task =
-              tasks?.find((candidate) => candidate.id === focusTaskId) || null;
-            const resolvedDueAtMs = task
-              ? (resolveTaskDueDate(task)?.getTime?.() ?? null)
-              : null;
-            const dueAtMs =
-              Number.isFinite(resolvedDueAtMs) && resolvedDueAtMs > 0
-                ? resolvedDueAtMs
-                : routeDueAtMs;
-
-            if (task && Number.isFinite(dueAtMs) && dueAtMs > 0) {
-              const next = await advanceCheckpoint(
-                focusTaskId,
-                effectiveRouteAlarmStage || "due",
-                dueAtMs
-              );
-
-              if (next?.key) {
-                await scheduleNextOverdueAlarm({
-                  task,
-                  checkpoint: {
-                    key: next.key,
-                    delayMs: next.delayMs ?? null,
-                  },
-                  triggerAt: next.triggerAtMs ?? null,
-                  intendedTriggerAtMs: next.triggerAtMs ?? null,
-                  deliveryPathHint: "notdone_fallback",
-                });
-              }
-            }
-          } catch (err) {
-            warnIfDev("notdone fallback chain advance failed:", err);
-          }
-        }
-        if (active) {
-          setPendingAction(null);
-          setNativeHandoff(false);
-          clearAlarmParams();
-        }
-        return;
-      }
-      const handledKey = `${focusTaskId}:${routeDueAtMs ?? "none"}:${effectiveRouteAlarmStage ?? "none"}:${routeAlarmAction}:${routeSourceId ?? "none"}:${routeRecoveryReason ?? "none"}:${routeNativeHandoff ? "native" : "local"}`;
-      console.log("[DEBUG Alarm] Proceeding to check handledKey", {
-        handledKey,
-        handledParamRef: handledParamRef.current,
-      });
-      if (handledParamRef.current === handledKey) {
-        console.log("[DEBUG Alarm] Already handled, skipping");
-        return;
-      }
-
-      // [FIX GAP-3] Use setPendingAction so both ref and state are updated.
-      const resolvedPendingAction =
-        routeAlarmAction === "markdone"
-          ? "markdone"
-          : routeAlarmAction === "notdone"
-            ? "notdone"
-            : null;
-
-      try {
-        if (!active) return;
-        let taskToShow = tasks?.find((task) => task.id === focusTaskId) || null;
-
-        if (!taskToShow) {
-          if (isLocalOnlyTaskId(focusTaskId)) {
-            const offlineTask = await findOfflineQueuedTask(
-              auth.currentUser?.uid,
-              focusTaskId
-            );
-            if (offlineTask && !offlineTask.completed) {
-              taskToShow = offlineTask;
-            }
-          }
-        }
-
-        if (!taskToShow && active) {
-          console.log(
-            "[DEBUG Alarm] Task not in local state, fetching from Firestore"
-          );
-          const snap = await getDoc(doc(getDb(), "assignments", focusTaskId));
-          if (!active) return;
-          if (!snap.exists()) {
-            console.log("[DEBUG Alarm] Task does not exist in Firestore");
-            handledParamRef.current = handledKey;
-            if (active) {
-              setNativeHandoff(false);
-              clearAlarmParams();
-            }
-            return;
-          }
-
-          const taskData = snap.data() || {};
-          if (taskData.completed) {
-            console.log("[DEBUG Alarm] Task is completed");
-            handledParamRef.current = handledKey;
-            if (active) {
-              setNativeHandoff(false);
-              clearAlarmParams();
-            }
-            return;
-          }
-
-          taskToShow = { id: snap.id, ...taskData };
-        }
-
-        if (!taskToShow || taskToShow.completed || !active) {
-          console.log("[DEBUG Alarm] Task show blocked", {
-            hasTask: !!taskToShow,
-            completed: taskToShow?.completed,
-            active,
-          });
-          handledParamRef.current = handledKey;
-          if (active) {
-            setNativeHandoff(false);
-            clearAlarmParams();
-          }
-          return;
-        }
-
-        const resolvedDue =
-          routeDueAtMs !== null
-            ? {
-                ...taskToShow,
-                dueAt: resolveTaskDueDate(taskToShow) || new Date(routeDueAtMs),
-                dueAtMs: routeDueAtMs,
-              }
-            : taskToShow;
-
-        console.log(
-          "[DEBUG Alarm] Calling showAlarmForTask with:",
-          resolvedDue?.id,
-          resolvedDue?.title
-        );
-
-        // Silent "Done" confirmation must be set before the modal becomes visible
-        // so the modal can suppress its local alarm loop from first render.
-        if (resolvedPendingAction === "markdone") {
-          setPendingAction(resolvedPendingAction);
-        }
-        setNativeHandoff(routeNativeHandoff);
-
-        if (typeof showAlarmForTask === "function") {
-          showAlarmForTask(resolvedDue, effectiveRouteAlarmStage || null);
-          console.log("[DEBUG Alarm] showAlarmForTask called successfully");
-        }
-
-        if (resolvedPendingAction !== "markdone") {
-          setPendingAction(resolvedPendingAction);
-        }
-
-        handledParamRef.current = handledKey;
-        clearAlarmParams();
-      } catch (error) {
-        console.error("[DEBUG Alarm] fetchAndShow error:", error);
-        setNativeHandoff(false);
-        warnIfDev(
-          "TaskManagerScreen: failed to open task alarm from params:",
-          error
-        );
-      }
-    };
-
-    fetchAndShow();
-    return () => {
-      active = false;
-    };
-  }, [
-    showAlarm,
-    focusTaskId,
-    routeAlarmAction,
-    routeDueAtMs,
-    routeAlarmStage,
-    routeDisplayStage,
-    routeRecoveryReason,
-    routeSourceId,
-    routeNativeHandoff,
-    effectiveRouteAlarmStage,
-    tasks,
-    showAlarmForTask,
-    router,
-    setPendingAction,
-    setNativeHandoff,
-  ]);
 
   useEffect(() => {
     if (!isOnline) return;
@@ -3494,37 +3168,6 @@ export default function TaskManagerScreen() {
         onSubmit={handleSaveTask}
       />
 
-      {/* Deadline Alarm Modal */}
-      <DeadlineAlarmModal
-        visible={alarmVisible}
-        task={alarmTask}
-        thresholdKey={alarmThresholdKey}
-        onNotDone={async () => {
-          setPendingAction(null);
-          setNativeHandoff(false);
-          if (typeof notDoneAlarm === "function") {
-            await notDoneAlarm();
-          }
-        }}
-        onMarkDone={async () => {
-          const taskId = alarmTask?.id;
-          if (!taskId) return;
-          setPendingAction(null);
-          setNativeHandoff(false);
-          if (typeof markDoneAlarm === "function") {
-            await markDoneAlarm();
-          }
-          await markComplete(taskId, { refreshReminders: false });
-          if (typeof clearTaskAlarmSuppression === "function") {
-            await clearTaskAlarmSuppression(taskId);
-          }
-          if (typeof dismissAlarm === "function") {
-            dismissAlarm();
-          }
-        }}
-        pendingAction={pendingActionState}
-        nativeHandoff={nativeHandoffState}
-      />
     </View>
   );
 }

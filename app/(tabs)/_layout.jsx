@@ -22,6 +22,7 @@ import { Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NotificationProvider } from "../../context/NotificationContext";
 import { OfflineProvider } from "../../context/OfflineContext";
+import DeadlineAlarmHost from "../../components/DeadlineAlarmHost";
 import { useTheme } from "../../context/ThemeContext";
 import { useAndroidBackNavigation } from "../../hooks/useAndroidBackNavigation";
 import { useExactAlarmStartupCheck } from "../../hooks/useExactAlarmStartupCheck";
@@ -211,6 +212,7 @@ export default function TabsLayout() {
             <Tabs.Screen name="subjects" options={{ href: null }} />
             <Tabs.Screen name="review" options={{ href: null }} />
           </Tabs>
+          <DeadlineAlarmHost />
 
           {showQuickAdd && (
             <TouchableOpacity

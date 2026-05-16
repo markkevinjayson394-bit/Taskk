@@ -186,12 +186,46 @@ export async function logStartupHandoffConsumed(taskId, metadata = {}) {
   return logAlarmEvent('STARTUP_HANDOFF_CONSUMED', taskId, metadata);
 }
 
+export async function logStartupHandoffRead(taskId, metadata = {}) {
+  return logAlarmEvent('STARTUP_HANDOFF_READ', taskId, metadata);
+}
+
+export async function logStartupHandoffAccepted(taskId, metadata = {}) {
+  return logAlarmEvent('STARTUP_HANDOFF_ACCEPTED', taskId, metadata);
+}
+
 export async function logStartupHandoffSkipped(
   taskId,
   reason,
   metadata = {}
 ) {
   return logAlarmEvent('STARTUP_HANDOFF_SKIPPED', taskId, {
+    reason,
+    ...metadata,
+  });
+}
+
+export async function logStartupHandoffPublished(taskId, metadata = {}) {
+  return logAlarmEvent('STARTUP_HANDOFF_PUBLISHED', taskId, metadata);
+}
+
+export async function logAlarmHostDuplicateSuppressed(
+  taskId,
+  reason,
+  metadata = {}
+) {
+  return logAlarmEvent('HOST_DUPLICATE_SUPPRESSED', taskId, {
+    reason,
+    ...metadata,
+  });
+}
+
+export async function logForegroundCatchupSuppressed(
+  taskId,
+  reason,
+  metadata = {}
+) {
+  return logAlarmEvent('FOREGROUND_CATCHUP_SUPPRESSED', taskId, {
     reason,
     ...metadata,
   });

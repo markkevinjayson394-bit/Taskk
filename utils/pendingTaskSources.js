@@ -1,6 +1,6 @@
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "../config/firebase";
-import { resolveTaskDueDate } from "./academicTaskModel";
+import { isTaskCompleted, resolveTaskDueDate } from "./academicTaskModel";
 import { warnIfDev } from "./logger";
 import {
     mergePendingTasksWithOfflineQueue,
@@ -10,7 +10,7 @@ import { isPlannerTask } from "./taskFilters";
 
 function isIncompleteTask(task = {}) {
   if (!task) return false;
-  if (task.completed === true || task.status === "done") return false;
+  if (isTaskCompleted(task)) return false;
   if (task.plannerArchived || isPlannerTask(task)) return false;
   return true;
 }

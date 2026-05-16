@@ -19,6 +19,9 @@ export const CACHE_KEYS = {
   announcements: (uid) => `cache_announcements_${uid}`,
   profile: (uid) => `cache_profile_${uid}`,
   lastSync: (uid) => `cache_lastsync_${uid}`,
+  adminStats: (uid) => `cache_admin_stats_${uid}`,
+  adminAnnouncements: (uid) => `cache_admin_announcements_${uid}`,
+  adminSchedules: (uid) => `cache_admin_schedules_${uid}`,
 };
 
 export const OFFLINE_QUEUE_KEYS = {

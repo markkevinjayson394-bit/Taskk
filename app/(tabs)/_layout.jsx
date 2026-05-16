@@ -17,8 +17,8 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs, usePathname, useRouter } from "expo-router";
-import { useEffect } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useState } from "react";
+import { InteractionManager, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NotificationProvider } from "../../context/NotificationContext";
 import { OfflineProvider } from "../../context/OfflineContext";
@@ -65,6 +65,7 @@ export default function TabsLayout() {
   const router = useRouter();
   const pathname = usePathname();
   const tabBarBottomOffset = getFloatingTabBarBottomOffset(insets.bottom);
+  const [servicesReady, setServicesReady] = useState(false);
 
   const showQuickAdd = !String(pathname || "").includes("/TaskManagerScreen");
 
@@ -72,26 +73,26 @@ export default function TabsLayout() {
 
   useEffect(() => {
     let active = true;
-    const bootstrap = async () => {
-      try {
-        await bootstrapDeadlineAlarmChannel();
-      } catch (error) {
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (!active) return;
+      setServicesReady(true);
+      void bootstrapDeadlineAlarmChannel().catch((error) => {
         if (!active) return;
         warnIfDev(
           "Failed to bootstrap deadline alarm channel in tabs layout:",
           error
         );
-      }
-    };
-    bootstrap();
+      });
+    });
     return () => {
       active = false;
+      task?.cancel?.();
     };
   }, []);
 
   return (
     <OfflineProvider>
-      <NotificationProvider>
+      <NotificationProvider deferStartup>
         <NotificationStartupEffects />
         <View style={{ flex: 1 }}>
           <Tabs
@@ -212,7 +213,7 @@ export default function TabsLayout() {
             <Tabs.Screen name="subjects" options={{ href: null }} />
             <Tabs.Screen name="review" options={{ href: null }} />
           </Tabs>
-          <DeadlineAlarmHost />
+          {servicesReady ? <DeadlineAlarmHost /> : null}
 
           {showQuickAdd && (
             <TouchableOpacity

@@ -231,6 +231,7 @@ export function normalizeMilestones(milestones = []) {
 
 export function isTaskCompleted(task = {}) {
   if (task?.completed === true) return true;
+  if (normalizeTaskDateInput(task?.completedAt)) return true;
   const status = String(task?.status || "")
     .trim()
     .toLowerCase();
@@ -343,4 +344,3 @@ export {
   TASK_STATUS,
   TASK_TYPES
 };
-

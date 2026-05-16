@@ -2,6 +2,9 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 import { normalizeCollege, normalizeCourse } from "../constants/academics";
 import { warnIfDev } from "./logger";
 
+const SCHEDULE_MATCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const scheduleMatchCache = new Map();
+
 function normalizeString(value) {
   return String(value ?? "").trim();
 }
@@ -12,6 +15,36 @@ function normalizeLower(value) {
 
 function normalizeCourseLower(value) {
   return normalizeCourse(value).toLowerCase();
+}
+
+function buildScheduleProfileCacheKey(profile = {}) {
+  return [
+    normalizeCollege(profile.college),
+    normalizeCourse(profile.course),
+    normalizeString(profile.year),
+    normalizeLower(profile.section),
+    normalizeLower(profile.scheduleType),
+  ].join("|");
+}
+
+function readScheduleMatchCache(profile = {}) {
+  const key = buildScheduleProfileCacheKey(profile);
+  const cached = scheduleMatchCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.savedAt > SCHEDULE_MATCH_CACHE_TTL_MS) {
+    scheduleMatchCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function writeScheduleMatchCache(profile = {}, value) {
+  const key = buildScheduleProfileCacheKey(profile);
+  scheduleMatchCache.set(key, {
+    savedAt: Date.now(),
+    value,
+  });
+  return value;
 }
 
 function matchesProfile(data, profile, allowCollegeFallback = false) {
@@ -47,6 +80,9 @@ export async function findBestScheduleDoc(db, profile = {}) {
   const normalizedCourse = normalizeCourse(rawCourse);
   if (!normalizedCourse || !year || !section) return null;
 
+  const cached = readScheduleMatchCache(profile);
+  if (cached !== null) return cached;
+
   const schedulesRef = collection(db, "schedules");
   const normalizedCollege = normalizeCollege(college);
   const courseCandidates = [normalizedCourse];
@@ -74,7 +110,12 @@ export async function findBestScheduleDoc(db, profile = {}) {
     for (const courseValue of courseCandidates) {
       try {
         const exact = await tryExact(courseValue, true);
-        if (exact) return { doc: exact, source: "exact" };
+        if (exact) {
+          return writeScheduleMatchCache(profile, {
+            doc: exact,
+            source: "exact",
+          });
+        }
       } catch (err) {
         warnIfDev("findBestScheduleDoc: exact schedule lookup with college failed:", err);
         // Continue with tolerant fallback below.
@@ -86,7 +127,12 @@ export async function findBestScheduleDoc(db, profile = {}) {
   for (const courseValue of courseCandidates) {
     try {
       const exactNoCollege = await tryExact(courseValue, false);
-      if (exactNoCollege) return { doc: exactNoCollege, source: exactNoCollegeSource };
+      if (exactNoCollege) {
+        return writeScheduleMatchCache(profile, {
+          doc: exactNoCollege,
+          source: exactNoCollegeSource,
+        });
+      }
     } catch (err) {
       warnIfDev("findBestScheduleDoc: exact schedule lookup without college failed:", err);
       // Continue with tolerant fallback below.
@@ -107,7 +153,7 @@ export async function findBestScheduleDoc(db, profile = {}) {
       });
     }
   }
-  if (!courseDocs.length) return null;
+  if (!courseDocs.length) return writeScheduleMatchCache(profile, null);
 
   const uniqueCourseDocs = Array.from(
     new Map(courseDocs.map((docSnap) => [docSnap.id, docSnap])).values()
@@ -119,16 +165,34 @@ export async function findBestScheduleDoc(db, profile = {}) {
       matchesProfile(d.data(), profile, true)
     );
   }
-  if (!profileMatches.length) return null;
+  if (!profileMatches.length) return writeScheduleMatchCache(profile, null);
 
   const exactType = profileMatches.find((d) => matchesScheduleType(d.data(), scheduleType));
-  if (exactType) return { doc: exactType, source: "fallback_exact_type" };
+  if (exactType) {
+    return writeScheduleMatchCache(profile, {
+      doc: exactType,
+      source: "fallback_exact_type",
+    });
+  }
 
   const dayType = profileMatches.find((d) => isDayScheduleType(d.data()));
-  if (dayType) return { doc: dayType, source: "fallback_day_type" };
+  if (dayType) {
+    return writeScheduleMatchCache(profile, {
+      doc: dayType,
+      source: "fallback_day_type",
+    });
+  }
 
   const specificType = profileMatches.find((d) => isSpecificScheduleType(d.data()));
-  if (specificType) return { doc: specificType, source: "fallback_specific_type" };
+  if (specificType) {
+    return writeScheduleMatchCache(profile, {
+      doc: specificType,
+      source: "fallback_specific_type",
+    });
+  }
 
-  return { doc: profileMatches[0], source: "fallback_profile_only" };
+  return writeScheduleMatchCache(profile, {
+    doc: profileMatches[0],
+    source: "fallback_profile_only",
+  });
 }

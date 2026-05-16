@@ -30,11 +30,13 @@ import OfflineBanner from "../../components/OfflineBanner";
 import { auth, db } from "../../config/firebase";
 import {
   CACHE_KEYS,
-  loadFromCache,
-  saveToCache,
   useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
+import {
+  readCacheContract,
+  saveCacheContract,
+} from "../../utils/cacheContracts";
 import { reportWarning } from "../../utils/logger";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 const isFabric =
@@ -56,6 +58,8 @@ function getAnnouncementsReadKey(uid) {
   return uid ? `announcements_read_${uid}` : null;
 }
 
+const ANNOUNCEMENT_REFRESH_COOLDOWN_MS = 30 * 1000;
+
 export default function AnnouncementsScreen() {
   const { colors } = useTheme();
   const { isOnline, markSynced } = useOffline();
@@ -71,6 +75,7 @@ export default function AnnouncementsScreen() {
   const PAGE_SIZE = 15;
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const hasLoaded = useRef(false);
+  const lastRefreshAtRef = useRef(0);
   // FIX: refresh announcements each time the screen is focused
   useFocusEffect(
     useCallback(() => {
@@ -95,7 +100,14 @@ export default function AnnouncementsScreen() {
               if (raw && !cancelled) setReadIds(new Set(JSON.parse(raw)));
             } catch (_err) {}
           }
-          if (!cancelled) loadAnnouncements(true); // silent refresh
+          if (
+            !cancelled &&
+            Date.now() - lastRefreshAtRef.current >=
+              ANNOUNCEMENT_REFRESH_COOLDOWN_MS
+          ) {
+            lastRefreshAtRef.current = Date.now();
+            loadAnnouncements(true);
+          }
         }
       };
 
@@ -111,7 +123,9 @@ export default function AnnouncementsScreen() {
     const user = auth.currentUser;
     if (!user) return;
     if (!isOnline) {
-      const cached = await loadFromCache(CACHE_KEYS.announcements(user.uid));
+      const cached = await readCacheContract(CACHE_KEYS.announcements(user.uid), {
+        defaultData: [],
+      });
       if (cached?.data) {
         setAnnouncements(cached.data);
         setFromCache(true);
@@ -161,7 +175,7 @@ export default function AnnouncementsScreen() {
       setAnnouncements(list);
       setFromCache(false);
       setVisibleCount(PAGE_SIZE);
-      await saveToCache(CACHE_KEYS.announcements(user.uid), { data: list });
+      await saveCacheContract(CACHE_KEYS.announcements(user.uid), list);
       await markSynced(user.uid);
     } catch (_err) {
       reportWarning(_err, {
@@ -169,7 +183,9 @@ export default function AnnouncementsScreen() {
         tags: { location: "announcements_load" },
         extra: { userId: user?.uid },
       });
-      const cached = await loadFromCache(CACHE_KEYS.announcements(user.uid));
+      const cached = await readCacheContract(CACHE_KEYS.announcements(user.uid), {
+        defaultData: [],
+      });
       if (cached?.data) {
         setAnnouncements(cached.data);
         setFromCache(true);

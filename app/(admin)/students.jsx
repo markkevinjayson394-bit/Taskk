@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { db } from "../../config/firebase";
 import { getCollegeLabel, normalizeCollege } from "../../constants/academics";
 import { COURSE_COLORS } from "../../constants/courseColors";
+import { useOffline } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { normalizeYear } from "../../utils/scheduleHelpers";
 
@@ -45,19 +46,31 @@ const getCourseCode = (course) => {
 
 export default function StudentsScreen() {
   const { colors, isDark } = useTheme();
+  const { isOnline } = useOffline();
   const insets = useSafeAreaInsets();
   const [groups, setGroups] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [offlineUnavailable, setOfflineUnavailable] = useState(false);
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState({});
   const [totalStudents, setTotalStudents] = useState(0);
 
   useEffect(() => {
-    load();
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const load = async () => {
+    if (!isOnline) {
+      setGroups({});
+      setTotalStudents(0);
+      setOfflineUnavailable(true);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
     try {
       const q = query(collection(db, "users"), where("role", "==", "student"));
       const snap = await getDocs(q);
@@ -109,6 +122,7 @@ export default function StudentsScreen() {
 
       setGroups(grouped);
       setTotalStudents(total);
+      setOfflineUnavailable(false);
       setCollapsed((prev) => {
         if (Object.keys(prev).length > 0) return prev;
         const next = {};
@@ -128,6 +142,7 @@ export default function StudentsScreen() {
       });
     } catch (err) {
       console.warn("Failed to load students:", err);
+      setOfflineUnavailable(!isOnline);
       Alert.alert("Error", "Failed to load students.");
     } finally {
       setLoading(false);
@@ -333,9 +348,26 @@ export default function StudentsScreen() {
             tintColor="#10b981"
           />
         }
-      >
+        >
+        {offlineUnavailable ? (
+          <View style={[styles.emptyBox, { backgroundColor: colors.card }]}>
+            <Ionicons
+              name="cloud-offline-outline"
+              size={32}
+              color={colors.muted}
+              style={{ marginBottom: 8 }}
+            />
+            <Text style={[styles.emptyText, { color: colors.muted }]}>
+              Student roster is unavailable offline
+            </Text>
+            <Text style={[styles.emptySubText, { color: colors.muted }]}>
+              Reconnect to load the admin roster.
+            </Text>
+          </View>
+        ) : null}
+
         {/* Search results */}
-        {search.trim() ? (
+        {!offlineUnavailable && search.trim() ? (
           <>
             <Text style={[styles.searchResultLabel, { color: colors.muted }]}>
               {searchResults.length} result
@@ -366,7 +398,7 @@ export default function StudentsScreen() {
               ))
             )}
           </>
-        ) : (
+        ) : !offlineUnavailable ? (
           /* Grouped tree */
           Object.entries(groups)
             .sort((a, b) => {
@@ -636,7 +668,7 @@ export default function StudentsScreen() {
                 </View>
               );
             })
-        )}
+        ) : null}
         <View style={{ height: 32 }} />
       </ScrollView>
     </View>
@@ -760,6 +792,7 @@ const styles = StyleSheet.create({
 
   emptyBox: { alignItems: "center", padding: 40, borderRadius: 20 },
   emptyText: { fontSize: 15, marginTop: 4 },
+  emptySubText: { fontSize: 12, marginTop: 6, textAlign: "center" },
 
   courseCard: {
     borderRadius: 18,

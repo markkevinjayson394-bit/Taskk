@@ -21,6 +21,7 @@ import {
 } from "firebase/firestore";
 import { Platform } from "react-native";
 import { db } from "../config/firebase";
+import { isTaskCompleted } from "./academicTaskModel";
 import { DEADLINE_NOTIF_TYPE } from "./deadlineAlarmBackground";
 import { warnIfDev } from "./logger";
 import {
@@ -68,7 +69,7 @@ async function getMostOverdueRemoteTask(userId) {
   const docSnap = snap.docs[0];
   const task = { id: docSnap.id, ...docSnap.data() };
   if (isPlannerTask(task)) return null;
-  if (task.status === "done" || task.completed === true) return null;
+  if (isTaskCompleted(task)) return null;
   return task;
 }
 
@@ -79,7 +80,7 @@ async function getMostOverdueLocalTask(userId) {
     .map((item) => buildOfflineTaskFromQueueItem(item))
     .filter((task) => {
       if (!task || isPlannerTask(task)) return false;
-      if (task.status === "done" || task.completed === true) return false;
+      if (isTaskCompleted(task)) return false;
       const dueAtMs = getTaskDueAtMs(task);
       return Number.isFinite(dueAtMs) && dueAtMs <= nowMs;
     })

@@ -127,6 +127,7 @@ import {
 import { syncCalendarDayPlans } from "../../utils/plannerTaskSync";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
+import { subscribeTaskMutations } from "../../utils/taskMutationBridge";
 import { clearCheckpoint } from "../../utils/taskOverdueState";
 
 const INITIAL_LOAD_SIZE = 50; // Load first 50 tasks immediately, lazy-load rest
@@ -393,6 +394,7 @@ export default function TaskManagerScreen() {
   const flushingRef = useRef(false);
   const flushingCreatesRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
+  const previousOnlineRef = useRef(isOnline);
   const routeSubjectKeyRef = useRef("");
   const createSubjectAutoPickedRef = useRef(false);
   const scheduleSubjectsRef = useRef({
@@ -557,7 +559,25 @@ export default function TaskManagerScreen() {
   );
 
   useEffect(() => {
-    if (!isOnline) return;
+    return subscribeTaskMutations((event) => {
+      if (
+        event?.type !== "completed" ||
+        event.userId !== auth.currentUser?.uid
+      ) {
+        return;
+      }
+      setTasks((prev) => prev.filter((item) => item?.id !== event.taskId));
+      setHistory((prev) => {
+        const next = prev.filter((item) => item?.id !== event.taskId);
+        return event.completedTask ? [event.completedTask, ...next] : next;
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    const wasOnline = previousOnlineRef.current;
+    previousOnlineRef.current = isOnline;
+    if (!isOnline || wasOnline) return;
 
     let active = true;
     lastAutoRefreshAtRef.current = Date.now();

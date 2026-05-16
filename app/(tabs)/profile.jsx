@@ -22,7 +22,7 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -44,18 +44,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import LoadingState from "../../components/LoadingState";
 import { auth, db } from "../../config/firebase";
 import { getCollegeLabel } from "../../constants/academics";
-import { CACHE_KEYS, loadFromCache } from "../../context/OfflineContext";
+import { CACHE_KEYS, loadFromCache, useOffline } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
 import { compressImageToBase64DataUri } from "../../utils/nativeImageCompression";
 import { getTutorialRoute } from "../../utils/onboarding";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
+import { subscribeTaskMutations } from "../../utils/taskMutationBridge";
 import { APP_VERSION } from "../../utils/version";
 
 const AVATAR_PLACEHOLDER =
   "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 const PRIORITY_COLORS = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
 const MAX_BASE64_KB = 80;
+const PROFILE_STATS_REFRESH_COOLDOWN_MS = 60 * 1000;
 
 // Offline cache keys
 const profileCacheKey = (uid) => `offline_profile_${uid}`;
@@ -146,6 +148,7 @@ export default function ProfileScreen() {
   const user = auth.currentUser;
   const insets = useSafeAreaInsets();
   const { toggleTheme, colors, isDark } = useTheme();
+  const { isOnline } = useOffline();
   const [stats, setStats] = useState({ completed: 0, pending: 0, overdue: 0 });
   const [recentTasks, setRecentTasks] = useState([]);
   const [profile, setProfile] = useState({
@@ -166,6 +169,7 @@ export default function ProfileScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const hasLoaded = useRef(false);
+  const lastStatsRefreshAtRef = useRef(0);
 
   // fetchProfile: try Firestore -> cache on success, fallback to cache offline
   const fetchProfile = useCallback(async () => {
@@ -216,10 +220,33 @@ export default function ProfileScreen() {
   }, [user]);
 
   // fetchStats: try Firestore -> cache on success, fallback to cache offline
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(
+    async ({ preferCache = false, allowRemote = true } = {}) => {
     if (!user) return;
     const sCacheKey = statsCacheKey(user.uid);
     const tCacheKey = tasksCacheKey(user.uid);
+
+    if (preferCache) {
+      try {
+        const rawStats = await AsyncStorage.getItem(sCacheKey);
+        const rawTasks = await AsyncStorage.getItem(tCacheKey);
+        if (rawStats) setStats(JSON.parse(rawStats));
+        if (rawTasks) setRecentTasks(JSON.parse(rawTasks));
+        if (rawStats || rawTasks) setIsOffline(!isOnline);
+      } catch {
+        // Keep going and try the remote path below.
+      }
+    }
+
+    if (!allowRemote) {
+      return;
+    }
+
+    if (!isOnline) {
+      setIsOffline(true);
+      return;
+    }
+
     try {
       const q = query(
         collection(db, "assignments"),
@@ -247,6 +274,8 @@ export default function ProfileScreen() {
       const newStats = { completed, pending, overdue };
       setStats(newStats);
       setRecentTasks(pending_tasks);
+      lastStatsRefreshAtRef.current = Date.now();
+      setIsOffline(false);
       // Persist for offline use
       await AsyncStorage.setItem(sCacheKey, JSON.stringify(newStats));
       await AsyncStorage.setItem(tCacheKey, JSON.stringify(pending_tasks));
@@ -262,11 +291,17 @@ export default function ProfileScreen() {
         // Cache also unavailable - keep defaults
       }
     }
-  }, [user]);
+    },
+    [isOnline, user]
+  );
 
   const loadAll = useCallback(
     async (animate = false) => {
-      await Promise.all([fetchProfile(), fetchStats(), fetchScheduleMeta()]);
+      await Promise.all([
+        fetchProfile(),
+        fetchStats({ preferCache: true }),
+        fetchScheduleMeta(),
+      ]);
       setLoading(false);
       if (animate) {
         Animated.parallel([
@@ -295,11 +330,31 @@ export default function ProfileScreen() {
         hasLoaded.current = true;
       } else {
         fetchProfile();
-        fetchStats();
         fetchScheduleMeta();
+        if (
+          Date.now() - lastStatsRefreshAtRef.current >=
+          PROFILE_STATS_REFRESH_COOLDOWN_MS
+        ) {
+          fetchStats({ preferCache: true });
+        } else {
+          fetchStats({ preferCache: true, allowRemote: false }).catch(() => {});
+        }
       }
     }, [user, loadAll, fetchProfile, fetchStats, fetchScheduleMeta])
   );
+
+  useEffect(() => {
+    if (!user) return undefined;
+    return subscribeTaskMutations((event) => {
+      if (event?.type !== "completed" || event.userId !== user.uid) return;
+      setStats((prev) => ({
+        ...prev,
+        completed: Math.max(0, Number(prev.completed || 0) + 1),
+        pending: Math.max(0, Number(prev.pending || 0) - 1),
+      }));
+      setRecentTasks((prev) => prev.filter((task) => task?.id !== event.taskId));
+    });
+  }, [user]);
 
   // Photo picker - saves base64 to Firestore
   const pickFromGallery = async () => {

@@ -12,7 +12,7 @@
 import * as Notifications from "expo-notifications";
 import { enableNetwork } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
-import { resolveTaskDueDate } from "./academicTaskModel";
+import { isTaskCompleted, resolveTaskDueDate } from "./academicTaskModel";
 import {
   bootstrapDeadlineAlarmChannel,
   cancelDeadlineAlarms,
@@ -175,7 +175,7 @@ try {
         });
 
         for (const task of overdueTasks) {
-          if (task.status === "done" || task.completed === true) {
+          if (isTaskCompleted(task)) {
             await cancelDeadlineAlarms(task);
             continue;
           }

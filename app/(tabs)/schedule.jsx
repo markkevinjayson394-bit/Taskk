@@ -28,12 +28,14 @@ import OfflineBanner from "../../components/OfflineBanner";
 import { auth, db } from "../../config/firebase";
 import {
   CACHE_KEYS,
-  loadFromCache,
-  saveToCache,
   useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { buildSubjectIdFromName } from "../../utils/academicTaskModel";
+import {
+  readCacheContract,
+  saveCacheContract,
+} from "../../utils/cacheContracts";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
 
@@ -94,6 +96,7 @@ export default function ViewSchedule() {
   const hasLoaded = useRef(false);
   const timetableScrollRef = useRef(null);
   const hasAutoSnappedToday = useRef(false);
+  const previousOnlineRef = useRef(isOnline);
 
   const textPrimary = colors.text;
   const textMuted = colors.muted;
@@ -306,10 +309,10 @@ export default function ViewSchedule() {
     if (!user) return;
 
     if (!isOnline) {
-      const cached = await loadFromCache(
+      const cached = await readCacheContract(
         CACHE_KEYS.schedule(user.uid) + "_week"
       );
-      const metaCache = await loadFromCache(scheduleMetaKey(user.uid));
+      const metaCache = await readCacheContract(scheduleMetaKey(user.uid));
       if (cached?.data) {
         setWeekSchedule(cached.data);
         setFromCache(true);
@@ -368,8 +371,8 @@ export default function ViewSchedule() {
         const semester = String(raw.semester || "").trim();
         const academicYear = String(raw.academicYear || "").trim();
         setWeekSchedule(ws);
-        await saveToCache(CACHE_KEYS.schedule(user.uid) + "_week", ws);
-        await saveToCache(scheduleMetaKey(user.uid), {
+        await saveCacheContract(CACHE_KEYS.schedule(user.uid) + "_week", ws);
+        await saveCacheContract(scheduleMetaKey(user.uid), {
           semester,
           academicYear,
         });
@@ -405,9 +408,10 @@ export default function ViewSchedule() {
   }, [loadScheduleLocal]);
 
   useEffect(() => {
-    if (isOnline && hasLoaded.current) {
-      loadScheduleLocal(true);
-    }
+    const wasOnline = previousOnlineRef.current;
+    previousOnlineRef.current = isOnline;
+    if (!isOnline || !hasLoaded.current || wasOnline) return;
+    loadScheduleLocal(true);
   }, [isOnline, loadScheduleLocal]);
 
   return (

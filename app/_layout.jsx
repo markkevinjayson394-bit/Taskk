@@ -621,8 +621,12 @@ function RootLayoutNav() {
       }
     };
 
-    const bootstrap = async () => {
-      await bootstrapDeadlineAlarmChannel();
+    const runDeferredBootstrap = async () => {
+      try {
+        await bootstrapDeadlineAlarmChannel();
+      } catch (err) {
+        warnIfDev("Failed to bootstrap deadline alarm channel:", err);
+      }
 
       try {
         await ensureNativeAlarmPermissions({
@@ -638,7 +642,6 @@ function RootLayoutNav() {
         );
       }
 
-      // Check and request battery optimization permission on Android
       try {
         const batteryResult = await isIgnoringBatteryOptimizations();
         if (batteryResult.status === "success" && !batteryResult.value) {
@@ -651,6 +654,10 @@ function RootLayoutNav() {
         );
       }
 
+      await runOtaUpdateCheck("startup");
+    };
+
+    const bootstrap = async () => {
       timeoutId = setTimeout(() => {
         if (!active) return;
         reportWarning(null, {
@@ -665,7 +672,10 @@ function RootLayoutNav() {
 
       hasResolvedUpdate.current = true;
       tryNavigate();
-      void runOtaUpdateCheck("startup");
+      InteractionManager.runAfterInteractions(() => {
+        if (!active) return;
+        void runDeferredBootstrap();
+      });
 
       let runtimeAuth;
       try {

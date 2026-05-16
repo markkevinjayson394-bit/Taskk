@@ -41,8 +41,6 @@ import { useNotifications } from "../../context/NotificationContext";
 import {
     CACHE_KEYS,
     formatSyncTime,
-    loadFromCache,
-    saveToCache,
     useOffline,
 } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
@@ -55,24 +53,29 @@ import {
     safeParseObject,
 } from "../../features/tab-modules/home.helpers";
 import { buildTaskCompletionUpdate } from "../../utils/academicTaskModel";
+import {
+    readCacheContract,
+    saveCacheContract,
+} from "../../utils/cacheContracts";
 import { cancelDeadlineAlarms } from "../../utils/deadlineAlarmBackground";
 import { formatDeadlineCountdown } from "../../utils/deadlineTime";
-import { reportError, reportWarning, warnIfDev } from "../../utils/logger";
+import { reportError, reportWarning } from "../../utils/logger";
 import {
-    isLocalOnlyTaskId,
-    removeOfflineQueuedTask,
-} from "../../utils/offlineTaskQueue";
+	    isLocalOnlyTaskId,
+	    removeOfflineQueuedTask,
+	} from "../../utils/offlineTaskQueue";
 import { findBestScheduleDoc } from "../../utils/scheduleMatcher";
 import { getTabBarContentBottomPadding } from "../../utils/tabBarLayout";
+import { subscribeTaskMutations } from "../../utils/taskMutationBridge";
 import {
-    calculateDailyWorkload,
-    getWorkloadLabel,
-} from "../../utils/workloadCalculator";
+	    calculateDailyWorkload,
+	    getWorkloadLabel,
+	} from "../../utils/workloadCalculator";
 
 const PLANS_KEY = (uid) => `exam_prep_plans_${uid}`;
 const STATUS_CARD_WIDTH = 300;
 const STATUS_CARD_GAP = 12;
-const FOCUS_REFRESH_COOLDOWN_MS = 15 * 1000;
+const FOCUS_REFRESH_COOLDOWN_MS = 30 * 1000;
 const WORKLOAD_COLOR = {
   Light: "#22c55e",
   Moderate: "#f59e0b",
@@ -284,7 +287,6 @@ export default function HomeDashboard() {
   const [upcomingAssignments, setUpcomingAssignments] = useState([]);
 
   const [announcements, setAnnouncements] = useState([]);
-  const [upcomingExams, setUpcomingExams] = useState([]);
   const [examPlans, setExamPlans] = useState({});
 
   const [loading, setLoading] = useState(true);
@@ -296,9 +298,26 @@ export default function HomeDashboard() {
   const slideAnim = useRef(new Animated.Value(24)).current;
   const hasLoaded = useRef(false);
   const lastSilentRefreshAtRef = useRef(0);
+  const lastDashboardCacheRef = useRef(null);
 
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
+
+  const upcomingExams = useMemo(() => {
+    const now = new Date();
+    return stripArchived(upcomingAssignments)
+      .filter((task) => {
+        const dueDate = resolveTaskDueDate(task);
+        return task?.type === "exam" && dueDate !== null && dueDate > now;
+      })
+      .sort((a, b) => {
+        const aDate = resolveTaskDueDate(a);
+        const bDate = resolveTaskDueDate(b);
+        if (!aDate || !bDate) return 0;
+        return aDate - bDate;
+      })
+      .slice(0, 3);
+  }, [upcomingAssignments]);
 
   const queueReminderRefresh = useCallback(
     (reason, extra = {}) => {
@@ -316,18 +335,31 @@ export default function HomeDashboard() {
   useFocusEffect(
     useCallback(() => {
       if (!hasLoaded.current) {
-        fetchDashboardData(true, { forceRefresh: true });
+        void fetchDashboardData(true, { forceRefresh: true });
         hasLoaded.current = true;
       } else {
         const now = Date.now();
         if (now - lastSilentRefreshAtRef.current >= FOCUS_REFRESH_COOLDOWN_MS) {
           lastSilentRefreshAtRef.current = now;
-          fetchDashboardData(false, { forceRefresh: true });
+          void fetchDashboardData(false, { forceRefresh: true });
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    }, [fetchDashboardData])
   );
+
+  useEffect(() => {
+    return subscribeTaskMutations((event) => {
+      if (
+        event?.type !== "completed" ||
+        event.userId !== auth.currentUser?.uid
+      ) {
+        return;
+      }
+      setUpcomingAssignments((prev) =>
+        prev.filter((item) => item?.id !== event.taskId)
+      );
+    });
+  }, []);
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -412,11 +444,22 @@ export default function HomeDashboard() {
 
     const [profileCache, scheduleCache, assignmentsCache, announcementsCache] =
       await Promise.all([
-        loadFromCache(CACHE_KEYS.profile(uid)),
-        loadFromCache(CACHE_KEYS.schedule(uid) + "_week"),
-        loadFromCache(CACHE_KEYS.assignments(uid)),
-        loadFromCache(CACHE_KEYS.announcements(uid)),
+        readCacheContract(CACHE_KEYS.profile(uid)),
+        readCacheContract(CACHE_KEYS.schedule(uid) + "_week"),
+        readCacheContract(CACHE_KEYS.assignments(uid), {
+          defaultData: { pending: [], done: [] },
+        }),
+        readCacheContract(CACHE_KEYS.announcements(uid), {
+          defaultData: [],
+        }),
       ]);
+
+    lastDashboardCacheRef.current = {
+      profile: profileCache,
+      schedule: scheduleCache,
+      assignments: assignmentsCache,
+      announcements: announcementsCache,
+    };
 
     if (profileCache?.data?.fullName) {
       setFullName(profileCache.data.fullName || "");
@@ -443,24 +486,6 @@ export default function HomeDashboard() {
     const cachedPending = stripArchived(assignmentsCache?.data?.pending || []);
     setUpcomingAssignments(cachedPending);
 
-    const now = new Date();
-    const exams = cachedPending
-      .filter(
-        (t) =>
-          t.type === "exam" &&
-          resolveTaskDueDate(t) !== null &&
-          resolveTaskDueDate(t) > now
-      )
-      .sort((a, b) => {
-        const aDate = resolveTaskDueDate(a);
-        const bDate = resolveTaskDueDate(b);
-        if (!aDate || !bDate) return 0;
-        return aDate - bDate;
-      })
-      .slice(0, 3);
-
-    setUpcomingExams(exams);
-
     const rawPlans = await AsyncStorage.getItem(PLANS_KEY(uid));
     setExamPlans(safeParseObject(rawPlans, {}));
 
@@ -471,7 +496,7 @@ export default function HomeDashboard() {
     }
   };
 
-  const fetchDashboardData = async (
+  const fetchDashboardData = useCallback(async (
     showLoadingSpinner = false,
     { forceRefresh = false } = {}
   ) => {
@@ -517,7 +542,10 @@ export default function HomeDashboard() {
       setYear(scheduleYear || "");
       setSection(scheduleSection || "");
 
-      await saveToCache(CACHE_KEYS.profile(user.uid), userData);
+      lastDashboardCacheRef.current = {
+        ...(lastDashboardCacheRef.current || {}),
+        profile: await saveCacheContract(CACHE_KEYS.profile(user.uid), userData),
+      };
 
       const hasScheduleProfile = Boolean(
         scheduleCourse && scheduleYear && scheduleSection
@@ -559,10 +587,13 @@ export default function HomeDashboard() {
       if (scheduleMatch?.doc) {
         const weekSchedule = scheduleMatch.doc.data().weekSchedule || {};
         applyWeekSchedule(weekSchedule);
-        await saveToCache(
-          CACHE_KEYS.schedule(user.uid) + "_week",
-          weekSchedule
-        );
+        lastDashboardCacheRef.current = {
+          ...(lastDashboardCacheRef.current || {}),
+          schedule: await saveCacheContract(
+            CACHE_KEYS.schedule(user.uid) + "_week",
+            weekSchedule
+          ),
+        };
       } else {
         setTodayClasses([]);
         setCurrentClassId(null);
@@ -574,22 +605,15 @@ export default function HomeDashboard() {
       );
       setUpcomingAssignments(allTasks);
 
-      const assignmentsCache = await loadFromCache(
-        CACHE_KEYS.assignments(user.uid)
-      );
-      const cachedDone = assignmentsCache?.data?.done || [];
-      await saveToCache(CACHE_KEYS.assignments(user.uid), {
-        pending: allTasks,
-        done: cachedDone,
-      });
-
-      const now = new Date();
-      const exams = allTasks
-        .filter((t) => t.type === "exam" && resolveTaskDueDate(t) > now)
-        .sort((a, b) => resolveTaskDueDate(a) - resolveTaskDueDate(b))
-        .slice(0, 3);
-
-      setUpcomingExams(exams);
+      const cachedDone =
+        lastDashboardCacheRef.current?.assignments?.data?.done || [];
+      lastDashboardCacheRef.current = {
+        ...(lastDashboardCacheRef.current || {}),
+        assignments: await saveCacheContract(CACHE_KEYS.assignments(user.uid), {
+          pending: allTasks,
+          done: cachedDone,
+        }),
+      };
       setExamPlans(safeParseObject(rawPlans, {}));
 
       const filtered = annSnap.docs
@@ -614,7 +638,13 @@ export default function HomeDashboard() {
         });
 
       setAnnouncements(filtered);
-      await saveToCache(CACHE_KEYS.announcements(user.uid), filtered);
+      lastDashboardCacheRef.current = {
+        ...(lastDashboardCacheRef.current || {}),
+        announcements: await saveCacheContract(
+          CACHE_KEYS.announcements(user.uid),
+          filtered
+        ),
+      };
 
       await markSynced(user.uid);
       setShowingCached(false);
@@ -635,11 +665,14 @@ export default function HomeDashboard() {
       setRefreshing(false);
       animateIn();
     }
-  };
+    // loadFromOfflineCache and animateIn are stable enough for this effect; they
+    // intentionally use current render state when the dashboard load settles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline, markSynced]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchDashboardData(false, { forceRefresh: true });
+    void fetchDashboardData(false, { forceRefresh: true });
   };
 
   const markDone = async (assignment) => {
@@ -651,7 +684,6 @@ export default function HomeDashboard() {
     setUpcomingAssignments((prev) =>
       prev.filter((t) => t.id !== assignment.id)
     );
-    setUpcomingExams((prev) => prev.filter((t) => t.id !== assignment.id));
 
     try {
       // Step 1: Cancel alarms — never let this abort the whole flow
@@ -669,14 +701,19 @@ export default function HomeDashboard() {
       // If online, fall through to Firestore so the doc gets written.
       if (isLocalOnlyTaskId(assignment.id) && !isOnline) {
         await removeOfflineQueuedTask(user.uid, assignment.id);
-        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        const cached = await readCacheContract(CACHE_KEYS.assignments(user.uid), {
+          defaultData: { pending: [], done: [] },
+        });
         if (cached?.data) {
-          await saveToCache(CACHE_KEYS.assignments(user.uid), {
-            ...cached.data,
-            pending: (cached.data.pending || []).filter(
-              (t) => t.id !== assignment.id
-            ),
-          });
+          lastDashboardCacheRef.current = {
+            ...(lastDashboardCacheRef.current || {}),
+            assignments: await saveCacheContract(CACHE_KEYS.assignments(user.uid), {
+              ...cached.data,
+              pending: (cached.data.pending || []).filter(
+                (t) => t.id !== assignment.id
+              ),
+            }),
+          };
         }
         queueReminderRefresh("mark_done", { taskId: assignment.id });
         return;
@@ -704,14 +741,19 @@ export default function HomeDashboard() {
       const taskSnap = await getDoc(taskRef);
       if (!taskSnap.exists()) {
         // Doc missing from Firestore — clean up locally and exit gracefully
-        const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+        const cached = await readCacheContract(CACHE_KEYS.assignments(user.uid), {
+          defaultData: { pending: [], done: [] },
+        });
         if (cached?.data) {
-          await saveToCache(CACHE_KEYS.assignments(user.uid), {
-            ...cached.data,
-            pending: (cached.data.pending || []).filter(
-              (t) => t.id !== assignment.id
-            ),
-          });
+          lastDashboardCacheRef.current = {
+            ...(lastDashboardCacheRef.current || {}),
+            assignments: await saveCacheContract(CACHE_KEYS.assignments(user.uid), {
+              ...cached.data,
+              pending: (cached.data.pending || []).filter(
+                (t) => t.id !== assignment.id
+              ),
+            }),
+          };
         }
         queueReminderRefresh("mark_done_no_doc", { taskId: assignment.id });
         return;
@@ -721,15 +763,20 @@ export default function HomeDashboard() {
       await updateDoc(taskRef, completionUpdate);
 
       const completedTask = { ...assignment, ...completionUpdate };
-      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+      const cached = await readCacheContract(CACHE_KEYS.assignments(user.uid), {
+        defaultData: { pending: [], done: [] },
+      });
       if (cached?.data) {
-        await saveToCache(CACHE_KEYS.assignments(user.uid), {
-          ...cached.data,
-          pending: (cached.data.pending || []).filter(
-            (t) => t.id !== assignment.id
-          ),
-          done: [completedTask, ...(cached.data.done || [])],
-        });
+        lastDashboardCacheRef.current = {
+          ...(lastDashboardCacheRef.current || {}),
+          assignments: await saveCacheContract(CACHE_KEYS.assignments(user.uid), {
+            ...cached.data,
+            pending: (cached.data.pending || []).filter(
+              (t) => t.id !== assignment.id
+            ),
+            done: [completedTask, ...(cached.data.done || [])],
+          }),
+        };
       }
 
       // Step 5: Alarm cleanup — never let these abort the flow
@@ -759,7 +806,7 @@ export default function HomeDashboard() {
       }
     } catch (error) {
       // Roll back optimistic removal
-      fetchDashboardData(false, { forceRefresh: true });
+      void fetchDashboardData(false, { forceRefresh: true });
       reportError(error, {
         message: "Failed to mark a dashboard task as done.",
         tags: { location: "home_dashboard_mark_done" },

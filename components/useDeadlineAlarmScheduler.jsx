@@ -13,6 +13,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
+import { isTaskCompleted } from "../utils/academicTaskModel";
 import {
   DEADLINE_NOTIF_TYPE,
   displayAlarmNotification,
@@ -156,7 +157,7 @@ function findTriggeredThreshold(
   nowMs,
   { deadlineWarningEnabled = true, pendingAcksRef } = {}
 ) {
-  if (task?.completed || deadlineWarningEnabled === false) return null;
+  if (isTaskCompleted(task) || deadlineWarningEnabled === false) return null;
 
   const due = resolveTaskDueDate(task);
   if (!due) return null;
@@ -297,7 +298,7 @@ export function useDeadlineAlarmScheduler(
     }
 
     for (const task of pendingTasks) {
-      if (task?.completed) continue;
+      if (isTaskCompleted(task)) continue;
 
       const triggered = findTriggeredThreshold(task, lastCheckedAt, nowMs, {
         deadlineWarningEnabled,
@@ -527,7 +528,7 @@ export function useDeadlineAlarmScheduler(
 
   const showAlarmForTask = useCallback(
     (task, thresholdKey = null) => {
-      if (!task || task?.completed) {
+      if (!task || isTaskCompleted(task)) {
         return;
       }
 

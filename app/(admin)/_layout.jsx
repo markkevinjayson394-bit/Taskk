@@ -21,6 +21,7 @@ import {
     View,
 } from "react-native";
 import { auth, db } from "../../config/firebase";
+import { OfflineProvider } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
 import { useAndroidBackNavigation } from "../../hooks/useAndroidBackNavigation";
 import { reportWarning } from "../../utils/logger";
@@ -161,44 +162,46 @@ export default function AdminLayout() {
 
   //  Admin Stack
   return (
-    <Stack
-      screenOptions={({ navigation }) => ({
-        headerShown: true,
-        headerStyle: {
-          backgroundColor: isDark ? "#0f172a" : "#1e1b4b",
-        },
-        headerTintColor: "#fff",
-        headerTitleStyle: {
-          fontWeight: "800",
-          fontSize: 17,
-          color: "#fff",
-        },
-        headerShadowVisible: false,
-        // Custom back button
-        headerLeft: navigation.canGoBack()
-          ? () => (
-              <TouchableOpacity
-                onPress={() => navigation.goBack()}
-                style={styles.backBtn}
-              >
-                <Ionicons name="arrow-back" size={20} color="#fff" />
-              </TouchableOpacity>
-            )
-          : undefined,
-        // Admin badge on the right
-        headerRight: () => (
-          <View style={styles.headerBadge}>
-            <Ionicons name="shield-checkmark" size={11} color="#a5b4fc" />
-            <Text style={styles.headerBadgeText}>ADMIN</Text>
-          </View>
-        ),
-        contentStyle: {
-          backgroundColor: colors.background,
-        },
-        // Smooth slide animation between screens
-        animation: "slide_from_right",
-      })}
-    />
+    <OfflineProvider>
+      <Stack
+        screenOptions={({ navigation }) => ({
+          headerShown: true,
+          headerStyle: {
+            backgroundColor: isDark ? "#0f172a" : "#1e1b4b",
+          },
+          headerTintColor: "#fff",
+          headerTitleStyle: {
+            fontWeight: "800",
+            fontSize: 17,
+            color: "#fff",
+          },
+          headerShadowVisible: false,
+          // Custom back button
+          headerLeft: navigation.canGoBack()
+            ? () => (
+                <TouchableOpacity
+                  onPress={() => navigation.goBack()}
+                  style={styles.backBtn}
+                >
+                  <Ionicons name="arrow-back" size={20} color="#fff" />
+                </TouchableOpacity>
+              )
+            : undefined,
+          // Admin badge on the right
+          headerRight: () => (
+            <View style={styles.headerBadge}>
+              <Ionicons name="shield-checkmark" size={11} color="#a5b4fc" />
+              <Text style={styles.headerBadgeText}>ADMIN</Text>
+            </View>
+          ),
+          contentStyle: {
+            backgroundColor: colors.background,
+          },
+          // Smooth slide animation between screens
+          animation: "slide_from_right",
+        })}
+      />
+    </OfflineProvider>
   );
 }
 

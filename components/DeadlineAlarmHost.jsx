@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   collection,
   doc,
@@ -16,6 +17,7 @@ import { auth, getDb } from "../config/firebase";
 import { useNotifications } from "../context/NotificationContext";
 import {
   CACHE_KEYS,
+  OFFLINE_QUEUE_KEYS,
   loadFromCache,
   saveToCache,
   useOffline,
@@ -41,6 +43,7 @@ import {
   readOfflineCreateQueue,
 } from "../utils/offlineTaskQueue";
 import { subscribeDeadlineAlarmOpenRequests } from "../utils/deadlineAlarmBridge";
+import { publishTaskMutation } from "../utils/taskMutationBridge";
 
 const CATCHUP_SUPPRESSION_MS = 60 * 1000;
 
@@ -98,6 +101,34 @@ async function settleNativeAlarmHandoff() {
   }
 }
 
+async function queueOfflineCompletion(uid, taskId, queuedAt = new Date()) {
+  if (!uid || !taskId) return [];
+  const key = OFFLINE_QUEUE_KEYS.completeAssignments(uid);
+  let current = [];
+
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    current = Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    current = [];
+  }
+
+  const next = [
+    ...current.filter((item) => item?.id !== taskId),
+    {
+      id: taskId,
+      action: "complete",
+      queuedAt:
+        normalizeTaskDateInput(queuedAt)?.toISOString?.() ??
+        new Date().toISOString(),
+    },
+  ];
+
+  await AsyncStorage.setItem(key, JSON.stringify(next));
+  return next;
+}
+
 export default function DeadlineAlarmHost() {
   const { isOnline, refreshPendingSyncSummary } = useOffline();
   const {
@@ -139,8 +170,11 @@ export default function DeadlineAlarmHost() {
       }
       return true;
     });
-    // suppressionVersion intentionally forces re-evaluation when suppression changes.
-  }, [tasks, suppressionVersion]);
+  },
+  // suppressionVersion intentionally forces a recompute when the ref-backed
+  // suppression map changes without a stateful tasks update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [tasks, suppressionVersion]);
 
   const {
     alarmVisible,
@@ -388,18 +422,73 @@ export default function DeadlineAlarmHost() {
       return;
     }
 
+    const completionUpdate = buildTaskCompletionUpdate(new Date());
+    const completedTask = { ...task, ...completionUpdate };
+
     await suppressCurrentCatchup("modal_done");
     setTasks((prev) => prev.filter((item) => item.id !== task.id));
     setSession(null);
     await markDoneAlarm?.();
 
+    const cacheKey = CACHE_KEYS.assignments(user.uid);
+    const cachedAssignments = await loadFromCache(cacheKey).catch(() => null);
+    const cachedPending = Array.isArray(cachedAssignments?.data?.pending)
+      ? cachedAssignments.data.pending
+      : [];
+    const cachedDone = Array.isArray(cachedAssignments?.data?.done)
+      ? cachedAssignments.data.done
+      : [];
+
+    await saveToCache(cacheKey, {
+      ...(cachedAssignments?.data || {}),
+      pending: cachedPending.filter((item) => item?.id !== task.id),
+      done: [
+        completedTask,
+        ...cachedDone.filter((item) => item?.id !== task.id),
+      ],
+    }).catch(() => {});
+
     if (isLocalOnlyTaskId(task.id)) {
       await removeOfflineQueuedTask(user.uid, task.id).catch(() => {});
+      publishTaskMutation({
+        type: "completed",
+        taskId: task.id,
+        userId: user.uid,
+        completedTask,
+        completedAt: completedTask.completedAt ?? null,
+        source: "deadline_alarm_modal",
+      });
     } else {
-      await updateDoc(
-        doc(getDb(), "assignments", task.id),
-        buildTaskCompletionUpdate(new Date())
-      );
+      publishTaskMutation({
+        type: "completed",
+        taskId: task.id,
+        userId: user.uid,
+        completedTask,
+        completedAt: completedTask.completedAt ?? null,
+        source: "deadline_alarm_modal",
+      });
+
+      if (isOnline) {
+        try {
+          await updateDoc(doc(getDb(), "assignments", task.id), completionUpdate);
+        } catch (err) {
+          warnIfDev(
+            "DeadlineAlarmHost: remote completion failed, queueing offline sync:",
+            err
+          );
+          await queueOfflineCompletion(
+            user.uid,
+            task.id,
+            completedTask.completedAt
+          ).catch(() => {});
+        }
+      } else {
+        await queueOfflineCompletion(
+          user.uid,
+          task.id,
+          completedTask.completedAt
+        ).catch(() => {});
+      }
     }
 
     await cancelDeadlineAlarms(task).catch(() => {});
@@ -417,6 +506,7 @@ export default function DeadlineAlarmHost() {
     rescheduleAll,
     session,
     suppressCurrentCatchup,
+    isOnline,
   ]);
 
   return (

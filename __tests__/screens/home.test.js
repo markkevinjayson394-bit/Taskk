@@ -1,4 +1,4 @@
-import { act, fireEvent, waitFor } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, waitFor } from "@testing-library/react-native";
 import HomeDashboard from "../../app/(tabs)/home";
 import { render } from "../../utils/test-utils";
 
@@ -158,7 +158,7 @@ describe("Home dashboard", () => {
   const Sentry = require("@sentry/react-native");
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    jest.useRealTimers();
     jest.clearAllMocks();
 
     const tomorrow = new Date();
@@ -213,10 +213,7 @@ describe("Home dashboard", () => {
   });
 
   afterEach(() => {
-    act(() => {
-      jest.runOnlyPendingTimers();
-    });
-    jest.useRealTimers();
+    cleanup();
   });
 
   // ── 1. Urgent task render + mark done ───────────────────────────────────

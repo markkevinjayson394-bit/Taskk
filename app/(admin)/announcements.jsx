@@ -12,13 +12,18 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
-import { Alert, StatusBar, View } from "react-native";
+import { Alert, StatusBar, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AnnouncementComposerTab from "../../components/admin-announcements/AnnouncementComposerTab";
 import AnnouncementHeader from "../../components/admin-announcements/AnnouncementHeader";
 import AnnouncementManageTab from "../../components/admin-announcements/AnnouncementManageTab";
 import { auth, db } from "../../config/firebase";
+import { CACHE_KEYS, useOffline } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
+import {
+  readCacheContract,
+  saveCacheContract,
+} from "../../utils/cacheContracts";
 import {
   buildAnnouncementPayload,
   filterAnnouncements,
@@ -29,6 +34,7 @@ import {
 export default function AdminAnnouncements() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { isOnline } = useOffline();
 
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
@@ -49,22 +55,57 @@ export default function AdminAnnouncements() {
   const [visibleCount, setVisibleCount] = useState(15);
   const [manageSearch, setManageSearch] = useState("");
   const [manageAudience, setManageAudience] = useState("any");
+  const [fromCache, setFromCache] = useState(false);
   const PAGE_SIZE = 15;
   const isEditMode = Boolean(editingId);
 
   useEffect(() => {
-    loadAnnouncements();
+    void loadAnnouncements();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadAnnouncements = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!isOnline) {
+      const cached = uid
+        ? await readCacheContract(CACHE_KEYS.adminAnnouncements(uid), {
+            defaultData: [],
+          })
+        : null;
+      setAnnouncements(Array.isArray(cached?.data) ? cached.data : []);
+      setFromCache(Boolean(cached?.hasCache));
+      setRefreshing(false);
+      return;
+    }
+
     try {
       const snap = await getDocs(
         query(collection(db, "announcements"), orderBy("createdAt", "desc"))
       );
-      setAnnouncements(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      const nextAnnouncements = snap.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setAnnouncements(nextAnnouncements);
       setVisibleCount(PAGE_SIZE);
+      setFromCache(false);
+      if (uid) {
+        await saveCacheContract(
+          CACHE_KEYS.adminAnnouncements(uid),
+          nextAnnouncements
+        );
+      }
     } catch (err) {
       console.warn("Failed to load announcements:", err);
+      if (uid) {
+        const cached = await readCacheContract(CACHE_KEYS.adminAnnouncements(uid), {
+          defaultData: [],
+        });
+        if (cached?.hasCache) {
+          setAnnouncements(Array.isArray(cached.data) ? cached.data : []);
+          setFromCache(true);
+        }
+      }
     } finally {
       setRefreshing(false);
     }
@@ -160,6 +201,14 @@ export default function AdminAnnouncements() {
   };
 
   const postAnnouncement = async () => {
+    if (!isOnline) {
+      Alert.alert(
+        "Offline",
+        "Admin announcement changes require an internet connection."
+      );
+      return;
+    }
+
     const validation = validateAnnouncementForm({
       title,
       message,
@@ -204,7 +253,7 @@ export default function AdminAnnouncements() {
       }
 
       resetForm();
-      loadAnnouncements();
+      void loadAnnouncements();
       setTab("list");
     } catch (err) {
       console.warn("Failed to post announcement:", err);
@@ -218,6 +267,14 @@ export default function AdminAnnouncements() {
   };
 
   const deleteAnnouncement = (id, titleStr) => {
+    if (!isOnline) {
+      Alert.alert(
+        "Offline",
+        "Admin announcement changes require an internet connection."
+      );
+      return;
+    }
+
     Alert.alert("Delete", `Delete "${titleStr}"?`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -226,7 +283,7 @@ export default function AdminAnnouncements() {
         onPress: async () => {
           try {
             await deleteDoc(doc(db, "announcements", id));
-            loadAnnouncements();
+            void loadAnnouncements();
           } catch (err) {
             console.warn("Failed to delete announcement:", err);
             Alert.alert(
@@ -258,6 +315,12 @@ export default function AdminAnnouncements() {
         announcementsCount={announcements.length}
         onChangeTab={setTab}
       />
+
+      {fromCache && (
+        <Text style={{ color: colors.muted, paddingHorizontal: 16, paddingTop: 10 }}>
+          Showing cached announcements. Admin changes are disabled offline.
+        </Text>
+      )}
 
       {tab === "post" ? (
         <AnnouncementComposerTab
@@ -298,7 +361,7 @@ export default function AdminAnnouncements() {
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true);
-            loadAnnouncements();
+            void loadAnnouncements();
           }}
           onManageSearchChange={setManageSearch}
           onManageAudienceChange={setManageAudience}

@@ -55,6 +55,7 @@ import {
   getUrgencyMeta,
 } from "../../utils/deadlineTime";
 import { reportWarning } from "../../utils/logger";
+import { subscribeTaskMutations } from "../../utils/taskMutationBridge";
 
 const PRIORITY_COLOR = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
 const TYPE_ICON = {
@@ -260,7 +261,9 @@ export default function Assignments() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const flushingRef = useRef(false);
+  const loadInFlightRef = useRef(null);
   const lastAutoRefreshAtRef = useRef(0);
+  const previousOnlineRef = useRef(isOnline);
   const stripArchived = (items = []) =>
     items.filter((item) => !item?.plannerArchived);
 
@@ -344,14 +347,30 @@ export default function Assignments() {
     }, [isOnline])
   );
 
+  useEffect(() => {
+    return subscribeTaskMutations((event) => {
+      if (
+        event?.type !== "completed" ||
+        event.userId !== auth.currentUser?.uid
+      ) {
+        return;
+      }
+      setAssignments((prev) => prev.filter((item) => item?.id !== event.taskId));
+      setHistory((prev) => {
+        const next = prev.filter((item) => item?.id !== event.taskId);
+        return event.completedTask ? [event.completedTask, ...next] : next;
+      });
+    });
+  }, []);
+
   // When back online, flush any queued "complete" actions
   useEffect(() => {
-    if (isOnline) {
-      lastAutoRefreshAtRef.current = Date.now();
-      flushPendingUpdates().then(() => {
-        load();
-      });
-    }
+    const wasOnline = previousOnlineRef.current;
+    previousOnlineRef.current = isOnline;
+    if (!isOnline || wasOnline) return;
+
+    lastAutoRefreshAtRef.current = Date.now();
+    void flushPendingUpdates().then(() => load());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOnline]);
 
@@ -389,28 +408,32 @@ export default function Assignments() {
   }, [filterParam]);
 
   const load = useCallback(async () => {
-    const user = auth.currentUser;
-    if (!user) return;
+    if (loadInFlightRef.current) return loadInFlightRef.current;
 
-    await refreshPendingCount(user.uid);
+    loadInFlightRef.current = (async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user) return;
 
-    if (!isOnline) {
-      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
-      if (cached?.data) {
-        const { pending, done } = cached.data;
-        setAssignments(stripArchived(pending || []));
-        setHistory(stripArchived(done || []));
-      }
-      setRefreshing(false);
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 400,
-        useNativeDriver: true,
-      }).start();
-      return;
-    }
+        await refreshPendingCount(user.uid);
 
-    try {
+        if (!isOnline) {
+          const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+          if (cached?.data) {
+            const { pending, done } = cached.data;
+            setAssignments(stripArchived(pending || []));
+            setHistory(stripArchived(done || []));
+          }
+          setRefreshing(false);
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 400,
+            useNativeDriver: true,
+          }).start();
+          return;
+        }
+
+        try {
       // [FIX 2] Added where("completed", "==", false) so Firestore only returns
       // pending tasks, and orderBy("dueAt", "asc") so tasks are always returned
       // in due-date order — preventing buried tasks from undefined ordering.
@@ -473,20 +496,26 @@ export default function Assignments() {
       setVisibleHistory(PAGE_SIZE);
       await saveToCache(CACHE_KEYS.assignments(user.uid), { pending, done });
       await markSynced(user.uid);
-    } catch (_err) {
-      const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
-      if (cached?.data) {
-        setAssignments(stripArchived(cached.data.pending || []));
-        setHistory(stripArchived(cached.data.done || []));
+        } catch (_err) {
+          const cached = await loadFromCache(CACHE_KEYS.assignments(user.uid));
+          if (cached?.data) {
+            setAssignments(stripArchived(cached.data.pending || []));
+            setHistory(stripArchived(cached.data.done || []));
+          }
+        } finally {
+          setRefreshing(false);
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 400,
+            useNativeDriver: true,
+          }).start();
+        }
+      } finally {
+        loadInFlightRef.current = null;
       }
-    } finally {
-      setRefreshing(false);
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 400,
-        useNativeDriver: true,
-      }).start();
-    }
+    })();
+
+    return loadInFlightRef.current;
   }, [isOnline, fadeAnim, refreshPendingCount, markSynced]);
 
   const markComplete = async (id) => {

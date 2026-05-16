@@ -14,7 +14,7 @@
 
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
-import { resolveTaskDueDate } from "./academicTaskModel";
+import { isTaskCompleted, resolveTaskDueDate } from "./academicTaskModel";
 import {
     logScheduleFailed,
     logScheduleStart,
@@ -1158,7 +1158,7 @@ export async function scheduleDeadlineAlarms(
   { force = false } = {}
 ) {
   if (!task?.id) return [];
-  if (task.completed || task.status === "done" || isPlannerTask(task)) {
+  if (isTaskCompleted(task) || isPlannerTask(task)) {
     await cancelDeadlineAlarms(task);
     return [];
   }
@@ -1404,7 +1404,7 @@ export async function rescheduleAllDeadlineAlarms(
 
   const eligible = tasks.filter(
     (task) =>
-      !task.completed && !isPlannerTask(task) && resolveTaskDueDate(task)
+      !isTaskCompleted(task) && !isPlannerTask(task) && resolveTaskDueDate(task)
   );
 
   const BATCH_SIZE = 5;

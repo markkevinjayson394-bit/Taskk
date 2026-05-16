@@ -23,7 +23,12 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, db } from "../../config/firebase";
+import { CACHE_KEYS, useOffline } from "../../context/OfflineContext";
 import { useTheme } from "../../context/ThemeContext";
+import {
+  readCacheContract,
+  saveCacheContract,
+} from "../../utils/cacheContracts";
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
 const MENU = [
   {
@@ -71,12 +76,15 @@ export default function AdminHome() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark, toggleTheme } = useTheme();
+  const { isOnline } = useOffline();
   const [stats, setStats] = useState({
     students: 0,
     schedules: 0,
     announcements: 0,
   });
   const [refreshing, setRefreshing] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
+  const [offlineUnavailable, setOfflineUnavailable] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(24)).current;
   const cardAnims = useRef(MENU.map(() => new Animated.Value(0))).current;
@@ -121,19 +129,55 @@ export default function AdminHome() {
     });
   };
   const loadStats = async (first = false) => {
+    const uid = auth.currentUser?.uid;
+    if (!isOnline) {
+      const cached = uid
+        ? await readCacheContract(CACHE_KEYS.adminStats(uid), {
+            defaultData: null,
+          })
+        : null;
+      if (cached?.hasCache && cached.data) {
+        setStats(cached.data);
+        setFromCache(true);
+        setOfflineUnavailable(false);
+      } else {
+        setOfflineUnavailable(true);
+        setFromCache(false);
+      }
+      setRefreshing(false);
+      animateIn(first);
+      return;
+    }
+
     try {
       const [studentsSnap, schedulesSnap, annSnap] = await Promise.all([
         getDocs(query(collection(db, "users"), where("role", "==", "student"))),
         getDocs(collection(db, "schedules")),
         getDocs(collection(db, "announcements")),
       ]);
-      setStats({
+      const nextStats = {
         students: studentsSnap.size,
         schedules: schedulesSnap.size,
         announcements: annSnap.size,
-      });
+      };
+      setStats(nextStats);
+      setFromCache(false);
+      setOfflineUnavailable(false);
+      if (uid) {
+        await saveCacheContract(CACHE_KEYS.adminStats(uid), nextStats);
+      }
     } catch (err) {
       console.warn("Failed to load admin stats:", err);
+      if (uid) {
+        const cached = await readCacheContract(CACHE_KEYS.adminStats(uid), {
+          defaultData: null,
+        });
+        if (cached?.hasCache && cached.data) {
+          setStats(cached.data);
+          setFromCache(true);
+          setOfflineUnavailable(false);
+        }
+      }
     } finally {
       setRefreshing(false);
       animateIn(first);
@@ -168,6 +212,13 @@ export default function AdminHome() {
     ]);
   };
   const clearAnnouncements = async () => {
+    if (!isOnline) {
+      Alert.alert(
+        "Offline",
+        "Admin announcement management is unavailable until you reconnect."
+      );
+      return;
+    }
     try {
       const snap = await getDocs(collection(db, "announcements"));
       const count = snap.size;
@@ -351,7 +402,23 @@ export default function AdminHome() {
                 {stats.announcements} posts
               </Text>
             </View>
+            {fromCache ? (
+              <View
+                style={[
+                  styles.heroPill,
+                  { backgroundColor: "rgba(239,68,68,0.22)" },
+                ]}
+              >
+                <Ionicons name="cloud-offline-outline" size={11} color="#fca5a5" />
+                <Text style={styles.heroPillText}>Cached snapshot</Text>
+              </View>
+            ) : null}
           </View>
+          {offlineUnavailable ? (
+            <Text style={styles.heroDate}>
+              Offline without cached admin stats. Reconnect to refresh.
+            </Text>
+          ) : null}
         </View>
         <Animated.View
           style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}

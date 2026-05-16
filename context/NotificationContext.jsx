@@ -37,7 +37,7 @@ import {
   where,
 } from "firebase/firestore";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState, InteractionManager, Platform } from "react-native";
 import { auth, getDb } from "../config/firebase";
 import {
   BACKGROUND_ALARM_TASK,
@@ -612,12 +612,13 @@ const mergeLocalOnlyNotificationSettings = (
   ...normalizeTaskAlarmSoundSettings(localSettings),
 });
 const NotificationContext = createContext(null);
-export function NotificationProvider({ children }) {
+export function NotificationProvider({ children, deferStartup = false }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [times, setTimes] = useState(DEFAULT_TIMES);
   const [customNotifs, setCustomNotifs] = useState([]);
   const [permission, setPermission] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [startupReady, setStartupReady] = useState(!deferStartup);
 
   const settingsRef = useRef(DEFAULT_SETTINGS);
   const timesRef = useRef(DEFAULT_TIMES);
@@ -640,6 +641,23 @@ export function NotificationProvider({ children }) {
   const [showBatteryOptimizationPrompt, setShowBatteryOptimizationPrompt] =
     useState(false);
 
+  useEffect(() => {
+    if (!deferStartup) {
+      setStartupReady(true);
+      return undefined;
+    }
+
+    let active = true;
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (active) setStartupReady(true);
+    });
+
+    return () => {
+      active = false;
+      task?.cancel?.();
+    };
+  }, [deferStartup]);
+
   const persistPromptSuppressionMap = async () => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
@@ -659,6 +677,7 @@ export function NotificationProvider({ children }) {
 
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
+    if (!startupReady) return undefined;
     const init = async () => {
       requestPermission();
       await loadSettings();
@@ -675,7 +694,7 @@ export function NotificationProvider({ children }) {
       );
       pending.forEach((resolve) => resolve());
     };
-  }, []);
+  }, [startupReady]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
@@ -696,6 +715,7 @@ export function NotificationProvider({ children }) {
 
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
+    if (!startupReady) return undefined;
     if (!NOTIFICATIONS_AVAILABLE) return undefined;
 
     let appState = AppState.currentState;
@@ -770,7 +790,7 @@ export function NotificationProvider({ children }) {
     return () => {
       sub.remove();
     };
-  }, []);
+  }, [startupReady]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const maybePromptForNativeAlarmPermissions = async (
@@ -1112,6 +1132,7 @@ export function NotificationProvider({ children }) {
 
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
+    if (!startupReady) return undefined;
     let retryTimeout = null;
     const scheduleWithRetry = async (user, retryCount = 0) => {
       const maxRetries = 3;
@@ -1228,11 +1249,12 @@ export function NotificationProvider({ children }) {
       if (retryTimeout) clearTimeout(retryTimeout);
       unsub();
     };
-  }, [permission, settingsLoaded]);
+  }, [permission, settingsLoaded, startupReady]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
+    if (!startupReady) return undefined;
     if (!permission || !settingsLoaded) return undefined;
     if (settings.announcementAlert === false) return undefined;
     if (!NOTIFICATIONS_AVAILABLE) return undefined;
@@ -1253,11 +1275,12 @@ export function NotificationProvider({ children }) {
       if (pollId) clearInterval(pollId);
       appStateSub.remove();
     };
-  }, [permission, settingsLoaded, settings.announcementAlert]);
+  }, [permission, settingsLoaded, settings.announcementAlert, startupReady]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
+    if (!startupReady) return undefined;
     if (!NOTIFICATIONS_AVAILABLE) return undefined;
     if (
       typeof Notifications.addNotificationResponseReceivedListener !==
@@ -1340,7 +1363,7 @@ export function NotificationProvider({ children }) {
       responseSub?.remove?.();
       receiveSub?.remove?.();
     };
-  }, []);
+  }, [startupReady]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const saveSettingsToFirestore = async (uid, settingsData) => {

@@ -1107,6 +1107,7 @@ export default function TaskManagerScreen() {
     priority,
     source = "manual",
     createdAt,
+    leadCatchupEligibleFrom = null,
     customReminderAt = null,
     estimatedMinutes = null,
     reminderPolicy = null,
@@ -1125,6 +1126,13 @@ export default function TaskManagerScreen() {
       priorityLevel: getTaskPriorityLevel(priority),
       source,
       createdAt: createdAt?.toISOString?.() || new Date().toISOString(),
+      ...(leadCatchupEligibleFrom
+        ? {
+            leadCatchupEligibleFrom:
+              leadCatchupEligibleFrom.toISOString?.() ||
+              new Date(leadCatchupEligibleFrom).toISOString(),
+          }
+        : {}),
       ...(customReminderAt
         ? { customReminderAt: customReminderAt.toISOString() }
         : {}),
@@ -1248,7 +1256,6 @@ export default function TaskManagerScreen() {
     const now = new Date();
     if (!(newTaskDueAt instanceof Date) || isNaN(newTaskDueAt.getTime()))
       return null;
-    const minDue = new Date(now.getTime() + 5 * 60 * 1000);
     const maxDue = new Date(
       now.getFullYear() + 2,
       now.getMonth(),
@@ -1256,11 +1263,6 @@ export default function TaskManagerScreen() {
     );
     if (newTaskDueAt < now)
       return { type: "error", text: "Due date is in the past." };
-    if (newTaskDueAt < minDue)
-      return {
-        type: "error",
-        text: "Due date is too soon — set at least 5 minutes ahead.",
-      };
     if (newTaskDueAt > maxDue)
       return { type: "warn", text: "Due date is more than 2 years out." };
     return null;
@@ -1446,7 +1448,6 @@ export default function TaskManagerScreen() {
 
     // ── Validate due date for BOTH create and edit ─────────────────────
     const now = new Date();
-    const minDueAt = new Date(now.getTime() + 5 * 60 * 1000);
     const maxDueAt = new Date(
       now.getFullYear() + 2,
       now.getMonth(),
@@ -1458,21 +1459,17 @@ export default function TaskManagerScreen() {
       return;
     }
 
-    if (!isEditMode) {
-      if (newTaskDueAt < minDueAt) {
-        Alert.alert(
-          "Due date too soon",
-          "The due date must be at least 5 minutes from now so reminders have time to schedule."
-        );
-        return;
-      }
-      if (newTaskDueAt > maxDueAt) {
-        Alert.alert(
-          "Due date too far",
-          "The due date cannot be more than 2 years in the future."
-        );
-        return;
-      }
+    if (newTaskDueAt <= now) {
+      Alert.alert("Due date in the past", "Please choose a future due date.");
+      return;
+    }
+
+    if (!isEditMode && newTaskDueAt > maxDueAt) {
+      Alert.alert(
+        "Due date too far",
+        "The due date cannot be more than 2 years in the future."
+      );
+      return;
     }
     // ──────────────────────────────────────────────────────────────────
 
@@ -1503,7 +1500,10 @@ export default function TaskManagerScreen() {
             priority,
             source: "manual",
           },
-          { createdAt: localCreatedAt }
+          {
+            createdAt: localCreatedAt,
+            leadCatchupEligibleFrom: localCreatedAt,
+          }
         );
         const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         const queue = await readCreateQueue(user.uid);
@@ -1576,6 +1576,19 @@ export default function TaskManagerScreen() {
       }
 
       const dueAtTimestamp = Timestamp.fromDate(newTaskDueAt);
+      const editingDueAtMs = resolveTaskDueDate(editingTask)?.getTime?.() ?? null;
+      const dueChangedInEditMode =
+        isEditMode &&
+        (!Number.isFinite(editingDueAtMs) ||
+          editingDueAtMs !== newTaskDueAt.getTime());
+      const preservedLeadCatchupEligibleFrom = normalizeTaskDateInput(
+        editingTask?.leadCatchupEligibleFrom
+      );
+      const optimisticLeadCatchupEligibleFrom = !isEditMode
+        ? now
+        : dueChangedInEditMode
+          ? now
+          : preservedLeadCatchupEligibleFrom;
       if (isEditMode) {
         const updatePayload = {
           title,
@@ -1589,6 +1602,9 @@ export default function TaskManagerScreen() {
           customReminderAt: null,
           reminderPolicy: null,
           updatedAt: serverTimestamp(),
+          ...(dueChangedInEditMode
+            ? { leadCatchupEligibleFrom: serverTimestamp() }
+            : {}),
         };
         if (editingTask && typeof cancelDeadlineAlarms === "function") {
           await cancelDeadlineAlarms(editingTask);
@@ -1610,7 +1626,10 @@ export default function TaskManagerScreen() {
             priority,
             source: "manual",
           },
-          { createdAt: serverTimestamp() }
+          {
+            createdAt: serverTimestamp(),
+            leadCatchupEligibleFrom: serverTimestamp(),
+          }
         );
         const docRef = await addDoc(
           collection(getDb(), "assignments"),
@@ -1629,6 +1648,7 @@ export default function TaskManagerScreen() {
         priority,
         source: editingTask?.source || "manual",
         createdAt: editingTaskCreatedAt || new Date(),
+        leadCatchupEligibleFrom: optimisticLeadCatchupEligibleFrom,
         customReminderAt: customReminderAt ?? null,
       });
 

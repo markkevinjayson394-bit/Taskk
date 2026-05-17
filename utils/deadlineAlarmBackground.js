@@ -97,8 +97,11 @@ const SMALL_ICON = "notification_icon";
 const LARGE_ICON = "ic_launcher_round";
 const IMMEDIATE_CATCHUP_DELAY_MS = 1500;
 const OVERDUE_SEED_TARGET_STAGE = "+15m";
+const TASK_OPERATION_DEDUPE_MS = 500;
+const taskOperationChains = new Map();
+const recentTaskOperations = new Map();
 
-// [FIX] Removed LEAD_BUFFER_MS — lead notifications fire at exact threshold time.
+// [FIX] Removed LEAD_BUFFER_MS - lead notifications fire at exact threshold time.
 
 const LEAD_TIMES = [
   { key: "1d", ms: 24 * 60 * 60 * 1000, label: "1 day" },
@@ -106,6 +109,70 @@ const LEAD_TIMES = [
   { key: "30m", ms: 30 * 60 * 1000, label: "30 min" },
   { key: "5m", ms: 5 * 60 * 1000, label: "5 min" },
 ];
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${key}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function pruneExpiredTaskOperations(now = Date.now()) {
+  for (const [key, entry] of recentTaskOperations.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      recentTaskOperations.delete(key);
+    }
+  }
+}
+
+function buildTaskOperationKey(taskId, operation, signature = {}) {
+  return `${taskId}:${operation}:${stableSerialize(signature)}`;
+}
+
+function runTaskScopedDeadlineOperation(
+  taskId,
+  operation,
+  signature,
+  executor
+) {
+  if (!taskId) return executor();
+
+  const now = Date.now();
+  pruneExpiredTaskOperations(now);
+
+  const operationKey = buildTaskOperationKey(taskId, operation, signature);
+  const existing = recentTaskOperations.get(operationKey);
+  if (existing && existing.expiresAt > now) {
+    return existing.promise;
+  }
+
+  const previous = taskOperationChains.get(taskId) ?? Promise.resolve();
+  const promise = previous.catch(() => undefined).then(executor);
+  const trackedChain = promise.then(
+    () => undefined,
+    () => undefined
+  );
+
+  taskOperationChains.set(taskId, trackedChain);
+  recentTaskOperations.set(operationKey, {
+    promise,
+    expiresAt: now + TASK_OPERATION_DEDUPE_MS,
+  });
+
+  trackedChain.finally(() => {
+    if (taskOperationChains.get(taskId) === trackedChain) {
+      taskOperationChains.delete(taskId);
+    }
+  });
+
+  return promise;
+}
 
 function resolveNativeAlarmPath(permissionState) {
   const exactGranted = permissionState?.exactAlarm?.value !== false;
@@ -193,6 +260,17 @@ async function cancelAllShadeNotificationsForTask(taskId) {
   if (!taskId) return;
   await dismissDeadlinePresentations(taskId);
   await cancelOverdueSeedAlarm(taskId);
+}
+
+function shouldRestorePresentationImmediately(deliveryPathHint = null) {
+  const normalizedHint =
+    typeof deliveryPathHint === "string"
+      ? deliveryPathHint.trim().toLowerCase()
+      : "";
+  return (
+    normalizedHint === "reschedule_catchup" ||
+    normalizedHint === "background_repair"
+  );
 }
 
 function buildAlarmTimingMeta({
@@ -950,6 +1028,23 @@ async function scheduleOverdueCheckpointAlarm({
     );
   }
 
+  if (shouldRestorePresentationImmediately(deliveryPathHint)) {
+    try {
+      await displayAlarmNotification({
+        id: `${id}-display`,
+        title: resolvedTitle,
+        body,
+        data,
+        isOngoing: true,
+      });
+    } catch (err) {
+      warnIfDev(
+        "scheduleOverdueCheckpointAlarm: failed to restore active display notification:",
+        err
+      );
+    }
+  }
+
   return scheduledId;
 }
 
@@ -1155,14 +1250,14 @@ async function scheduleDailyOverdueAlarm(
 }
 
 // ─────────────────────── Main API ───────────────────────
-export async function scheduleDeadlineAlarms(
+async function scheduleDeadlineAlarmsInternal(
   task,
   soundSettings = {},
   { force = false } = {}
 ) {
   if (!task?.id) return [];
   if (isTaskCompleted(task) || isPlannerTask(task)) {
-    await cancelDeadlineAlarms(task);
+    await cancelDeadlineAlarmsInternal(task);
     return [];
   }
 
@@ -1176,7 +1271,7 @@ export async function scheduleDeadlineAlarms(
   const dueAtMs = due.getTime();
 
   await logScheduleStart(task.id, task.title, dueAtMs);
-  await cancelDeadlineAlarms(task);
+  await cancelDeadlineAlarmsInternal(task);
 
   const { taskTitle, subjectLabel } = getTaskAlarmMeta(task, soundSettings);
 
@@ -1391,11 +1486,38 @@ export async function scheduleDeadlineAlarms(
   return ids;
 }
 
-export async function cancelDeadlineAlarms(task) {
+async function cancelDeadlineAlarmsInternal(task) {
   if (!task?.id) return;
   await cancelSharedDeadlineNotifications(task.id, {
     legacyExpoCompat: true,
   });
+}
+
+export async function scheduleDeadlineAlarms(
+  task,
+  soundSettings = {},
+  { force = false } = {}
+) {
+  const dueAtMs = resolveTaskDueDate(task)?.getTime?.() ?? null;
+  return runTaskScopedDeadlineOperation(
+    task?.id,
+    "scheduleDeadlineAlarms",
+    {
+      dueAtMs,
+      force: Boolean(force),
+      taskAlarmSoundUri: soundSettings?.taskAlarmSoundUri ?? null,
+    },
+    () => scheduleDeadlineAlarmsInternal(task, soundSettings, { force })
+  );
+}
+
+export async function cancelDeadlineAlarms(task) {
+  return runTaskScopedDeadlineOperation(
+    task?.id,
+    "cancelDeadlineAlarms",
+    {},
+    () => cancelDeadlineAlarmsInternal(task)
+  );
 }
 
 export async function rescheduleAllDeadlineAlarms(
@@ -1437,6 +1559,7 @@ export async function rescheduleAllDeadlineAlarms(
                 checkpoint: currentCheckpoint,
                 soundSettings,
                 triggerAt: repairTriggerAt,
+                deliveryPathHint: "reschedule_catchup",
               });
               return repairedId ? [repairedId] : [];
             }
@@ -1455,7 +1578,7 @@ export async function forceScheduleDeadlineAlarms(task, soundSettings = {}) {
   return scheduleDeadlineAlarms(task, soundSettings, { force: true });
 }
 
-export async function scheduleNextOverdueAlarm({
+async function scheduleNextOverdueAlarmInternal({
   task,
   checkpoint,
   soundSettings = {},
@@ -1483,6 +1606,42 @@ export async function scheduleNextOverdueAlarm({
     intendedTriggerAtMs,
     deliveryPathHint,
   });
+}
+
+export async function scheduleNextOverdueAlarm({
+  task,
+  checkpoint,
+  soundSettings = {},
+  triggerAt = null,
+  intendedTriggerAtMs = null,
+  deliveryPathHint = null,
+}) {
+  return runTaskScopedDeadlineOperation(
+    task?.id,
+    "scheduleNextOverdueAlarm",
+    {
+      checkpointKey: checkpoint?.key ?? null,
+      triggerAt:
+        Number.isFinite(Number(triggerAt)) && Number(triggerAt) > 0
+          ? Number(triggerAt)
+          : null,
+      intendedTriggerAtMs:
+        Number.isFinite(Number(intendedTriggerAtMs)) &&
+        Number(intendedTriggerAtMs) > 0
+          ? Number(intendedTriggerAtMs)
+          : null,
+      deliveryPathHint: deliveryPathHint ?? null,
+    },
+    () =>
+      scheduleNextOverdueAlarmInternal({
+        task,
+        checkpoint,
+        soundSettings,
+        triggerAt,
+        intendedTriggerAtMs,
+        deliveryPathHint,
+      })
+  );
 }
 
 export async function handleDeadlineAlarmResponse(response) {

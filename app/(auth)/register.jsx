@@ -8,7 +8,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, setDoc } from "firebase/firestore";
 import { useRef, useState } from "react";
 import {
@@ -32,6 +32,7 @@ import {
   normalizeCollege,
   normalizeCourse,
 } from "../../constants/academics";
+import { ACTIVE_UID_KEY, buildPendingEulaState } from "../../utils/eula";
 
 // ─── Step meta (3 steps instead of 7) ──────────────────────────────────────
 const STEPS = [
@@ -45,7 +46,6 @@ const TOTAL_STEPS = STEPS.length;
 const YEARS    = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 const SECTIONS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 const SCHEDULE = ["Day", "Night"];
-const ACTIVE_UID_KEY = "active_uid_v1";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normalizeEmail(value) {
@@ -232,6 +232,7 @@ export default function RegisterScreen() {
       await setDoc(doc(db, "users", cred.user.uid), {
         fullName: `${firstName.trim()} ${lastName.trim()}`,
         role: "student",
+        eula: buildPendingEulaState(),
         studentInfo: {
           idNumber:     idNumber.trim(),
           course:       normalizeCourse(course),
@@ -241,11 +242,16 @@ export default function RegisterScreen() {
           college:      normalizeCollege(college),
         },
       }, { merge: true });
-      await AsyncStorage.setItem(ACTIVE_UID_KEY, cred.user.uid);
+      try {
+        await signOut(auth);
+      } catch (signOutError) {
+        console.warn("Post-registration sign-out failed:", signOutError);
+      }
+      await AsyncStorage.removeItem(ACTIVE_UID_KEY);
       Alert.alert(
         "Account Created!",
-        `Welcome, ${firstName.trim()}! Please review the terms to continue.`,
-        [{ text: "Continue", onPress: () => router.replace("/eula?mode=consent&source=register") }]
+        `Welcome, ${firstName.trim()}! Sign in to review and accept the terms.`,
+        [{ text: "Go to Login", onPress: () => router.replace("/(auth)/login") }]
       );
     } catch (err) {
       const code = err?.code ?? "";

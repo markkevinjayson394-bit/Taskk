@@ -21,6 +21,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, db, isFirebaseConfigured } from "../../config/firebase";
 import {
+  ACTIVE_UID_KEY,
+  getEulaConsentRoute,
+  needsEulaConsent,
+} from "../../utils/eula";
+import {
   getPostOnboardingRoute,
   getTutorialRoute,
   hasCompletedOnboarding,
@@ -28,11 +33,6 @@ import {
 import { clearLocalClassSchedule } from "../../utils/classScheduleCache";
 
 const { height } = Dimensions.get("window");
-const EULA_KEYS = (uid) => [
-  `eula_accepted_v1_1_${uid}`,
-  `eula_accepted_v1_${uid}`,
-];
-const ACTIVE_UID_KEY = "active_uid_v1";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HERO_POINTS = [
   "Deadline-aware reminders",
@@ -147,16 +147,7 @@ export default function LoginScreen() {
       );
       const uid = cred.user.uid;
       await AsyncStorage.setItem(ACTIVE_UID_KEY, uid);
-      const eulaChecks = await Promise.all(
-        EULA_KEYS(uid).map((key) => AsyncStorage.getItem(key))
-      );
-      const eulaAccepted = eulaChecks.some((value) => value === "accepted");
-      if (!eulaAccepted) {
-        router.replace("/eula?mode=consent&source=login");
-        return;
-      }
-
-      const snap = await getDoc(doc(db, "users", cred.user.uid));
+      const snap = await getDoc(doc(db, "users", uid));
       if (!snap.exists()) {
         // User document doesn't exist - create basic user data or redirect with error
         Alert.alert(
@@ -171,7 +162,14 @@ export default function LoginScreen() {
         await AsyncStorage.removeItem(ACTIVE_UID_KEY);
         return;
       }
-      const role = snap.data().role === "admin" ? "admin" : "student";
+
+      const userData = snap.data();
+      if (needsEulaConsent(userData)) {
+        router.replace(getEulaConsentRoute("login"));
+        return;
+      }
+
+      const role = userData.role === "admin" ? "admin" : "student";
       const completedOnboarding = await hasCompletedOnboarding(uid);
       if (!completedOnboarding) {
         router.replace(getTutorialRoute(role));

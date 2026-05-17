@@ -151,6 +151,12 @@ function resolveAckKeyForThreshold(task, thresholdKey, nowMs) {
   return bucket > 0 ? `daily_${bucket}` : "daily";
 }
 
+function getLeadCatchupEligibleFromMs(task) {
+  const eligibleFrom = parseDueDate(task?.leadCatchupEligibleFrom);
+  const eligibleFromMs = eligibleFrom?.getTime?.() ?? null;
+  return Number.isFinite(eligibleFromMs) ? eligibleFromMs : null;
+}
+
 function findTriggeredThreshold(
   task,
   lastCheckedAt,
@@ -182,6 +188,10 @@ function findTriggeredThreshold(
     if (threshold.key === "due") continue;
 
     const triggerAt = dueMs - threshold.ms;
+    const eligibleFromMs = getLeadCatchupEligibleFromMs(task);
+    if (Number.isFinite(eligibleFromMs) && triggerAt < eligibleFromMs) {
+      continue;
+    }
     const crossedSinceLast = triggerAt > lastCheckedAt && triggerAt <= nowMs;
     const withinWindow =
       nowMs >= triggerAt && nowMs <= triggerAt + threshold.window;
@@ -385,6 +395,13 @@ export function useDeadlineAlarmScheduler(
       pendingAcksRef.current.add(key);
 
       if (
+        activeAlarm?.taskId === task.id &&
+        activeAlarm?.thresholdKey === triggered.thresholdKey
+      ) {
+        continue;
+      }
+
+      if (
         alarmQueueRef.current.find(
           (q) =>
             q.taskId === task.id && q.thresholdKey === triggered.thresholdKey
@@ -533,6 +550,14 @@ export function useDeadlineAlarmScheduler(
       }
 
       if (activeAlarm && activeAlarm.taskId === task.id) {
+        const activeAckKey = resolveAckKeyForThreshold(
+          task,
+          thresholdKey,
+          Date.now()
+        );
+        if (activeAckKey) {
+          pendingAcksRef.current.add(buildAckKey(task.id, activeAckKey));
+        }
         if (thresholdKey && thresholdKey !== activeAlarm.thresholdKey) {
           setActiveAlarm((prev) =>
             prev ? { ...prev, thresholdKey, task } : prev
@@ -550,6 +575,9 @@ export function useDeadlineAlarmScheduler(
         thresholdKey,
         ackKey: resolveAckKeyForThreshold(task, thresholdKey, Date.now()),
       };
+      if (entry.ackKey) {
+        pendingAcksRef.current.add(buildAckKey(task.id, entry.ackKey));
+      }
 
       const existingIdx = alarmQueueRef.current.findIndex(
         (q) => q.taskId === task.id

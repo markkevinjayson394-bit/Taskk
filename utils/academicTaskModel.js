@@ -251,6 +251,9 @@ export function buildTaskCreateData(input = {}, meta = {}) {
   const startedAt = normalizeTaskDateInput(input.startedAt);
   const completedAtInput = normalizeTaskDateInput(input.completedAt);
   const customReminderAt = normalizeTaskDateInput(input.customReminderAt);
+  const leadCatchupEligibleFrom = normalizeTaskDateInput(
+    input.leadCatchupEligibleFrom
+  );
   const estimatedMinutes = normalizeEstimatedMinutes(input.estimatedMinutes);
   const reminderPolicy = normalizeReminderPolicy(input.reminderPolicy);
 
@@ -280,6 +283,9 @@ export function buildTaskCreateData(input = {}, meta = {}) {
   }
   if (customReminderAt) {
     data.customReminderAt = customReminderAt;
+  }
+  if (leadCatchupEligibleFrom) {
+    data.leadCatchupEligibleFrom = leadCatchupEligibleFrom;
   }
   if (reminderPolicy) {
     data.reminderPolicy = reminderPolicy;

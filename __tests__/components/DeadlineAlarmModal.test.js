@@ -251,6 +251,50 @@ describe("Deadline alarm flow", () => {
     expect(alarmHelpers.startVibration).not.toHaveBeenCalled();
   });
 
+  test("native-handoff falls back to a local loop after 750ms when native audio never started", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const alarmHelpers = jest.requireMock(
+        "../../components/DeadlineAlarmModal.helpers"
+      );
+      const task = {
+        id: "task-native-fallback-1",
+        title: "Submit capstone draft",
+        subject: "Research",
+        dueAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        priority: "high",
+        type: "project",
+      };
+
+      render(
+        <DeadlineAlarmModal
+          visible
+          task={task}
+          nativeHandoff={true}
+          nativeAudioStarted={false}
+          thresholdKey="due"
+        />
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(740);
+      });
+
+      expect(alarmHelpers.playAlarmSound).not.toHaveBeenCalled();
+      expect(alarmHelpers.startVibration).not.toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(10);
+      });
+
+      expect(alarmHelpers.playAlarmSound).toHaveBeenCalledTimes(1);
+      expect(alarmHelpers.startVibration).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("foreground modal starts one continuous local alarm loop without restart timers", async () => {
     jest.useFakeTimers();
 
@@ -279,6 +323,113 @@ describe("Deadline alarm flow", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  test("hiding the modal explicitly stops local sound and vibration", async () => {
+    const alarmHelpers = jest.requireMock(
+      "../../components/DeadlineAlarmModal.helpers"
+    );
+    const task = {
+      id: "task-hide-stop-1",
+      title: "Submit capstone draft",
+      subject: "Research",
+      dueAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      priority: "high",
+      type: "project",
+    };
+
+    const { rerender } = render(
+      <DeadlineAlarmModal visible task={task} thresholdKey="due" />
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    alarmHelpers.stopAlarmSound.mockClear();
+    alarmHelpers.stopVibration.mockClear();
+
+    rerender(
+      <DeadlineAlarmModal visible={false} task={task} thresholdKey="due" />
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alarmHelpers.stopAlarmSound).toHaveBeenCalled();
+    expect(alarmHelpers.stopVibration).toHaveBeenCalled();
+  });
+
+  test("done does not restart local playback when session props change before close", async () => {
+    const alarmHelpers = jest.requireMock(
+      "../../components/DeadlineAlarmModal.helpers"
+    );
+    const task = {
+      id: "task-done-restart-1",
+      title: "Submit capstone draft",
+      subject: "Research",
+      dueAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      priority: "high",
+      type: "project",
+    };
+    let resolveDone;
+    const onMarkDone = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveDone = resolve;
+        })
+    );
+
+    const { getByRole, rerender } = render(
+      <DeadlineAlarmModal
+        visible
+        task={task}
+        thresholdKey="due"
+        nativeAudioStarted={true}
+        onMarkDone={onMarkDone}
+      />
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alarmHelpers.playAlarmSound).toHaveBeenCalledTimes(1);
+    expect(alarmHelpers.startVibration).toHaveBeenCalledTimes(1);
+
+    alarmHelpers.playAlarmSound.mockClear();
+    alarmHelpers.startVibration.mockClear();
+
+    act(() => {
+      fireEvent.press(getByRole("button", { name: /^done$/i }));
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    rerender(
+      <DeadlineAlarmModal
+        visible
+        task={task}
+        thresholdKey="due"
+        nativeAudioStarted={null}
+        onMarkDone={onMarkDone}
+      />
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alarmHelpers.playAlarmSound).not.toHaveBeenCalled();
+    expect(alarmHelpers.startVibration).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveDone?.();
+      await Promise.resolve();
+    });
   });
 
   // â”€â”€ 2. Done callback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -396,6 +547,142 @@ describe("Deadline alarm flow", () => {
     await waitFor(() => {
       expect(getByText("No alarm")).toBeTruthy();
     });
+  });
+
+  test("scheduler skips an immediate modal for a new task created under five minutes before due, then opens at due", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const now = new Date();
+      const task = {
+        id: "task-new-under-5",
+        title: "Quick worksheet sync",
+        dueAt: new Date(now.getTime() + 45 * 1000).toISOString(),
+        leadCatchupEligibleFrom: now.toISOString(),
+        completed: false,
+      };
+
+      const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+
+      await waitFor(() => {
+        expect(getByText("No alarm")).toBeTruthy();
+        expect(getByText("No threshold")).toBeTruthy();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(46 * 1000);
+      });
+
+      await waitFor(() => {
+        expect(getByText("Quick worksheet sync")).toBeTruthy();
+        expect(getByText("due")).toBeTruthy();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("scheduler does not retro-open the 30-minute lead for a newly created 29-minute task", async () => {
+    const now = new Date();
+    const task = {
+      id: "task-new-29m",
+      title: "Review chapter summary",
+      dueAt: new Date(now.getTime() + 29 * 60 * 1000).toISOString(),
+      leadCatchupEligibleFrom: now.toISOString(),
+      completed: false,
+    };
+
+    const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => {
+      expect(getByText("No alarm")).toBeTruthy();
+      expect(getByText("No threshold")).toBeTruthy();
+    });
+  });
+
+  test("scheduler skips an immediate modal when an existing task is edited under five minutes before due, then opens at due", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const now = new Date();
+      const task = {
+        id: "task-edited-under-5",
+        title: "Revise appendix notes",
+        createdAt: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        dueAt: new Date(now.getTime() + 45 * 1000).toISOString(),
+        leadCatchupEligibleFrom: now.toISOString(),
+        completed: false,
+      };
+
+      const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+
+      await waitFor(() => {
+        expect(getByText("No alarm")).toBeTruthy();
+        expect(getByText("No threshold")).toBeTruthy();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(46 * 1000);
+      });
+
+      await waitFor(() => {
+        expect(getByText("Revise appendix notes")).toBeTruthy();
+        expect(getByText("due")).toBeTruthy();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("scheduler still opens a lead alarm when a valid future lead threshold is crossed naturally", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const now = new Date();
+      const task = {
+        id: "task-natural-lead",
+        title: "Join peer review call",
+        dueAt: new Date(now.getTime() + 70 * 1000).toISOString(),
+        leadCatchupEligibleFrom: new Date(
+          now.getTime() - 5 * 60 * 1000
+        ).toISOString(),
+        completed: false,
+      };
+
+      const { getByText } = render(<SchedulerHarness tasks={[task]} />);
+
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+
+      await waitFor(() => {
+        expect(getByText("No alarm")).toBeTruthy();
+        expect(getByText("No threshold")).toBeTruthy();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(12 * 1000);
+      });
+
+      await waitFor(() => {
+        expect(getByText("Join peer review call")).toBeTruthy();
+        expect(getByText("1m")).toBeTruthy();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("scheduler does not auto-open the modal when foreground modal support is disabled", async () => {

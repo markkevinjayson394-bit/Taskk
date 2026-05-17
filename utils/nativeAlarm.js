@@ -343,6 +343,29 @@ export async function forceStopNativeAlarm() {
   }
 }
 
+export async function getActiveNativeAlarmState() {
+  if (!isNativeAlarmSupported) return null;
+  if (typeof NativeAlarmModule.getActiveAlarmState !== "function") return null;
+  try {
+    const result = await NativeAlarmModule.getActiveAlarmState();
+    if (!result || typeof result !== "object") return null;
+    return {
+      alarmId: typeof result.alarmId === "string" ? result.alarmId : null,
+      isRinging:
+        typeof result.isRinging === "boolean" ? result.isRinging : null,
+      audioStarted:
+        typeof result.audioStarted === "boolean" ? result.audioStarted : null,
+      audioSource:
+        typeof result.audioSource === "string" && result.audioSource.trim()
+          ? result.audioSource.trim()
+          : null,
+    };
+  } catch (err) {
+    warnIfDev("NativeAlarm: getActiveAlarmState failed:", err);
+    return null;
+  }
+}
+
 function unwrapNativeResult(result) {
   if (!result) return null;
   if (result.status === "success" && "value" in result) {

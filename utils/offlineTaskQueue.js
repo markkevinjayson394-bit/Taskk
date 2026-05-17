@@ -9,6 +9,7 @@
     "dueAt",
     "createdAt",
     "completedAt",
+    "leadCatchupEligibleFrom",
     "updatedAt",
     "startedAt",
     "customReminderAt",

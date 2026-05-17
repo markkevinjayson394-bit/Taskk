@@ -72,6 +72,7 @@ async function cancelAllNotifeeIdsForTask(
 }
 
 const AUTO_MISS_TIMEOUT_MS = 5 * 60 * 1000;
+const LOCAL_ALARM_FALLBACK_DELAY_MS = 750;
 const AUTO_MISS_STAGE_KEYS = new Set(["due", "+15m", "+1h", "+3h", "daily"]);
 
 function IOSMissedAlarmBanner({ message, onHide }) {
@@ -139,6 +140,8 @@ function DeadlineAlarmModal({
   onMarkDone,
   pendingAction,
   nativeHandoff = false,
+  nativeAudioStarted = null,
+  recoveryReason = null,
   thresholdKey = null,
 }) {
   const insets = useSafeAreaInsets();
@@ -157,6 +160,7 @@ function DeadlineAlarmModal({
   const slideAnim = useRef(new Animated.Value(-80)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const loopRef = useRef(null);
+  const localPlaybackStartedRef = useRef(false);
   const userDismissedRef = useRef(false);
   const actionInFlightRef = useRef(false);
   const handleNotDoneRef = useRef(null);
@@ -169,25 +173,42 @@ function DeadlineAlarmModal({
   const notDoneSelected = pendingAction === "notdone";
   const doneSelected = pendingAction === "markdone";
   const isSilentConfirmMode = pendingAction === "markdone";
-  // [NEW] Determine if we should play sound locally:
-  // - Don't play if nativeHandoff=true (native alarm already ringing)
-  // - Don't play if markdone mode (silent confirmation)
-  // - Otherwise, play sound when modal becomes visible
-  const shouldUseLocalAlarmLoop = !isSilentConfirmMode && !nativeHandoff;
-
-  console.log("[DeadlineAlarmModal] Audio/Vibration Debug:", {
-    visible,
-    nativeHandoff,
-    pendingAction,
-    isSilentConfirmMode,
-    shouldUseLocalAlarmLoop,
-  });
+  const isMissedRecovery = recoveryReason === "missed";
+  const shouldUseLocalAlarmLoop =
+    !isSilentConfirmMode && (!nativeHandoff || isMissedRecovery);
+  const shouldUseDelayedLocalFallback =
+    !isSilentConfirmMode &&
+    nativeHandoff &&
+    !isMissedRecovery &&
+    nativeAudioStarted === false;
 
   const isOverdue = due && due.getTime() < now.getTime();
   const effectiveThresholdKey = thresholdKey || (isOverdue ? "due" : null);
   const requiresExplicitAction = AUTO_MISS_STAGE_KEYS.has(
     effectiveThresholdKey
   );
+
+  const stopLocalPlayback = useCallback(async () => {
+    soundCancelRef.current = true;
+    localPlaybackStartedRef.current = false;
+    stopVibration(vibRef);
+    await stopAlarmSound(soundRef, soundCancelRef).catch(() => {});
+  }, []);
+
+  const startLocalPlayback = useCallback(() => {
+    if (
+      localPlaybackStartedRef.current ||
+      soundCancelRef.current ||
+      userDismissedRef.current ||
+      actionInFlightRef.current
+    ) {
+      return;
+    }
+    soundCancelRef.current = false;
+    localPlaybackStartedRef.current = true;
+    startVibration(vibRef);
+    void playAlarmSound(soundRef, soundCancelRef);
+  }, []);
 
   const getOverdueDuration = () => {
     if (!due || !isOverdue) return null;
@@ -214,12 +235,11 @@ function DeadlineAlarmModal({
         clearInterval(tickRef.current);
         tickRef.current = null;
       }
-      stopVibration(vibRef);
-      void stopAlarmSound(soundRef, soundCancelRef);
+      void stopLocalPlayback();
     };
-  }, []);
+  }, [stopLocalPlayback]);
 
-  // Reset state and manage sound when modal becomes visible or invisible
+  // Reset transient UI state only when the modal opens or closes.
   useEffect(() => {
     if (!visible) {
       setNotDonePressed(false);
@@ -227,18 +247,29 @@ function DeadlineAlarmModal({
       setSelfClosed(false);
       userDismissedRef.current = false;
       actionInFlightRef.current = false;
+      soundCancelRef.current = true;
+      localPlaybackStartedRef.current = false;
       slideAnim.setValue(-80);
       shakeAnim.setValue(0);
       pulseAnim.setValue(1);
       loopRef.current?.stop();
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
+      void stopLocalPlayback();
       return;
     }
+
     // Becoming visible — reset all transient state so a stale selfClosed
     // from a previous session doesn't hide the modal before it renders.
     setNotDonePressed(false);
     setMarkingDone(false);
     setSelfClosed(false);
     userDismissedRef.current = false;
+    actionInFlightRef.current = false;
+    soundCancelRef.current = false;
+    localPlaybackStartedRef.current = false;
 
     // Slide down from top
     Animated.spring(slideAnim, {
@@ -268,17 +299,6 @@ function DeadlineAlarmModal({
     // Per-second countdown
     tickRef.current = setInterval(() => setNow(new Date()), 1000);
 
-    // AUTO-PLAY SOUND: Start sound and vibration when modal becomes visible
-    // (only if not using native alarm and not in silent confirm mode)
-    if (shouldUseLocalAlarmLoop) {
-      soundCancelRef.current = false;
-      startVibration(vibRef);
-      void playAlarmSound(soundRef, soundCancelRef);
-      console.log(
-        "[DeadlineAlarmModal] Sound & vibration started automatically"
-      );
-    }
-
     return () => {
       loopRef.current?.stop();
       if (tickRef.current) {
@@ -286,7 +306,58 @@ function DeadlineAlarmModal({
         tickRef.current = null;
       }
     };
-  }, [visible, pulseAnim, shakeAnim, slideAnim, shouldUseLocalAlarmLoop]);
+  }, [pulseAnim, shakeAnim, slideAnim, stopLocalPlayback, visible]);
+
+  // Start local playback only while the visible session is still active.
+  useEffect(() => {
+    let fallbackTimeoutId = null;
+
+    if (
+      !visible ||
+      selfClosed ||
+      notDonePressed ||
+      markingDone ||
+      userDismissedRef.current ||
+      actionInFlightRef.current
+    ) {
+      return undefined;
+    }
+
+    if (localPlaybackStartedRef.current) {
+      return undefined;
+    }
+
+    if (shouldUseLocalAlarmLoop) {
+      startLocalPlayback();
+    } else if (shouldUseDelayedLocalFallback) {
+      soundCancelRef.current = false;
+      fallbackTimeoutId = setTimeout(() => {
+        if (
+          userDismissedRef.current ||
+          actionInFlightRef.current ||
+          soundCancelRef.current ||
+          localPlaybackStartedRef.current
+        ) {
+          return;
+        }
+        startLocalPlayback();
+      }, LOCAL_ALARM_FALLBACK_DELAY_MS);
+    }
+
+    return () => {
+      if (fallbackTimeoutId) {
+        clearTimeout(fallbackTimeoutId);
+      }
+    };
+  }, [
+    markingDone,
+    notDonePressed,
+    selfClosed,
+    shouldUseDelayedLocalFallback,
+    shouldUseLocalAlarmLoop,
+    startLocalPlayback,
+    visible,
+  ]);
 
   // "Not Done" — stop sound/vibration immediately, advance checkpoint chain,
   // schedule next alarm, close modal. Task remains incomplete.
@@ -297,10 +368,9 @@ function DeadlineAlarmModal({
     loopRef.current?.stop();
     clearInterval(tickRef.current);
     tickRef.current = null;
-    stopVibration(vibRef);
-    void stopAlarmSound(soundRef);
+    void stopLocalPlayback();
     return undefined;
-  }, [selfClosed]);
+  }, [selfClosed, stopLocalPlayback]);
 
   const stopCurrentAlarmPresentation = useCallback(async () => {
     loopRef.current?.stop();
@@ -309,8 +379,7 @@ function DeadlineAlarmModal({
       tickRef.current = null;
     }
 
-    stopVibration(vibRef);
-    await stopAlarmSound(soundRef, soundCancelRef).catch(() => {});
+    await stopLocalPlayback();
 
     try {
       if (typeof stopActiveNativeAlarm === "function") {
@@ -341,7 +410,7 @@ function DeadlineAlarmModal({
       effectiveThresholdKey,
       rawAlarmId
     );
-  }, [effectiveThresholdKey, task?.id, task?.data?.alarmId]);
+  }, [effectiveThresholdKey, stopLocalPlayback, task?.data?.alarmId, task?.id]);
 
   const handleNotDone = useCallback(
     async ({ skipHaptic = false } = {}) => {

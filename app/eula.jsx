@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { getAuth, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,15 +19,13 @@ import { app, db } from "../config/firebase";
 import { useTheme } from "../context/ThemeContext";
 import { warnIfDev } from "../utils/logger";
 import { clearLocalClassSchedule } from "../utils/classScheduleCache";
+import { ACTIVE_UID_KEY, EULA_VERSION, getUserEulaState } from "../utils/eula";
 import {
   getPostOnboardingRoute,
   getTutorialRoute,
   hasCompletedOnboarding,
 } from "../utils/onboarding";
 
-const EULA_KEY = (uid) => `eula_accepted_v1_1_${uid}`;
-const ACTIVE_UID_KEY = "active_uid_v1";
-const EULA_VERSION = "1.1";
 const EULA_LAST_UPDATED = "March 31, 2026";
 
 const FALLBACK_COLORS = {
@@ -176,6 +174,10 @@ export default function EulaScreen() {
         router.replace(getTutorialRoute(role));
         return;
       }
+      if (role === "admin") {
+        router.replace("/(admin)/home");
+        return;
+      }
       router.replace(getPostOnboardingRoute(role));
     } catch (err) {
       warnIfDev("Failed to resolve user role after EULA:", err);
@@ -186,35 +188,41 @@ export default function EulaScreen() {
   useEffect(() => {
     let active = true;
 
-    const uid = getAuth(app).currentUser?.uid;
-    const storageKey = uid ? EULA_KEY(uid) : null;
+    if (viewOnly) {
+      setHasScrolled(true);
+      revealContent();
+    } else {
+      const uid = getAuth(app).currentUser?.uid;
+      if (!uid) {
+        router.replace("/(auth)/login");
+        return undefined;
+      }
 
-    const readAcceptance = storageKey
-      ? AsyncStorage.getItem(storageKey)
-      : Promise.resolve(null);
+      getDoc(doc(db, "users", uid))
+        .then((snap) => {
+          if (!active) return;
+          if (!snap.exists()) {
+            router.replace("/(auth)/login");
+            return;
+          }
 
-    readAcceptance
-      .then((value) => {
-        if (!active) return;
+          const eulaState = getUserEulaState(snap.data());
+          setAcceptedAlready(eulaState.acceptedAlready);
 
-        const alreadyAccepted = value === "accepted";
-        setAcceptedAlready(alreadyAccepted);
+          if (!eulaState.pendingConsent) {
+            setChecking(false);
+            navigateAfterEula();
+            return;
+          }
 
-        if (alreadyAccepted && !viewOnly) {
-          setChecking(false);
-          navigateAfterEula();
-          return;
-        }
-
-        if (viewOnly) setHasScrolled(true);
-        revealContent();
-      })
-      .catch((err) => {
-        warnIfDev("Failed to read EULA acceptance from storage:", err);
-        if (!active) return;
-        if (viewOnly) setHasScrolled(true);
-        revealContent();
-      });
+          revealContent();
+        })
+        .catch((err) => {
+          warnIfDev("Failed to read EULA acceptance from user profile:", err);
+          if (!active) return;
+          revealContent();
+        });
+    }
 
     let backHandler;
     if (!viewOnly) {
@@ -239,7 +247,7 @@ export default function EulaScreen() {
       active = false;
       if (backHandler) backHandler.remove();
     };
-  }, [navigateAfterEula, revealContent, viewOnly]);
+  }, [navigateAfterEula, revealContent, router, viewOnly]);
 
   const handleScroll = (event) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -261,7 +269,11 @@ export default function EulaScreen() {
         return;
       }
       setAccepting(true);
-      await AsyncStorage.setItem(EULA_KEY(uid), "accepted");
+      await updateDoc(doc(db, "users", uid), {
+        "eula.pendingConsent": false,
+        "eula.acceptedVersion": EULA_VERSION,
+        "eula.acceptedAt": serverTimestamp(),
+      });
       await navigateAfterEula();
     } catch (err) {
       warnIfDev("Failed to accept EULA:", err);
@@ -458,7 +470,7 @@ export default function EulaScreen() {
           <>
             <Text style={[styles.footerNote, { color: colors.muted }]}>
               {acceptedAlready
-                ? "You already accepted this EULA on this device."
+                ? "You already accepted this EULA for this account."
                 : "This is a read-only EULA view from the login screen."}
             </Text>
             <TouchableOpacity

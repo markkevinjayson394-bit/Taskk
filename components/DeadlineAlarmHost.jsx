@@ -34,7 +34,11 @@ import {
 } from "../utils/academicTaskModel";
 import { cancelDeadlineAlarms } from "../utils/deadlineAlarmBackground";
 import { warnIfDev } from "../utils/logger";
-import { forceStopNativeAlarm, stopActiveNativeAlarm } from "../utils/nativeAlarm";
+import {
+  forceStopNativeAlarm,
+  getActiveNativeAlarmState,
+  stopActiveNativeAlarm,
+} from "../utils/nativeAlarm";
 import {
   findOfflineQueuedTask,
   isLocalOnlyTaskId,
@@ -60,6 +64,7 @@ function normalizeAssignmentDoc(docSnap) {
     dueAt: normalizeDateToISO(data.dueAt),
     createdAt: normalizeDateToISO(data.createdAt),
     completedAt: normalizeDateToISO(data.completedAt),
+    leadCatchupEligibleFrom: normalizeDateToISO(data.leadCatchupEligibleFrom),
   };
 }
 
@@ -89,16 +94,18 @@ function getSessionKey({ taskId, stage, dueAtMs, sourceId }) {
 }
 
 async function settleNativeAlarmHandoff() {
-  const withTimeout = (promise) =>
+  const withTimeout = (promise, fallbackValue = false) =>
     Promise.race([
       promise,
-      new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
-    ]).catch(() => false);
+      new Promise((resolve) => setTimeout(() => resolve(fallbackValue), 1500)),
+    ]).catch(() => fallbackValue);
 
-  const stopped = await withTimeout(stopActiveNativeAlarm());
+  const nativeState = await withTimeout(getActiveNativeAlarmState(), null);
+  const stopped = await withTimeout(stopActiveNativeAlarm(), false);
   if (!stopped) {
-    await withTimeout(forceStopNativeAlarm());
+    await withTimeout(forceStopNativeAlarm(), false);
   }
+  return nativeState;
 }
 
 async function queueOfflineCompletion(uid, taskId, queuedAt = new Date()) {
@@ -344,9 +351,9 @@ export default function DeadlineAlarmHost() {
         handledSourceIdsRef.current.add(request.sourceId);
       }
 
-      if (request.nativeHandoff) {
-        await settleNativeAlarmHandoff();
-      }
+      const nativeState = request.nativeHandoff
+        ? await settleNativeAlarmHandoff()
+        : null;
 
       setSession({
         taskId: task.id,
@@ -359,6 +366,14 @@ export default function DeadlineAlarmHost() {
             ? request.alarmAction
             : null,
         nativeHandoff: false,
+        nativeAudioStarted:
+          typeof nativeState?.audioStarted === "boolean"
+            ? nativeState.audioStarted
+            : null,
+        recoveryReason:
+          typeof request.recoveryReason === "string" && request.recoveryReason
+            ? request.recoveryReason
+            : null,
       });
       activeSessionKeyRef.current = sessionKey;
       showAlarmForTask(task, request.alarmStage || null);
@@ -427,7 +442,6 @@ export default function DeadlineAlarmHost() {
 
     await suppressCurrentCatchup("modal_done");
     setTasks((prev) => prev.filter((item) => item.id !== task.id));
-    setSession(null);
     await markDoneAlarm?.();
 
     const cacheKey = CACHE_KEYS.assignments(user.uid);
@@ -516,12 +530,13 @@ export default function DeadlineAlarmHost() {
       thresholdKey={alarmThresholdKey}
       onNotDone={async () => {
         await suppressCurrentCatchup("modal_notdone");
-        setSession(null);
         await notDoneAlarm?.();
       }}
       onMarkDone={markCompleteFromModal}
       pendingAction={session?.pendingAction ?? null}
       nativeHandoff={Boolean(session?.nativeHandoff)}
+      nativeAudioStarted={session?.nativeAudioStarted ?? null}
+      recoveryReason={session?.recoveryReason ?? null}
     />
   );
 }

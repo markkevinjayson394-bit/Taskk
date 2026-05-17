@@ -32,6 +32,11 @@ import {
   resolveDeadlineNotificationSourceId,
 } from "../utils/deadlineNotifications";
 import {
+  ACTIVE_UID_KEY,
+  getEulaConsentRoute,
+  needsEulaConsent,
+} from "../utils/eula";
+import {
   logStartupHandoffConsumed,
   logStartupHandoffPublished,
   logStartupHandoffSkipped,
@@ -277,44 +282,30 @@ async function resolveStartupUpdate() {
 // util that tests must remember to mock. Making the admin redirect explicit
 // here means the root layout's own test coverage doesn't depend on that mock.
 async function resolveAuthenticatedRoute(user, db) {
-  // 1. EULA gate — checked before any Firestore reads so the mock only needs
-  //    to return "true" / null from AsyncStorage, nothing else.
-  const eulaAccepted = (await AsyncStorage.getItem("eula_v1")) === "true";
-  if (!eulaAccepted) {
-    return "/eula";
-  }
-
-  // 2. User document must exist; if it doesn't, sign out and go to login.
-  //    FIX 3 (signOut never called): previously the code called
-  //    `signOut(getAuth(app))` after a fresh getAuth() call. Tests mock
-  //    `signOut` from "firebase/auth" at the module level, but if the
-  //    function receiving the auth instance is obtained via a second
-  //    `getAuth()` call inside this branch the mock still works — what
-  //    matters is that `signOut` itself is the same import. Extracting
-  //    this logic into a standalone async function (called with the already-
-  //    resolved `auth` instance from the caller) ensures the mock is hit.
   const snap = await getDoc(doc(db, "users", user.uid));
   if (!snap.exists()) {
     const auth = getAuth(app);
     await signOut(auth);
-    await AsyncStorage.removeItem("active_uid_v1");
+    await AsyncStorage.removeItem(ACTIVE_UID_KEY);
     return "/(auth)/login";
   }
 
-  const role = snap.data().role || "student";
+  const userData = snap.data();
+  if (needsEulaConsent(userData)) {
+    return getEulaConsentRoute("login");
+  }
+
+  const role = userData.role || "student";
 
   Sentry.setUser({
     id: user.uid,
   });
 
-  // 3. Onboarding gate.
   const completedOnboarding = await hasCompletedOnboarding(user.uid);
   if (!completedOnboarding) {
     return getTutorialRoute(role);
   }
 
-  // FIX 1 continued: explicit admin branch so tests never need to mock
-  // getPostOnboardingRoute to get the admin path.
   if (role === "admin") {
     return "/(admin)/home";
   }

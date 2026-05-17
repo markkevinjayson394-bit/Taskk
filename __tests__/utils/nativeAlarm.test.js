@@ -4,6 +4,7 @@ import {
   canPickNativeAlarmAudioFile,
   canPickNativeAlarmTone,
   fromNativeAlarmScheduledId,
+  getActiveNativeAlarmState,
   isNativeAlarmScheduledId,
   pickNativeAlarmAudioFile,
   pickNativeAlarmTone,
@@ -19,6 +20,12 @@ jest.mock("react-native", () => ({
       cancelExactAlarm: jest.fn().mockResolvedValue(true),
       cancelAllExactAlarms: jest.fn().mockResolvedValue(true),
       stopActiveAlarm: jest.fn().mockResolvedValue(true),
+      getActiveAlarmState: jest.fn().mockResolvedValue({
+        alarmId: "native-id-abc",
+        isRinging: true,
+        audioStarted: false,
+        audioSource: null,
+      }),
       canScheduleExactAlarms: jest.fn().mockResolvedValue(true),
       isIgnoringBatteryOptimizations: jest.fn().mockResolvedValue(true),
       openExactAlarmSettings: jest.fn(),
@@ -141,6 +148,18 @@ describe("nativeAlarm", () => {
     it("stops the active alarm", async () => {
       const result = await stopActiveNativeAlarm();
       expect(result).toBe(true);
+    });
+  });
+
+  describe("getActiveNativeAlarmState", () => {
+    it("returns normalized native alarm state", async () => {
+      const result = await getActiveNativeAlarmState();
+      expect(result).toEqual({
+        alarmId: "native-id-abc",
+        isRinging: true,
+        audioStarted: false,
+        audioSource: null,
+      });
     });
   });
 

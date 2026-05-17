@@ -15,6 +15,14 @@ const mockUpdateDoc = jest.fn(() => Promise.resolve());
 const mockLoadFromCache = jest.fn();
 const mockSaveToCache = jest.fn(() => Promise.resolve());
 const mockReadOfflineCreateQueue = jest.fn(() => Promise.resolve([]));
+const mockGetActiveNativeAlarmState = jest.fn(() =>
+  Promise.resolve({
+    alarmId: "deadline-native-1",
+    isRinging: true,
+    audioStarted: false,
+    audioSource: null,
+  })
+);
 const mockStopActiveNativeAlarm = jest.fn(() => Promise.resolve(true));
 const mockForceStopNativeAlarm = jest.fn(() => Promise.resolve(true));
 const mockRefreshPendingSyncSummary = jest.fn(() => Promise.resolve());
@@ -60,6 +68,8 @@ jest.mock("../../context/NotificationContext", () => ({
 }));
 
 jest.mock("../../utils/nativeAlarm", () => ({
+  getActiveNativeAlarmState: (...args) =>
+    mockGetActiveNativeAlarmState(...args),
   stopActiveNativeAlarm: (...args) => mockStopActiveNativeAlarm(...args),
   forceStopNativeAlarm: (...args) => mockForceStopNativeAlarm(...args),
 }));
@@ -94,10 +104,20 @@ jest.mock("../../components/DeadlineAlarmModal", () => {
 
   return {
     __esModule: true,
-    default: ({ visible, task, nativeHandoff, onNotDone, onMarkDone }) => (
+    default: ({
+      visible,
+      task,
+      nativeHandoff,
+      nativeAudioStarted,
+      onNotDone,
+      onMarkDone,
+      pendingAction,
+    }) => (
       <View>
         <Text>{visible ? `visible:${task?.id}` : "hidden"}</Text>
         <Text>{nativeHandoff ? "native" : "local"}</Text>
+        <Text>{`audio:${String(nativeAudioStarted)}`}</Text>
+        <Text>{`action:${pendingAction ?? "none"}`}</Text>
         <TouchableOpacity onPress={onNotDone}>
           <Text>Not Done</Text>
         </TouchableOpacity>
@@ -185,9 +205,10 @@ describe("DeadlineAlarmHost", () => {
     });
 
     await waitFor(() => {
-      expect(getByText("visible:task-1")).toBeTruthy();
+    expect(getByText("visible:task-1")).toBeTruthy();
     });
 
+    expect(mockGetActiveNativeAlarmState).toHaveBeenCalled();
     expect(mockStopActiveNativeAlarm).toHaveBeenCalled();
     expect(getByText("local")).toBeTruthy();
     expect(mockShowAlarmForTask).toHaveBeenCalledTimes(1);
@@ -233,6 +254,55 @@ describe("DeadlineAlarmHost", () => {
     );
   });
 
+  it("keeps session props stable until Not Done closes the modal", async () => {
+    let releaseNotDone;
+    mockGetActiveNativeAlarmState.mockResolvedValueOnce({
+      alarmId: "deadline-native-notdone",
+      isRinging: true,
+      audioStarted: true,
+      audioSource: "bundled",
+    });
+    mockNotDoneAlarm.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseNotDone = resolve;
+        })
+    );
+
+    const { getByText } = render(<DeadlineAlarmHost />);
+
+    await act(async () => {
+      publishDeadlineAlarmOpenRequest({
+        focusTaskId: "task-1",
+        alarmStage: "due",
+        sourceId: "source-notdone-wait",
+        nativeHandoff: "1",
+      });
+    });
+
+    await waitFor(() => {
+      expect(getByText("visible:task-1")).toBeTruthy();
+      expect(getByText("audio:true")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.press(getByText("Not Done"));
+      await Promise.resolve();
+    });
+
+    expect(getByText("visible:task-1")).toBeTruthy();
+    expect(getByText("audio:true")).toBeTruthy();
+
+    await act(async () => {
+      releaseNotDone?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getByText("hidden")).toBeTruthy();
+    });
+  });
+
   it("passes uid during Done completion and does not keep the completed task eligible", async () => {
     mockIsOnline = true;
     const { getByText } = render(<DeadlineAlarmHost />);
@@ -258,6 +328,56 @@ describe("DeadlineAlarmHost", () => {
     });
     expect(mockRefreshPendingSyncSummary).toHaveBeenCalledWith("student-1");
     expect(mockDismissAlarm).toHaveBeenCalled();
+  });
+
+  it("keeps session props stable until Done closes the modal", async () => {
+    mockIsOnline = true;
+    let releaseDone;
+    mockGetActiveNativeAlarmState.mockResolvedValueOnce({
+      alarmId: "deadline-native-done",
+      isRinging: true,
+      audioStarted: true,
+      audioSource: "bundled",
+    });
+    mockMarkDoneAlarm.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseDone = resolve;
+        })
+    );
+
+    const { getByText } = render(<DeadlineAlarmHost />);
+
+    await act(async () => {
+      publishDeadlineAlarmOpenRequest({
+        focusTaskId: "task-1",
+        alarmStage: "due",
+        sourceId: "source-done-wait",
+        nativeHandoff: "1",
+      });
+    });
+
+    await waitFor(() => {
+      expect(getByText("visible:task-1")).toBeTruthy();
+      expect(getByText("audio:true")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.press(getByText("Done"));
+      await Promise.resolve();
+    });
+
+    expect(getByText("visible:task-1")).toBeTruthy();
+    expect(getByText("audio:true")).toBeTruthy();
+
+    await act(async () => {
+      releaseDone?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getByText("hidden")).toBeTruthy();
+    });
   });
 
   it("suppresses the same source after the modal session closes", async () => {

@@ -30,6 +30,8 @@ const OVERDUE_STAGE_KEYS = Array.from(
   )
 );
 const FOLLOWUP_STAGE_KEYS = ["15m", "60m", "+15m"];
+const CLEANUP_DEDUPE_MS = 500;
+const cleanupRequestCache = new Map();
 
 function pushId(target, value) {
   if (typeof value !== "string") return;
@@ -41,6 +43,47 @@ function pushId(target, value) {
 function addDisplayVariant(target, id) {
   pushId(target, id);
   pushId(target, `${id}-display`);
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${key}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function pruneExpiredCleanupRequests(now = Date.now()) {
+  for (const [key, entry] of cleanupRequestCache.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      cleanupRequestCache.delete(key);
+    }
+  }
+}
+
+function runDedupedCleanup(kind, taskId, options, executor) {
+  if (!taskId) return executor();
+
+  const now = Date.now();
+  pruneExpiredCleanupRequests(now);
+
+  const key = `${kind}:${taskId}:${stableSerialize(options ?? {})}`;
+  const existing = cleanupRequestCache.get(key);
+  if (existing && existing.expiresAt > now) {
+    return existing.promise;
+  }
+
+  const promise = Promise.resolve().then(executor);
+  cleanupRequestCache.set(key, {
+    promise,
+    expiresAt: now + CLEANUP_DEDUPE_MS,
+  });
+  return promise;
 }
 
 export function isDeadlineNotificationData(data = {}) {
@@ -248,65 +291,81 @@ export function buildDeadlinePresentationIds(
 }
 
 export async function dismissDeadlinePresentations(taskId, options = {}) {
-  const ids = Array.from(buildDeadlinePresentationIds(taskId, options));
-  if (!ids.length) return [];
+  return runDedupedCleanup(
+    "dismissDeadlinePresentations",
+    taskId,
+    options,
+    async () => {
+      const ids = Array.from(buildDeadlinePresentationIds(taskId, options));
+      if (!ids.length) return [];
 
-  await Promise.all(
-    ids.map(async (id) => {
-      try {
-        await notifee?.cancelNotification?.(id);
-      } catch (_error) {}
-      try {
-        await Notifications.dismissNotificationAsync?.(id);
-      } catch (_error) {}
-    })
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            await notifee?.cancelNotification?.(id);
+          } catch (_error) {}
+          try {
+            await Notifications.dismissNotificationAsync?.(id);
+          } catch (_error) {}
+        })
+      );
+
+      return ids;
+    }
   );
-
-  return ids;
 }
 
 export async function cancelDeadlineNotifications(taskId, options = {}) {
-  const {
-    legacyExpoCompat = true,
-    includeDisplay = true,
-    thresholdKey = null,
-    extraIds = [],
-  } = options;
+  return runDedupedCleanup(
+    "cancelDeadlineNotifications",
+    taskId,
+    options,
+    async () => {
+      const {
+        legacyExpoCompat = true,
+        includeDisplay = true,
+        thresholdKey = null,
+        extraIds = [],
+      } = options;
 
-  const ids = Array.from(
-    buildDeadlineTaskNotificationIds(taskId, {
-      ...options,
-      includeDisplay,
-      thresholdKey,
-      extraIds,
-    })
+      const ids = Array.from(
+        buildDeadlineTaskNotificationIds(taskId, {
+          ...options,
+          includeDisplay,
+          thresholdKey,
+          extraIds,
+        })
+      );
+      if (!ids.length) return [];
+
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(id));
+          } catch (_error) {}
+
+          try {
+            await notifee?.cancelNotification?.(id);
+          } catch (_error) {}
+
+          const shouldCancelExpo =
+            legacyExpoCompat ||
+            Platform.OS !== "android" ||
+            !isDeadlineManagedNotificationId(id);
+          if (!shouldCancelExpo) return;
+
+          try {
+            await Notifications.cancelScheduledNotificationAsync?.(id);
+          } catch (_error) {}
+          try {
+            await Notifications.dismissNotificationAsync?.(id);
+          } catch (_error) {}
+        })
+      );
+
+      return ids;
+    }
   );
-  if (!ids.length) return [];
-
-  await Promise.all(
-    ids.map(async (id) => {
-      try {
-        await cancelNativeAlarmByScheduledId(toNativeAlarmScheduledId(id));
-      } catch (_error) {}
-
-      try {
-        await notifee?.cancelNotification?.(id);
-      } catch (_error) {}
-
-      const shouldCancelExpo =
-        legacyExpoCompat || Platform.OS !== "android" || !isDeadlineManagedNotificationId(id);
-      if (!shouldCancelExpo) return;
-
-      try {
-        await Notifications.cancelScheduledNotificationAsync?.(id);
-      } catch (_error) {}
-      try {
-        await Notifications.dismissNotificationAsync?.(id);
-      } catch (_error) {}
-    })
-  );
-
-  return ids;
 }
 
 export function logDeadlineFlow(event, details = {}) {

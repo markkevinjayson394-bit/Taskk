@@ -106,6 +106,7 @@ const {
   DEADLINE_CATEGORY_ID,
   bootstrapDeadlineAlarmChannel,
   displayAlarmNotification,
+  rescheduleAllDeadlineAlarms,
   scheduleDeadlineAlarms,
   scheduleNextOverdueAlarm,
 } = require("../../utils/deadlineAlarmBackground");
@@ -272,6 +273,43 @@ describe("deadlineAlarmBackground", () => {
     );
   });
 
+  it("dedupes identical concurrent schedule requests for the same task", async () => {
+    mockNativeAlarm.scheduleNativeAlarm.mockImplementation(
+      ({ alarmId }) =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(`native-alarm:${alarmId}`), 10);
+        })
+    );
+
+    const task = {
+      id: "task-1",
+      title: "Essay",
+      subject: "English",
+    };
+
+    const [first, second] = await Promise.all([
+      scheduleDeadlineAlarms(task),
+      scheduleDeadlineAlarms(task),
+    ]);
+
+    const scheduledAlarmIds =
+      mockNativeAlarm.scheduleNativeAlarm.mock.calls.map(
+        ([payload]) => payload.alarmId
+      );
+
+    expect(first).toEqual(second);
+    expect(scheduledAlarmIds).toEqual(
+      expect.arrayContaining([
+        "deadline-lead:task-1:1d",
+        "deadline-lead:task-1:2h",
+        "deadline-lead:task-1:30m",
+        "deadline-lead:task-1:5m",
+        "deadline-due:task-1:due",
+      ])
+    );
+    expect(scheduledAlarmIds).toHaveLength(5);
+  });
+
   it("marks the due native path as no-fullscreen fallback when popup permission is missing", async () => {
     mockNativeAlarm.ensureNativeAlarmPermissions.mockResolvedValue({
       exactAlarm: { status: "success", value: true },
@@ -352,5 +390,35 @@ describe("deadlineAlarmBackground", () => {
       })
     );
     expect(mockNotifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  it("restores the current overdue display notification during reschedule catchup", async () => {
+    const dueAt = new Date(Date.now() - 60 * 60 * 1000);
+    mockResolveTaskDueDate.mockReturnValue(dueAt);
+    const { getCheckpoint } = require("../../utils/taskOverdueState");
+    getCheckpoint.mockResolvedValue({
+      key: "due",
+      triggerAtMs: Date.now() - 5 * 60 * 1000,
+    });
+
+    await rescheduleAllDeadlineAlarms([
+      {
+        id: "task-2",
+        title: "Quiz review",
+        subject: "Physics",
+        dueAt: dueAt.toISOString(),
+      },
+    ]);
+
+    expect(mockNotifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "deadline-overdue:task-2:due-display",
+        title: expect.stringContaining("Overdue"),
+        android: expect.objectContaining({
+          ongoing: true,
+          autoCancel: false,
+        }),
+      })
+    );
   });
 });

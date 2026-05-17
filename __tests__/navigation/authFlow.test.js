@@ -3,8 +3,7 @@ import RootLayout from "../../app/_layout";
 import { render } from "../../utils/test-utils";
 
 const testState = {
-  role: "student",
-  eulaAccepted: true,
+  userData: { role: "student" },
   onboardingCompleted: true,
   docExists: true,
 };
@@ -129,12 +128,7 @@ jest.mock("expo-router", () => {
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
   default: {
-    getItem: jest.fn((key) => {
-      if (key === "eula_v1") {
-        return Promise.resolve(testState.eulaAccepted ? "true" : null);
-      }
-      return Promise.resolve(null);
-    }),
+    getItem: jest.fn(() => Promise.resolve(null)),
     setItem: jest.fn().mockResolvedValue(undefined),
     removeItem: jest.fn().mockResolvedValue(undefined),
   },
@@ -219,9 +213,8 @@ describe("Auth flow", () => {
     jest.clearAllMocks();
 
     // Reset to safe defaults. Each test mutates only what it needs.
-    testState.role = "student";
+    testState.userData = { role: "student" };
     testState.docExists = true;
-    testState.eulaAccepted = true;
     testState.onboardingCompleted = true;
 
     authModule = require("firebase/auth");
@@ -234,7 +227,7 @@ describe("Auth flow", () => {
     firestoreModule.getDoc.mockImplementation(() =>
       Promise.resolve({
         exists: () => testState.docExists,
-        data: () => ({ role: testState.role }),
+        data: () => testState.userData,
       })
     );
 
@@ -273,8 +266,8 @@ describe("Auth flow", () => {
   // ── 3. Admin routing ─────────────────────────────────────────────────────
   test("admin user is routed to admin home", async () => {
     // Mutate BEFORE mockAuthUser and BEFORE render so that when the auth
-    // callback fires and calls getDoc, testState.role is already "admin".
-    testState.role = "admin";
+    // callback fires and calls getDoc, testState.userData already has admin role.
+    testState.userData = { role: "admin" };
     mockAuthUser(authModule, { uid: "admin-456", email: "admin@school.com" });
 
     render(<RootLayout />);
@@ -286,10 +279,15 @@ describe("Auth flow", () => {
   });
 
   // ── 4. EULA gate ─────────────────────────────────────────────────────────
-  test("user without accepted EULA is routed to EULA screen", async () => {
-    // Mutate BEFORE render so AsyncStorage.getItem("eula_v1") returns null
-    // when resolveAuthenticatedRoute checks it.
-    testState.eulaAccepted = false;
+  test("new account with pending EULA consent is routed to EULA screen", async () => {
+    testState.userData = {
+      role: "student",
+      eula: {
+        pendingConsent: true,
+        acceptedVersion: null,
+        acceptedAt: null,
+      },
+    };
 
     render(<RootLayout />);
     await flushAsync();

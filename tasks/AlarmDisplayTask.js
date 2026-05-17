@@ -4,6 +4,7 @@ import {
   ACTION_MARK_DONE,
   ACTION_NOT_DONE,
   ALARM_KIND_LEAD_NOTICE,
+  ALARM_KIND_OVERDUE_SEED,
   bootstrapDeadlineAlarmChannel,
   DEADLINE_NOTIF_TYPE,
   displayAlarmNotification,
@@ -179,26 +180,11 @@ AppRegistry.registerHeadlessTask(
               : alarmId,
         };
         const alarmKind = resolveNotificationAlarmKind(resolvedData);
-        const deliveryPath =
-          typeof payload?.deliveryPath === "string" ? payload.deliveryPath : "";
-        const foregroundServiceOwnsDisplay =
-          alarmKind !== ALARM_KIND_LEAD_NOTICE &&
-          (deliveryPath === "" ||
-            deliveryPath.includes("native_popup") ||
-            deliveryPath.includes("native_no_fullscreen_popup"));
-
         warnIfDev(
           `[AlarmDisplayTask] Running for alarm ${alarmId}, kind: ${alarmKind}, stage: ${payload?.stage}`
         );
 
         await bootstrapDeadlineAlarmChannel().catch(() => {});
-
-        if (foregroundServiceOwnsDisplay) {
-          warnIfDev(
-            `[AlarmDisplayTask] Skipping notifee shade for ${alarmId} - foreground service handles display`
-          );
-          return;
-        }
 
         if (alarmKind === ALARM_KIND_LEAD_NOTICE) {
           warnIfDev(
@@ -210,6 +196,13 @@ AppRegistry.registerHeadlessTask(
             body: resolveAlarmBody(data, payload),
             data: resolvedData,
           });
+          return;
+        }
+
+        if (alarmKind === ALARM_KIND_OVERDUE_SEED) {
+          warnIfDev(
+            `[AlarmDisplayTask] Ignoring overdue seed display for ${alarmId}`
+          );
           return;
         }
 
@@ -258,10 +251,10 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     return;
   }
 
-  // [FIX] ACTION_MARK_DONE is now "Open" — just cancel the shade notification
-  // and open the app. The modal handles completion. No writeAlarmAction("markdone").
+  // [FIX] ACTION_MARK_DONE is now "Open" — stop the active alarm and open the
+  // app, but keep the persistent due/overdue shade notification visible until
+  // the user completes the flow via Done / Not Done.
   if (actionId === ACTION_MARK_DONE) {
-    await cancelVisibleAlarmNotifications(baseAlarmId, notificationId);
     await stopNativeAlarmLoop();
     // Cancel native alarm so it stops ringing while app opens to modal
     if (baseAlarmId) {

@@ -22,6 +22,15 @@ import {
 } from "./alarmDiagnostics";
 import { getNext8AM } from "./alarmTimeHelpers.js";
 import { OVERDUE_CHAIN } from "./deadlineConstants";
+import {
+    cancelDeadlineNotifications as cancelSharedDeadlineNotifications,
+    DEADLINE_ACTION_NOT_DONE,
+    DEADLINE_ACTION_OPEN,
+    DEADLINE_NOTIF_TYPE,
+    dismissDeadlinePresentations,
+    logDeadlineFlow,
+    normalizeDeadlineAlarmAction,
+} from "./deadlineNotifications";
 import { warnIfDev } from "./logger";
 import {
     cancelNativeAlarmByScheduledId,
@@ -37,15 +46,6 @@ import {
     buildManagedNotificationData,
     buildNotificationId,
 } from "./notificationIds";
-import {
-    cancelDeadlineNotifications as cancelSharedDeadlineNotifications,
-    DEADLINE_ACTION_NOT_DONE,
-    DEADLINE_ACTION_OPEN,
-    DEADLINE_NOTIF_TYPE,
-    dismissDeadlinePresentations,
-    logDeadlineFlow,
-    normalizeDeadlineAlarmAction,
-} from "./deadlineNotifications";
 import { isPlannerTask } from "./taskFilters";
 import {
     advanceCheckpoint,
@@ -614,7 +614,10 @@ function buildOverdueNotifeeAndroid({
       {
         // "Not Done" — advances chain, reschedules, no app open
         title: "⏰ Not Done",
-        pressAction: { id: DEADLINE_ACTION_NOT_DONE, launchActivity: "default" },
+        pressAction: {
+          id: DEADLINE_ACTION_NOT_DONE,
+          launchActivity: "default",
+        },
       },
     ],
   };

@@ -21,7 +21,7 @@ const mockRefreshPendingSyncSummary = jest.fn(() => Promise.resolve());
 const mockLogAlarmHostDuplicateSuppressed = jest.fn(() => Promise.resolve());
 const mockLogForegroundCatchupSuppressed = jest.fn(() => Promise.resolve());
 const mockLogStartupHandoffSkipped = jest.fn(() => Promise.resolve());
-let isOnline = false;
+let mockIsOnline = false;
 
 jest.mock("../../config/firebase", () => ({
   auth: { currentUser: { uid: "student-1" } },
@@ -46,7 +46,7 @@ jest.mock("../../context/OfflineContext", () => ({
   loadFromCache: (...args) => mockLoadFromCache(...args),
   saveToCache: (...args) => mockSaveToCache(...args),
   useOffline: () => ({
-    isOnline,
+    isOnline: mockIsOnline,
     refreshPendingSyncSummary: mockRefreshPendingSyncSummary,
   }),
 }));
@@ -141,7 +141,7 @@ jest.mock("../../components/DeadlineAlarmModal", () => {
 describe("DeadlineAlarmHost", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    isOnline = false;
+    mockIsOnline = false;
 
     // Set up the alarm bridge to connect publish and subscribe
     const mockBridge = require("../../utils/deadlineAlarmBridge");
@@ -234,7 +234,7 @@ describe("DeadlineAlarmHost", () => {
   });
 
   it("passes uid during Done completion and does not keep the completed task eligible", async () => {
-    isOnline = true;
+    mockIsOnline = true;
     const { getByText } = render(<DeadlineAlarmHost />);
 
     await act(async () => {

@@ -57,6 +57,9 @@ jest.mock("../../utils/notificationIds", () => ({
   buildNotificationId: jest.fn(
     (prefix, taskId, stage) => `${prefix}:${taskId}:${stage}`
   ),
+  buildDeadlineNotificationId: jest.fn(
+    (taskId, stage) => `deadline-${taskId}:${stage}`
+  ),
 }));
 
 jest.mock("../../utils/taskFilters", () => ({
@@ -94,13 +97,6 @@ jest.mock("../../utils/deadlineConstants", () => ({
 const {
   handleDeadlineAlarmResponse,
 } = require("../../utils/deadlineAlarmBackground");
-const debugReactNative = require("react-native");
-const debugNativeAlarm = require("../../utils/nativeAlarm");
-console.log("DEBUG Platform.OS", debugReactNative.Platform.OS);
-console.log(
-  "DEBUG isNativeAlarmSupported",
-  debugNativeAlarm.isNativeAlarmSupported
-);
 const ACTION_NOT_DONE = "not_done_deadline_alarm";
 
 describe("handleDeadlineAlarmResponse", () => {
@@ -143,14 +139,6 @@ describe("handleDeadlineAlarmResponse", () => {
       "task-1",
       "due",
       dueAtMs
-    );
-    console.log(
-      "DEBUG ensureNativeAlarmPermissions calls",
-      mockNativeAlarm.ensureNativeAlarmPermissions.mock.calls.length
-    );
-    console.log(
-      "DEBUG scheduleNotificationAsync calls",
-      mockNotifications.scheduleNotificationAsync.mock.calls.length
     );
     expect(mockNativeAlarm.scheduleNativeAlarm).toHaveBeenCalledWith(
       expect.objectContaining({
